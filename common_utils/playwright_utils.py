@@ -193,12 +193,8 @@ if __name__ == "__main__":
         user_data_dir=TEST_USER_DATA_DIR,
         login_url=TEST_URL
     )
-    print("操作结束，你可以重新运行并选择 2 来验证登录态是否保留。")
 
     # 场景二：携带环境自由操作
-    if not os.path.exists(TEST_USER_DATA_DIR):
-        print(f"警告：环境目录 {TEST_USER_DATA_DIR} 不存在，你将以全新访客状态打开。")
-
     open_browser_for_manual_use(
         user_data_dir=TEST_USER_DATA_DIR,
         home_url=TEST_URL
