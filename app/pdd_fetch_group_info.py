@@ -14,6 +14,9 @@ import time
 import csv
 import logging
 from datetime import datetime
+from datetime import timedelta  # 用于计算下一次执行的时间显示
+
+import pandas as pd
 from playwright.sync_api import sync_playwright
 
 # 请确保你的模块路径正确
@@ -207,7 +210,9 @@ def scrape_pdd_group_items(user_data_dir: str, target_url: str, max_scrolls: int
 #                                   执行入口
 # ==============================================================================
 if __name__ == "__main__":
-    from datetime import timedelta  # 用于计算下一次执行的时间显示
+
+    df = pd.read_csv(r'W:\project\python_project\easy_shop\app\pdd_group_items.csv')
+    print()
 
     TEST_USER_DATA_DIR = os.path.join(r'W:\project\python_project\easy_shop\temp_data\browser_data', "pdd_browser_data")
     TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
