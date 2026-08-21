@@ -216,7 +216,7 @@ if __name__ == "__main__":
             status = scrape_pdd_group_items(
                 user_data_dir=TEST_USER_DATA_DIR,
                 target_url=TEST_URL,
-                max_scrolls=100,
+                max_scrolls=2,
                 output_csv="pdd_group_items.csv"
             )
 
