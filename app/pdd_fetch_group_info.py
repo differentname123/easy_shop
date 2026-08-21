@@ -202,19 +202,28 @@ def scrape_pdd_group_items(user_data_dir, target_url, max_scrolls=50, output_csv
 #                                   执行守护进程
 # ==============================================================================
 if __name__ == "__main__":
-    TEST_USER_DATA_DIR = os.path.join(r'W:\project\python_project\easy_shop\temp_data\browser_data', "pdd_browser_data")
     TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
     logger.info("[守护进程/初始化] 已拉起主定时轮询模式")
+
+    # 获取所有的浏览器数据配置目录
     pdd_browser_data_list = get_config("pdd_browser_data_list")
-    TEST_USER_DATA_DIR = pdd_browser_data_list[1]
+
+    # 初始化账户索引，用于均衡调度
+    account_index = 0
+
     while True:
         wait_seconds = 1800
 
+        # 【核心修改点】：通过求余运算 (取模) 实现账户配置的轮询(Round-Robin)调度
+        current_data_dir_index = account_index % len(pdd_browser_data_list)
+        user_data_dir = pdd_browser_data_list[current_data_dir_index]
+
         try:
-            logger.info("[守护进程/周期调度] ▶️ 开始派发执行本轮次采集任务...")
+            logger.info("[守护进程/周期调度] ▶️ 开始派发执行本轮次采集任务... | 当前使用账号池索引: [%s/%s]",
+                        current_data_dir_index, len(pdd_browser_data_list) - 1)
 
             status = scrape_pdd_group_items(
-                user_data_dir=TEST_USER_DATA_DIR,
+                user_data_dir=user_data_dir,
                 target_url=TEST_URL,
                 max_scrolls=2,
                 output_csv="pdd_group_items.csv"
@@ -228,6 +237,9 @@ if __name__ == "__main__":
         except Exception as e:
             logger.error("[守护进程/异常阻断] ❌ 本轮采集任务发生崩溃级异常已被阻断，放弃当前轮次 | 异常详情: %s", e,
                          exc_info=True)
+
+        # 本轮任务结束（不论成功或异常），索引加 1，下一次循环将自动切换到下一个浏览器目录
+        account_index += 1
 
         next_run = (datetime.now() + timedelta(seconds=wait_seconds)).strftime("%Y-%m-%d %H:%M:%S")
 
