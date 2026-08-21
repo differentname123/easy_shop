@@ -59,8 +59,9 @@ def save_to_csv_atomic(goods_dict, filename):
     if not goods_dict:
         return
 
+    # 【修改点】：增加 "所属标签" 字段
     fieldnames = [
-        "商品ID", "商品名称", "品牌", "原价(元)", "补贴价(元)", "立省(元)",
+        "商品ID", "所属标签", "商品名称", "品牌", "原价(元)", "补贴价(元)", "立省(元)",
         "销量提示", "商品链接", "主图链接", "更新时间"
     ]
     tmp_filename = f"{filename}.tmp"
@@ -97,6 +98,9 @@ def scrape_pdd_group_items(user_data_dir, target_url, max_scrolls=50, output_csv
     seen_goods_dict = load_existing_goods_dict(output_csv)
     session_new_count = 0
     session_update_count = 0
+
+    # 【修改点】：新增状态变量，供拦截器读取当前在哪个标签下
+    current_tab_name = "默认精选"
 
     def handle_response(response):
         nonlocal session_new_count, session_update_count
@@ -142,6 +146,7 @@ def scrape_pdd_group_items(user_data_dir, target_url, max_scrolls=50, output_csv
 
             parsed_item = {
                 "商品ID": goods_id,
+                "所属标签": current_tab_name,  # 【修改点】：注入当前的标签名称
                 "商品名称": item.get("goods_name", ""),
                 "品牌": item.get("brand_name", ""),
                 "原价(元)": item.get("origin_price", 0) / 100,
@@ -165,8 +170,8 @@ def scrape_pdd_group_items(user_data_dir, target_url, max_scrolls=50, output_csv
             seen_goods_dict[goods_id] = parsed_item
 
         logger.info(
-            "[网络拦截/数据合流] 成功解包合并单批次接口数据 | 解析总数: [%s] | 本次新增: [%s], 本次更新: [%s] | 任务累计新增: [%s], 任务累计更新: [%s] | 历史总库容: [%s]",
-            len(goods_list), new_batch_count, update_batch_count,
+            "[网络拦截/数据合流] 成功解包合并单批次接口数据 | 当前标签: [%s] | 解析总数: [%s] | 本次新增: [%s], 本次更新: [%s] | 任务累计新增: [%s], 任务累计更新: [%s] | 历史总库容: [%s]",
+            current_tab_name, len(goods_list), new_batch_count, update_batch_count,
             session_new_count, session_update_count, len(seen_goods_dict)
         )
 
@@ -183,24 +188,70 @@ def scrape_pdd_group_items(user_data_dir, target_url, max_scrolls=50, output_csv
         try:
             page.goto(target_url)
             page.wait_for_load_state("networkidle")
+            time.sleep(3)  # 给予DOM充分渲染时间
         except Exception as e:
             logger.error("[浏览器控制/页面加载] 首屏初始页面加载失败或严重超时 | 目标URL: [%s] | 异常信息: %s",
                          target_url, e, exc_info=True)
             # 严格异常流转：不再往下死磕滚动，立刻抛出交由上游终止本轮采集
             raise
 
-        logger.info("[浏览器控制/页面交互] 首屏加载成功，即将启动自动鼠标下滚以触发数据懒加载...")
+        # 【修改点】：加入标签识别、点击与嵌套遍历滑动的逻辑
+        logger.info("[浏览器控制/页面交互] 首屏加载成功，开始通过核心容器ID获取所有标签...")
 
-        for i in range(max_scrolls):
-            try:
-                page.mouse.wheel(0, 3000)
-                logger.info("[浏览器控制/页面交互] 执行向下滚动触底操作 | 进度: [%s/%s]", i + 1, max_scrolls)
-                time.sleep(2)
-            except Exception as e:
-                logger.warning("[浏览器控制/页面交互] 页面滑动发生中断 (可能页面已崩溃或被手动强制关闭) | 异常: %s", e)
-                break
+        tabs = []
+        try:
+            nav_container = page.locator('#brand-first-nav')
+            nav_container.wait_for(state="visible", timeout=10000)
+            tabs = nav_container.locator('> div').all()
+            logger.info("[页面交互] 成功锁定导航容器，共识别到 [%s] 个栏目标签。", len(tabs))
+        except Exception as e:
+            logger.error("寻找标签导航容器失败: %s", e)
+            logger.info("降级处理：不进行标签切换，仅拉取当前默认页面。")
+            tabs = [None]
 
-        time.sleep(1)
+            # 外层循环：遍历所有标签并点击切换
+        for index, tab in enumerate(tabs):
+            if tab is not None:
+                try:
+                    raw_text = tab.inner_text().replace('\n', '').strip()
+
+                    if raw_text:
+                        current_tab_name = raw_text
+                    else:
+                        if tab.locator('img').count() > 0:
+                            current_tab_name = f"大促活动(图片)_{index}"
+                        else:
+                            current_tab_name = f"未知标签_{index}"
+
+                    tab.scroll_into_view_if_needed()
+                    logger.info("[页面交互] 正在切换并准备采集 ➡️ : [%s] (%s/%s)", current_tab_name, index + 1,
+                                len(tabs))
+                    tab.click(force=True)
+                    time.sleep(3.5)  # 给接口请求、响应拦截以及DOM重新渲染预留时间
+                except Exception as e:
+                    logger.error("点击标签 [%s] 发生异常: %s", index, e)
+                    continue
+            else:
+                current_tab_name = "默认页(定位失败)"
+
+            logger.info("[页面交互] 开始在标签 [%s] 下进行自动鼠标下滚以触发数据懒加载...", current_tab_name)
+
+            # 内层循环：在当前标签下执行到底部的持续滚动
+            for i in range(max_scrolls):
+                try:
+                    page.mouse.wheel(0, 3000)
+                    logger.info("[浏览器控制/页面交互] 执行向下滚动触底操作 | 当前标签: [%s] | 进度: [%s/%s]",
+                                current_tab_name, i + 1, max_scrolls)
+                    time.sleep(2)
+                except Exception as e:
+                    logger.warning("[浏览器控制/页面交互] 页面滑动发生中断 (可能页面已崩溃或被手动强制关闭) | 异常: %s",
+                                   e)
+                    break
+
+            # 当前标签滚到底之后，滚回最顶部，防止干扰下一个标签的点击定位
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(1.5)
+
         logger.info(
             "[任务执行/收尾总结] 本轮浏览器采集任务执行收尾完毕 | 成果: 新增抓取 [%s] 个，刷新状态 [%s] 个 | 总库最终容量: [%s] 个",
             session_new_count, session_update_count, len(seen_goods_dict))
