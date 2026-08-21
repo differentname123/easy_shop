@@ -226,6 +226,8 @@ def scrape_single_tab(user_data_dir, tab_info):
                 return
 
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            batch_new, batch_update = 0, 0  # 【新增】记录当前这一批接口返回的新增和更新数量
+
             for item in goods_list:
                 goods_id = str(item.get("goods_id", "")).strip()
                 if not goods_id: continue
@@ -246,9 +248,15 @@ def scrape_single_tab(user_data_dir, tab_info):
 
                 if goods_id in seen_goods_dict:
                     session_update_count += 1
+                    batch_update += 1
                 else:
                     session_new_count += 1
+                    batch_new += 1
                 seen_goods_dict[goods_id] = parsed_item
+
+            # 【新增】恢复实时日志，让你能看到网络拦截正在工作
+            logger.info("  [网络拦截] 捕获 [%s] 接口数据 | 本批新增: %d, 更新: %d | 总库容: %d",
+                        tab_name, batch_new, batch_update, len(seen_goods_dict))
 
             # 增量落地
             save_to_csv_atomic(seen_goods_dict, output_csv)
@@ -279,13 +287,19 @@ def scrape_single_tab(user_data_dir, tab_info):
             time.sleep(3.5)  # 等待数据刷新与DOM渲染
 
             # 持续下拉动作
-            for _ in range(GLOBAL_CONFIG["max_scrolls_per_tab"]):
+            max_scrolls = GLOBAL_CONFIG["max_scrolls_per_tab"]
+            for i in range(max_scrolls):
                 # 滚动中再次检测风控
                 if check_risk_control(page) or hit_risk:
                     logger.warning("🚨 [风控拦截] 滑动过程中触发风控！")
                     return "RISK_CONTROL"
 
                 page.mouse.wheel(0, GLOBAL_CONFIG["scroll_step_y"])
+
+                # 【新增】每滑动 10 次打印一次进度，避免误以为程序卡死
+                if (i + 1) % 10 == 0:
+                    logger.info("  ... [%s] 正在向下加载，已滚动 %d/%d 次...", tab_name, i + 1, max_scrolls)
+
                 time.sleep(GLOBAL_CONFIG["scroll_interval"])
 
         except Exception as e:
@@ -294,10 +308,9 @@ def scrape_single_tab(user_data_dir, tab_info):
         finally:
             context.close()
 
-    logger.info("✅ Tab [%s] 采集结束 | 新增: %s | 更新: %s | 总库容: %s",
+    logger.info("✅ Tab [%s] 采集结束 | 累计新增: %s | 累计更新: %s | 总库容: %s",
                 tab_name, session_new_count, session_update_count, len(seen_goods_dict))
     return "SUCCESS"
-
 
 # ==============================================================================
 # 5. 主控循环引擎 (守护进程)
