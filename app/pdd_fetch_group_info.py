@@ -18,7 +18,9 @@ import logging
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
-from common_utils.playwright_utils import launch_persistent_context
+from common.playwright_utils import launch_persistent_context
+
+from common.common_utils import get_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger("pdd_scraper")
@@ -203,7 +205,8 @@ if __name__ == "__main__":
     TEST_USER_DATA_DIR = os.path.join(r'W:\project\python_project\easy_shop\temp_data\browser_data', "pdd_browser_data")
     TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
     logger.info("[守护进程/初始化] 已拉起主定时轮询模式")
-
+    pdd_browser_data_list = get_config("pdd_browser_data_list")
+    TEST_USER_DATA_DIR = pdd_browser_data_list[1]
     while True:
         wait_seconds = 1800
 
