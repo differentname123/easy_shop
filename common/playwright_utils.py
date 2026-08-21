@@ -185,14 +185,14 @@ def save_forensics(page, tag: str, save_dir: str = "forensics_logs", extra_info:
 # ==============================================================================
 if __name__ == "__main__":
     # 配置测试环境目录与目标网址
-    TEST_USER_DATA_DIR = os.path.join(r'W:\project\python_project\easy_shop\temp_data\browser_data', "pdd_browser_data")
+    TEST_USER_DATA_DIR = os.path.join(r'W:\project\python_project\easy_shop\temp_data\browser_data', "pdd_browser_data_dahao")
     TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
 
-    # # 场景一：初始化/更新环境凭证
-    # login_and_save_session(
-    #     user_data_dir=TEST_USER_DATA_DIR,
-    #     login_url=TEST_URL
-    # )
+    # 场景一：初始化/更新环境凭证
+    login_and_save_session(
+        user_data_dir=TEST_USER_DATA_DIR,
+        login_url=TEST_URL
+    )
 
     # 场景二：携带环境自由操作
     open_browser_for_manual_use(
