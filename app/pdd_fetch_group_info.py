@@ -46,7 +46,7 @@ GLOBAL_CONFIG = {
     "account_status_json": "account_status.json",
     "account_cooldown_minutes": 30,
     "wait_no_account_seconds": 60,
-    "max_scrolls_per_tab": 100,
+    "max_scrolls_per_tab": -1,  # 修改为 -1 表示直到连续10次无新请求则视为到底
     "headless_mode": True,
     "scroll_step_y": 3000,
     "scroll_interval": 2.0,
@@ -225,28 +225,41 @@ def get_tab_list(user_data_dir):
 def scrape_single_tab(user_data_dir, tab_info):
     """
     单 Tab 深度遍历模块。
-    入参 `tab_info` 必须包含核心 Key: ["index", "name"]
+    入参 `tab_info` 必须包含核心 Key: ["index", "name"]，并预期携带 ["round", "tab_index", "total_tabs"] 等上下文。
     出参: 状态码字符串 "SUCCESS" / "RISK_CONTROL" / "ERROR"
     """
     target_index = tab_info["index"]
     tab_name = tab_info["name"]
+
+    # 构造带轮次和序号的显示用名称，以便更好排查日志
+    round_info = tab_info.get("round", 1)
+    tab_idx = tab_info.get("tab_index", 1)
+    total_tabs = tab_info.get("total_tabs", 1)
+    tab_display = f"第{round_info}轮-第{tab_idx}/{total_tabs}个({tab_name})"
+
     acc_name = os.path.basename(user_data_dir)
     output_csv = GLOBAL_CONFIG["output_csv"]
 
-    logger.info("[采集/初始化] 开启专项抓取 | 目标Tab: [%s] | 执行账号: [%s]", tab_name, acc_name)
+    logger.info("[采集/初始化] 开启专项抓取 | 目标Tab: [%s] | 执行账号: [%s]", tab_display, acc_name)
 
     seen_goods_dict = load_existing_goods_dict(output_csv)
+
+    # 提前定义统计变量，保证最后打印日志时可直接调用
     session_new_count = 0
     session_update_count = 0
     hit_risk = False
+    api_response_count = 0  # 追踪有效拦截到的目标 API 数量
+    scroll_count = 0  # 追踪总下滑次数
 
     def handle_response(response):
         """XHR 拦截闭包，利用早期返回（Early Return）过滤无效报文"""
-        nonlocal session_new_count, session_update_count, hit_risk
+        nonlocal session_new_count, session_update_count, hit_risk, api_response_count
 
         # 卫语句：拦截非目标与失败请求
         if "brand-group-home/home/goods_list" not in response.url or response.status != 200:
             return
+
+        api_response_count += 1  # 无论是否带有新数据，都记录拦截到了目标请求
 
         try:
             data = response.json()
@@ -281,7 +294,7 @@ def scrape_single_tab(user_data_dir, tab_info):
 
                 parsed_item = {
                     "商品ID": goods_id,
-                    "所属标签": tab_name,
+                    "所属标签": tab_name,  # 数据入库时，依旧保持纯净标签名
                     "商品名称": item.get("goods_name", ""),
                     "品牌": item.get("brand_name", ""),
                     "原价(元)": origin_price_raw / 100,
@@ -304,12 +317,12 @@ def scrape_single_tab(user_data_dir, tab_info):
 
             if batch_new > 0 or batch_update > 0:
                 logger.info("[采集/拦截] 解析有效数据流 | Tab: [%s] | 本批新增: [%d] 本批更新: [%d] | 库容: [%d]",
-                            tab_name, batch_new, batch_update, len(seen_goods_dict))
+                            tab_display, batch_new, batch_update, len(seen_goods_dict))
 
                 save_to_csv_atomic(seen_goods_dict, output_csv)
 
         except Exception as e:
-            logger.error("[采集/拦截] 解析数据流发生未捕获异常 | Tab: [%s] | 错误: %s", tab_name, str(e))
+            logger.error("[采集/拦截] 解析数据流发生未捕获异常 | Tab: [%s] | 错误: %s", tab_display, str(e))
 
     # ---------------- 页面导航与滑动主流程 ----------------
     with sync_playwright() as p:
@@ -335,27 +348,55 @@ def scrape_single_tab(user_data_dir, tab_info):
             time.sleep(3.5)
 
             max_scrolls = GLOBAL_CONFIG["max_scrolls_per_tab"]
-            for i in range(max_scrolls):
+            no_new_req_count = 0
+            last_api_count = api_response_count
+
+            while True:
+                # 定量滑动退出条件
+                if max_scrolls != -1 and scroll_count >= max_scrolls:
+                    break
+
                 if check_risk_control(page) or hit_risk:
                     logger.warning("[采集/阻断] 滚动链路遭受拦截 | 账号: [%s] | 中断节点: 第 [%d] 次滑动", acc_name,
-                                   i + 1)
+                                   scroll_count + 1)
                     return "RISK_CONTROL"
 
                 page.mouse.wheel(0, GLOBAL_CONFIG["scroll_step_y"])
+                scroll_count += 1
 
-                if (i + 1) % 10 == 0:
-                    logger.info("[采集/滚动] 向下加载推进中 | Tab: [%s] | 进度: [%d/%d]", tab_name, i + 1, max_scrolls)
+                if scroll_count % 10 == 0:
+                    if max_scrolls == -1:
+                        logger.info("[采集/滚动] 向下加载推进中 | Tab: [%s] | 进度: [已滑 %d 次, 连续空转 %d 次]",
+                                    tab_display, scroll_count, no_new_req_count)
+                    else:
+                        logger.info("[采集/滚动] 向下加载推进中 | Tab: [%s] | 进度: [%d/%d]", tab_display, scroll_count,
+                                    max_scrolls)
 
                 time.sleep(GLOBAL_CONFIG["scroll_interval"])
 
+                # 当模式为 -1 时，利用 XHR 请求计数判定是否到底
+                if max_scrolls == -1:
+                    if api_response_count > last_api_count:
+                        no_new_req_count = 0
+                        last_api_count = api_response_count
+                    else:
+                        no_new_req_count += 1
+
+                    if no_new_req_count >= 10:
+                        logger.info("[采集/完毕] 连续10次滑动未监控到新请求，判定该Tab数据拉取完毕 | Tab: [%s]",
+                                    tab_display)
+                        break
+
         except Exception as e:
-            logger.error("[采集/崩溃] 页面渲染或交互异常 | Tab: [%s] | 错误详情: %s", tab_name, str(e))
+            logger.error("[采集/崩溃] 页面渲染或交互异常 | Tab: [%s] | 错误详情: %s", tab_display, str(e))
             return "ERROR"
         finally:
             context.close()
 
-    logger.info("[采集/完毕] 单一Tab节点作业结束 | Tab: [%s] | 汇总 -> 新增: [%d], 更新: [%d]",
-                tab_name, session_new_count, session_update_count)
+    # 此处在原基础上增加了 [下滑次数: %d] 和 [捕捉请求: %d]
+    logger.info(
+        "[采集/完毕] 单一Tab节点作业结束 | Tab: [%s] | 汇总 -> 下滑次数: [%d], 捕捉请求: [%d], 新增: [%d], 更新: [%d]",
+        tab_display, scroll_count, api_response_count, session_new_count, session_update_count)
     return "SUCCESS"
 
 
@@ -372,8 +413,11 @@ def main_controller():
 
     logger.info("[系统/启动] 守护引擎已挂载 | 容量: [%d] 个活跃账号待命", len(pdd_browser_data_list))
 
+    round_count = 0  # 追踪大循环轮次
+
     while True:
-        logger.info("[调度/主环] ========== 开始全局新世代遍历 ==========")
+        round_count += 1
+        logger.info(f"[调度/主环] ========== 开始全局新世代遍历 (第 {round_count} 轮) ==========")
         tab_list = None
 
         while not tab_list:
@@ -396,9 +440,16 @@ def main_controller():
             time.sleep(60)
             continue
 
-        logger.info(f"[调度/分发] 全局路由表生成完毕 | 目标数量: {len(tab_list)} 个 为：{tab_list}" )
+        logger.info(f"[调度/分发] 全局路由表生成完毕 | 目标数量: {len(tab_list)} 个 为：{tab_list}")
 
-        for tab in tab_list:
+        for tab_idx, tab in enumerate(tab_list, 1):
+            # 将上下文追送入 tab，供内层 scrape_single_tab 使用
+            tab["round"] = round_count
+            tab["tab_index"] = tab_idx
+            tab["total_tabs"] = len(tab_list)
+
+            # 供主控器日志输出使用
+            tab_display_main = f"第{round_count}轮-第{tab_idx}/{len(tab_list)}个({tab['name']})"
             tab_completed = False
 
             while not tab_completed:
@@ -406,7 +457,7 @@ def main_controller():
 
                 if not current_acc:
                     wait_sec = GLOBAL_CONFIG["wait_no_account_seconds"]
-                    logger.info("[调度/排队] 当前无可用兵力攻坚 | 目标Tab: [%s] | 挂起时长: [%d] 秒", tab["name"],
+                    logger.info("[调度/排队] 当前无可用兵力攻坚 | 目标Tab: [%s] | 挂起时长: [%d] 秒", tab_display_main,
                                 wait_sec)
                     time.sleep(wait_sec)
                     continue
@@ -419,15 +470,16 @@ def main_controller():
                 elif status == "RISK_CONTROL":
                     logger.warning(
                         "[调度/切换] 执行体被击溃(风控) | 牺牲账号: [%s] | 未竟目标: [%s] | 动作: 申请新账号接力",
-                        os.path.basename(current_acc), tab["name"])
+                        os.path.basename(current_acc), tab_display_main)
                 elif status == "ERROR":
                     logger.error("[调度/跳过] 执行体遭遇毁灭性系统报错 | 目标Tab: [%s] | 策略: 强制标记为完成并跳过",
-                                 tab["name"])
+                                 tab_display_main)
                     tab_completed = True
 
                 time.sleep(2)
 
-        logger.info("[系统/阶段里程碑] 🎉 ========== 全量路由矩阵遍历成功！准备开启下一轮镜像增量 ========== ")
+        logger.info(
+            f"[系统/阶段里程碑] 🎉 ========== 第 {round_count} 轮 全量路由矩阵遍历成功！准备开启下一轮镜像增量 ========== ")
 
 
 if __name__ == "__main__":
