@@ -47,8 +47,8 @@ GLOBAL_CONFIG = {
     "account_cooldown_minutes": 30,
     "wait_no_account_seconds": 60,
     "max_scrolls_per_tab": -1,  # 修改为 -1 表示直到连续10次无新请求则视为到底
-    "headless_mode": True,
-    "scroll_step_y": 3000,
+    "headless_mode": False,
+    "scroll_step_y": 6000,
     "scroll_interval": 2.0,
 }
 
@@ -338,7 +338,7 @@ def scrape_single_tab(user_data_dir, tab_info):
             if check_risk_control(page):
                 logger.warning("[采集/阻断] 入口页校验未通过 | 账号: [%s] | 结论: 已触发严格风控", acc_name)
                 return "RISK_CONTROL"
-
+            clear_popups(page)
             nav_container = page.locator('#brand-first-nav')
             nav_container.wait_for(state="visible", timeout=10000)
 
@@ -400,6 +400,84 @@ def scrape_single_tab(user_data_dir, tab_info):
     return "SUCCESS"
 
 
+def clear_popups(page):
+    """
+    具备多重降级策略的弹窗自动化清理函数 (适配动态混淆DOM)
+    """
+    logger.info("[UI交互] 正在执行多维度弹窗检测与清理...")
+
+    # 核心特征词汇，用于判断弹窗存在，以及作为定位锚点
+    popup_keywords = ["多人团限时优惠", "立即抢购", "限时优惠", "爆款商品"]
+
+    try:
+        # 给可能存在的弹窗动画预留足够渲染时间
+        page.wait_for_timeout(1500)
+
+        # --- 步骤 1：嗅探弹窗是否存在 ---
+        active_keyword = None
+        for keyword in popup_keywords:
+            if page.locator(f"text='{keyword}'").count() > 0 and page.locator(f"text='{keyword}'").first.is_visible():
+                active_keyword = keyword
+                break
+
+        if not active_keyword:
+            logger.info("[UI交互] 未检测到已知弹窗特征，页面环境安全")
+            return
+
+        logger.warning(f"[UI交互] 嗅探到活动弹窗阻塞 (关键字: {active_keyword})，启动清理链路")
+
+        # --- 步骤 2：策略 A - 基于DOM结构的精准狙击 (针对无特征的关闭图片) ---
+        # 逻辑：找到包含目标文字的弹窗大容器，然后去点容器里面的第一个 <img> 标签
+        logger.info("[UI交互] 尝试使用结构定位点击关闭图标...")
+
+        # 找到包含特定文字的 div 块，往上找一层容器，然后抓取里面的 img
+        # 注意：使用 Playwright 的 filter 功能过滤含有文本的区块
+        popup_container = page.locator("div").filter(has_text=active_keyword).last
+        close_img = popup_container.locator("img").first
+
+        if close_img.count() > 0 and close_img.is_visible():
+            close_img.click(force=True)  # 这里的 force=True 是安全的，因为是我们明确找出的关闭按钮
+            page.wait_for_timeout(1000)
+
+            # 校验是否关闭成功
+            if not page.locator(f"text='{active_keyword}'").is_visible():
+                logger.info("[UI交互] 结构定位关闭弹窗成功！")
+                return
+
+        # --- 步骤 3：策略 B - 备用常见选择器盲猜 ---
+        logger.info("[UI交互] 结构定位失效，尝试常见通用关闭特征...")
+        close_selectors = [
+            "text='关闭'", "text='跳过'",
+            "[class*='close' i]", "[class*='Close' i]", ".am-modal-close"
+        ]
+        for sel in close_selectors:
+            elements = page.locator(sel)
+            if elements.count() > 0 and elements.first.is_visible():
+                elements.first.click(force=True)
+                page.wait_for_timeout(800)
+                if not page.locator(f"text='{active_keyword}'").is_visible():
+                    return
+
+        # --- 步骤 4：策略 C - 键盘 ESC 退出 ---
+        logger.info("[UI交互] 按钮规则均未命中，尝试 ESC 退出")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(800)
+        if not page.locator(f"text='{active_keyword}'").is_visible():
+            return
+
+        # --- 步骤 5：策略 D - 物理遮罩层盲狙 (终极手段) ---
+        logger.info("[UI交互] 启动终极手段：尝试点击遮罩层盲区")
+        # 弹窗外的左上角(10, 10)通常是半透明遮罩层，点击即可触发关闭
+        page.mouse.click(10, 10)
+        page.wait_for_timeout(800)
+
+        if page.locator(f"text='{active_keyword}'").is_visible():
+            page.mouse.click(10, 200)  # 再换个侧边位置尝试
+
+    except Exception as e:
+        logger.error(f"[UI交互] 弹窗清理过程发生异常: {str(e)}")
+
+
 # ==============================================================================
 # 顶级进程控制器
 # ==============================================================================
@@ -447,6 +525,8 @@ def main_controller():
             tab["round"] = round_count
             tab["tab_index"] = tab_idx
             tab["total_tabs"] = len(tab_list)
+            # if "食品" not in tab['name']:
+            #     continue
 
             # 供主控器日志输出使用
             tab_display_main = f"第{round_count}轮-第{tab_idx}/{len(tab_list)}个({tab['name']})"
