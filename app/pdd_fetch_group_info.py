@@ -47,7 +47,7 @@ GLOBAL_CONFIG = {
     "account_cooldown_minutes": 30,
     "wait_no_account_seconds": 60,
     "max_scrolls_per_tab": -1,  # 修改为 -1 表示直到连续10次无新请求则视为到底
-    "headless_mode": False,
+    "headless_mode": True,
     "scroll_step_y": 6000,
     "scroll_interval": 2.0,
 }
@@ -164,6 +164,26 @@ def update_account_usage_time(account):
 # 核心抓取与 DOM 交互引擎
 # ==============================================================================
 
+def save_error_snapshot(page, tab_name, reason):
+    """【新增】保存异常页面截图与网页源码"""
+    try:
+        error_dir = "error_data"
+        os.makedirs(error_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 过滤掉tab_name中的非法文件路径字符
+        safe_tab_name = "".join([c for c in tab_name if c.isalnum() or c in ("_", "-")])
+        if not safe_tab_name: safe_tab_name = "unknown"
+
+        base_path = os.path.join(error_dir, f"{timestamp}_{safe_tab_name}_{reason}")
+
+        page.screenshot(path=f"{base_path}.png", full_page=True)
+        with open(f"{base_path}.html", "w", encoding="utf-8") as f:
+            f.write(page.content())
+        logger.info(f"[异常/快照] 已保存现场截图与源码: {base_path}")
+    except Exception as e:
+        logger.error(f"[异常/快照] 尝试保存现场失败: {str(e)}")
+
+
 def check_risk_control(page):
     """通过探查 DOM 核心元素判定是否遭遇风控拦截。"""
     try:
@@ -226,7 +246,7 @@ def scrape_single_tab(user_data_dir, tab_info):
     """
     单 Tab 深度遍历模块。
     入参 `tab_info` 必须包含核心 Key: ["index", "name"]，并预期携带 ["round", "tab_index", "total_tabs"] 等上下文。
-    出参: 状态码字符串 "SUCCESS" / "RISK_CONTROL" / "ERROR"
+    出参: (状态码字符串 "SUCCESS"/"RISK_CONTROL"/"ERROR", 统计字典)
     """
     target_index = tab_info["index"]
     tab_name = tab_info["name"]
@@ -337,7 +357,12 @@ def scrape_single_tab(user_data_dir, tab_info):
 
             if check_risk_control(page):
                 logger.warning("[采集/阻断] 入口页校验未通过 | 账号: [%s] | 结论: 已触发严格风控", acc_name)
-                return "RISK_CONTROL"
+                # 【修改】风控下若请求少于10次，依然捕获保存现场并打包状态返回
+                if api_response_count < 10:
+                    save_error_snapshot(page, tab_name, "风控拦截_请求不足10次")
+                return "RISK_CONTROL", {"scrolls": scroll_count, "requests": api_response_count,
+                                        "new": session_new_count, "update": session_update_count}
+
             clear_popups(page)
             nav_container = page.locator('#brand-first-nav')
             nav_container.wait_for(state="visible", timeout=10000)
@@ -359,7 +384,11 @@ def scrape_single_tab(user_data_dir, tab_info):
                 if check_risk_control(page) or hit_risk:
                     logger.warning("[采集/阻断] 滚动链路遭受拦截 | 账号: [%s] | 中断节点: 第 [%d] 次滑动", acc_name,
                                    scroll_count + 1)
-                    return "RISK_CONTROL"
+                    # 【修改】滑动中途风控若请求少于10次，捕获保存现场并打包状态返回
+                    if api_response_count < 10:
+                        save_error_snapshot(page, tab_name, "滑动拦截_请求不足10次")
+                    return "RISK_CONTROL", {"scrolls": scroll_count, "requests": api_response_count,
+                                            "new": session_new_count, "update": session_update_count}
 
                 page.mouse.wheel(0, GLOBAL_CONFIG["scroll_step_y"])
                 scroll_count += 1
@@ -387,17 +416,26 @@ def scrape_single_tab(user_data_dir, tab_info):
                                     tab_display)
                         break
 
+            # 【修改】整个正常滑动结束后，如果单次tab捕捉请求少于10次，依然视为异常情况捕捉页面
+            if api_response_count < 10:
+                save_error_snapshot(page, tab_name, "正常结束_请求不足10次")
+
         except Exception as e:
             logger.error("[采集/崩溃] 页面渲染或交互异常 | Tab: [%s] | 错误详情: %s", tab_display, str(e))
-            return "ERROR"
+            # 【修改】捕获明确报错异常并打包状态返回
+            save_error_snapshot(page, tab_name, "代码崩溃异常")
+            return "ERROR", {"scrolls": scroll_count, "requests": api_response_count, "new": session_new_count,
+                             "update": session_update_count}
         finally:
             context.close()
 
-    # 此处在原基础上增加了 [下滑次数: %d] 和 [捕捉请求: %d]
     logger.info(
         "[采集/完毕] 单一Tab节点作业结束 | Tab: [%s] | 汇总 -> 下滑次数: [%d], 捕捉请求: [%d], 新增: [%d], 更新: [%d]",
         tab_display, scroll_count, api_response_count, session_new_count, session_update_count)
-    return "SUCCESS"
+
+    # 【修改】将所需的数据通过 tuple 返回，便于主流程进行后续的总览统计
+    return "SUCCESS", {"scrolls": scroll_count, "requests": api_response_count, "new": session_new_count,
+                       "update": session_update_count}
 
 
 def clear_popups(page):
@@ -498,6 +536,9 @@ def main_controller():
         logger.info(f"[调度/主环] ========== 开始全局新世代遍历 (第 {round_count} 轮) ==========")
         tab_list = None
 
+        # 【修改】初始化本轮全量数据统计表
+        round_tab_stats = []
+
         while not tab_list:
             acc = get_available_account(pdd_browser_data_list)
             if not acc:
@@ -525,12 +566,16 @@ def main_controller():
             tab["round"] = round_count
             tab["tab_index"] = tab_idx
             tab["total_tabs"] = len(tab_list)
-            # if "食品" not in tab['name']:
-            #     continue
 
             # 供主控器日志输出使用
             tab_display_main = f"第{round_count}轮-第{tab_idx}/{len(tab_list)}个({tab['name']})"
             tab_completed = False
+
+            # 【修改】初始化单 Tab 累加数据（适配该 Tab 抓取中途可能遭遇风控导致进行多次重试抓取的情况）
+            tab_total_scrolls = 0
+            tab_total_requests = 0
+            tab_total_new = 0
+            tab_total_update = 0
 
             while not tab_completed:
                 current_acc = get_available_account(pdd_browser_data_list)
@@ -543,7 +588,15 @@ def main_controller():
                     continue
 
                 update_account_usage_time(current_acc)
-                status = scrape_single_tab(current_acc, tab)
+
+                # 【修改】解析返回的状态与数据字典
+                status, stats = scrape_single_tab(current_acc, tab)
+
+                # 【修改】将该次任务中搜集到的数据进行累加
+                tab_total_scrolls += stats.get("scrolls", 0)
+                tab_total_requests += stats.get("requests", 0)
+                tab_total_new += stats.get("new", 0)
+                tab_total_update += stats.get("update", 0)
 
                 if status == "SUCCESS":
                     tab_completed = True
@@ -558,6 +611,28 @@ def main_controller():
 
                 time.sleep(2)
 
+            # 【修改】将该 Tab 彻底完工后的最终数据打包装入大轮统计表中
+            round_tab_stats.append({
+                "tab_name": tab['name'],
+                "scrolls": tab_total_scrolls,
+                "requests": tab_total_requests,
+                "new": tab_total_new,
+                "update": tab_total_update
+            })
+
+        # 【修改】每一个大轮次完成后，统一输出本轮所有Tab的总览聚合数据
+        logger.info(f"[系统/概览数据] ========== 第 {round_count} 轮 各Tab数据汇总概览 ==========")
+        total_scrolls = total_requests = total_new = total_update = 0
+        for s in round_tab_stats:
+            logger.info(
+                f"  -> Tab: [{s['tab_name']}] | 滑动次数: {s['scrolls']} | 捕捉请求: {s['requests']} | 新增个数: {s['new']} | 更新个数: {s['update']}")
+            total_scrolls += s['scrolls']
+            total_requests += s['requests']
+            total_new += s['new']
+            total_update += s['update']
+
+        logger.info(
+            f"[系统/概览数据] 第 {round_count} 轮 总体大盘统计 -> 滑动总计: {total_scrolls} | 捕捉总计: {total_requests} | 新增总计: {total_new} | 更新总计: {total_update}")
         logger.info(
             f"[系统/阶段里程碑] 🎉 ========== 第 {round_count} 轮 全量路由矩阵遍历成功！准备开启下一轮镜像增量 ========== ")
 
