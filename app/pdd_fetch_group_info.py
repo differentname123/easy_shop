@@ -357,7 +357,6 @@ def scrape_single_tab(user_data_dir, tab_info):
 
             if check_risk_control(page):
                 logger.warning("[采集/阻断] 入口页校验未通过 | 账号: [%s] | 结论: 已触发严格风控", acc_name)
-                # 【修改】风控下若请求少于10次，依然捕获保存现场并打包状态返回
                 if api_response_count < 10:
                     save_error_snapshot(page, tab_name, "风控拦截_请求不足10次")
                 return "RISK_CONTROL", {"scrolls": scroll_count, "requests": api_response_count,
@@ -367,10 +366,43 @@ def scrape_single_tab(user_data_dir, tab_info):
             nav_container = page.locator('#brand-first-nav')
             nav_container.wait_for(state="visible", timeout=10000)
 
-            target_tab_element = nav_container.locator('> div').nth(target_index)
-            target_tab_element.scroll_into_view_if_needed()
-            target_tab_element.click(force=True)
+            # ================== 【核心修复：防误触与滚动偏移】 ==================
+            # 1. 放弃基于 index 的盲点，改用精确的文本匹配
+            target_tab_element = nav_container.locator(f"div:has-text('{tab_name}')").last
+
+            # 2. 针对移动端横向溢出滑动，使用 JS 原生 scrollIntoView 将元素滑动到屏幕中间
+            target_tab_element.evaluate(
+                "el => el.scrollIntoView({behavior: 'smooth', inline: 'center', block: 'nearest'})")
+            time.sleep(1.5)  # 等待平滑滚动完成
+
+            # 3. 正常点击
+            target_tab_element.click()
             time.sleep(3.5)
+
+            # 4. 校验点击是否真正生效（拼多多激活的Tab通常字体会变红或者透明度变1）
+            active_tab_js = """
+            () => {
+                let allTabs = document.querySelectorAll('#brand-first-nav p._HMdTEKT');
+                for(let t of allTabs){
+                    let style = window.getComputedStyle(t);
+                    // 检查文字颜色是否为红色或透明度是否为1
+                    if(style.color === 'rgb(243, 58, 80)' || style.opacity === '1') {
+                        return t.innerText.trim();
+                    }
+                }
+                return "";
+            }
+            """
+            try:
+                actual_active_tab = page.evaluate(active_tab_js)
+                if actual_active_tab and tab_name not in actual_active_tab:
+                    logger.warning("[采集/纠偏] 欲点 [%s] 但实际激活 [%s]！触发强制重试点击", tab_name,
+                                   actual_active_tab)
+                    target_tab_element.click(force=True)
+                    time.sleep(2.5)
+            except Exception as e:
+                logger.debug("[采集/纠偏] 校验激活态跳过 (忽略错误: %s)", str(e))
+            # ====================================================================
 
             max_scrolls = GLOBAL_CONFIG["max_scrolls_per_tab"]
             no_new_req_count = 0
@@ -384,7 +416,6 @@ def scrape_single_tab(user_data_dir, tab_info):
                 if check_risk_control(page) or hit_risk:
                     logger.warning("[采集/阻断] 滚动链路遭受拦截 | 账号: [%s] | 中断节点: 第 [%d] 次滑动", acc_name,
                                    scroll_count + 1)
-                    # 【修改】滑动中途风控若请求少于10次，捕获保存现场并打包状态返回
                     if api_response_count < 10:
                         save_error_snapshot(page, tab_name, "滑动拦截_请求不足10次")
                     return "RISK_CONTROL", {"scrolls": scroll_count, "requests": api_response_count,
@@ -403,6 +434,15 @@ def scrape_single_tab(user_data_dir, tab_info):
 
                 time.sleep(GLOBAL_CONFIG["scroll_interval"])
 
+                # ================== 【核心修复：探测底部标识语】 ==================
+                try:
+                    if page.locator("text='没有更多商品了~'").is_visible(timeout=500):
+                        logger.info("[采集/到底] 页面已明确提示到底，安全退出 | Tab: [%s]", tab_display)
+                        break
+                except Exception:
+                    pass
+                # ==================================================================
+
                 # 当模式为 -1 时，利用 XHR 请求计数判定是否到底
                 if max_scrolls == -1:
                     if api_response_count > last_api_count:
@@ -416,13 +456,18 @@ def scrape_single_tab(user_data_dir, tab_info):
                                     tab_display)
                         break
 
-            # 【修改】整个正常滑动结束后，如果单次tab捕捉请求少于10次，依然视为异常情况捕捉页面
-            if api_response_count < 10:
-                save_error_snapshot(page, tab_name, "正常结束_请求不足10次")
+            # ================== 【核心修复：优化到底的快照规则】 ==================
+            try:
+                is_end_marked = page.locator("text='没有更多商品了~'").is_visible(timeout=500)
+            except Exception:
+                is_end_marked = False
+
+            if api_response_count < 10 and not is_end_marked:
+                save_error_snapshot(page, tab_name, f"异常_仅捕获{api_response_count}次请求且未到底")
+            # ==================================================================
 
         except Exception as e:
             logger.error("[采集/崩溃] 页面渲染或交互异常 | Tab: [%s] | 错误详情: %s", tab_display, str(e))
-            # 【修改】捕获明确报错异常并打包状态返回
             save_error_snapshot(page, tab_name, "代码崩溃异常")
             return "ERROR", {"scrolls": scroll_count, "requests": api_response_count, "new": session_new_count,
                              "update": session_update_count}
@@ -433,10 +478,8 @@ def scrape_single_tab(user_data_dir, tab_info):
         "[采集/完毕] 单一Tab节点作业结束 | Tab: [%s] | 汇总 -> 下滑次数: [%d], 捕捉请求: [%d], 新增: [%d], 更新: [%d]",
         tab_display, scroll_count, api_response_count, session_new_count, session_update_count)
 
-    # 【修改】将所需的数据通过 tuple 返回，便于主流程进行后续的总览统计
     return "SUCCESS", {"scrolls": scroll_count, "requests": api_response_count, "new": session_new_count,
                        "update": session_update_count}
-
 
 def clear_popups(page):
     """
