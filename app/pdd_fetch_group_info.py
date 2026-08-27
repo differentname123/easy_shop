@@ -207,8 +207,11 @@ def get_tab_list(user_data_dir):
         page = context.pages[0] if context.pages else context.new_page()
 
         try:
-            page.goto(GLOBAL_CONFIG["target_url"])
-            page.wait_for_load_state("networkidle")
+            # 【修改 1】：干掉 networkidle，改为 domcontentloaded，DOM 结构出来就放行
+            page.goto(GLOBAL_CONFIG["target_url"], wait_until="domcontentloaded")
+
+            # 【修改 2】：显式等待核心导航栏出现，而不是等网络完全安静
+            page.locator('#brand-first-nav').wait_for(state="visible", timeout=15000)
             time.sleep(3)
 
             if check_risk_control(page):
@@ -222,14 +225,14 @@ def get_tab_list(user_data_dir):
                     let name = tab.innerText.replace('\\n', '').trim();
                     if (!name) {
                         const img = tab.querySelector('img');
-                        name = img ? (img.getAttribute('alt') || "图片标签") : "";
+                        // 【修改 3】：增强鲁棒性，优先取 aria-label 属性，防止纯图片 Tab 全部变成"图片标签"
+                        name = img ? (img.getAttribute('aria-label') || img.getAttribute('alt') || "图片标签_" + index) : "";
                     }
-                    return { index: index, name: name || `未知标签_${index}` };
+                    return { index: index, name: name.trim() || `未知标签_${index}` };
                 });
             }
             """
 
-            page.locator('#brand-first-nav').wait_for(state="visible", timeout=10000)
             tab_list = page.evaluate(js_extract_code)
             logger.info("[探测/路由] Tab解析完成 | 账号: [%s] | 结果: 提取到 [%d] 个分类", acc_name, len(tab_list))
             return tab_list
@@ -245,13 +248,10 @@ def get_tab_list(user_data_dir):
 def scrape_single_tab(user_data_dir, tab_info):
     """
     单 Tab 深度遍历模块。
-    入参 `tab_info` 必须包含核心 Key: ["index", "name"]，并预期携带 ["round", "tab_index", "total_tabs"] 等上下文。
-    出参: (状态码字符串 "SUCCESS"/"RISK_CONTROL"/"ERROR"/"PAGE_MISMATCH", 统计字典)
     """
     target_index = tab_info["index"]
     tab_name = tab_info["name"]
 
-    # 构造带轮次和序号的显示用名称，以便更好排查日志
     round_info = tab_info.get("round", 1)
     tab_idx = tab_info.get("tab_index", 1)
     total_tabs = tab_info.get("total_tabs", 1)
@@ -264,29 +264,24 @@ def scrape_single_tab(user_data_dir, tab_info):
 
     seen_goods_dict = load_existing_goods_dict(output_csv)
 
-    # 提前定义统计变量，保证最后打印日志时可直接调用
     session_new_count = 0
     session_update_count = 0
     hit_risk = False
-    api_response_count = 0  # 追踪有效拦截到的目标 API 数量
-    scroll_count = 0  # 追踪总下滑次数
+    api_response_count = 0
+    scroll_count = 0
 
     def handle_response(response):
-        """XHR 拦截闭包，利用早期返回（Early Return）过滤无效报文"""
         nonlocal session_new_count, session_update_count, hit_risk, api_response_count
-
-        # 卫语句：拦截非目标与失败请求
         if "brand-group-home/home/goods_list" not in response.url or response.status != 200:
             return
 
-        api_response_count += 1  # 无论是否带有新数据，都记录拦截到了目标请求
+        api_response_count += 1
 
         try:
             data = response.json()
         except Exception:
-            return  # 容错：服务端返回脏JSON无法解析，直接跳过
+            return
 
-        # 卫语句：拦截无效结构
         if not data.get("success") or "result" not in data:
             return
 
@@ -297,7 +292,6 @@ def scrape_single_tab(user_data_dir, tab_info):
         if not goods_list:
             return
 
-        # 核心逻辑全局屏障：防止服务端极度畸形数据引发抛错，导致后台异步监听器彻底崩溃
         try:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             batch_new, batch_update = 0, 0
@@ -307,14 +301,13 @@ def scrape_single_tab(user_data_dir, tab_info):
                 if not goods_id:
                     continue
 
-                # 防御性转换：防止服务端返回 None 导致计算崩溃
                 origin_price_raw = item.get("origin_price") or 0
                 activity_price_raw = item.get("activity_price") or 0
                 reduce_price_raw = item.get("group_order_price_reduce") or 0
 
                 parsed_item = {
                     "商品ID": goods_id,
-                    "所属标签": tab_name,  # 数据入库时，依旧保持纯净标签名
+                    "所属标签": tab_name,
                     "商品名称": item.get("goods_name", ""),
                     "品牌": item.get("brand_name", ""),
                     "原价(元)": origin_price_raw / 100,
@@ -338,21 +331,23 @@ def scrape_single_tab(user_data_dir, tab_info):
             if batch_new > 0 or batch_update > 0:
                 logger.info("[采集/拦截] 解析有效数据流 | Tab: [%s] | 本批新增: [%d] 本批更新: [%d] | 库容: [%d]",
                             tab_display, batch_new, batch_update, len(seen_goods_dict))
-
                 save_to_csv_atomic(seen_goods_dict, output_csv)
 
         except Exception as e:
             logger.error("[采集/拦截] 解析数据流发生未捕获异常 | Tab: [%s] | 错误: %s", tab_display, str(e))
 
-    # ---------------- 页面导航与滑动主流程 ----------------
     with sync_playwright() as p:
         context = launch_persistent_context(p, user_data_dir=user_data_dir, headless=GLOBAL_CONFIG["headless_mode"])
         page = context.pages[0] if context.pages else context.new_page()
         page.on("response", handle_response)
 
         try:
-            page.goto(GLOBAL_CONFIG["target_url"])
-            page.wait_for_load_state("networkidle")
+            # 【修改 4】：干掉 networkidle，改为 domcontentloaded
+            page.goto(GLOBAL_CONFIG["target_url"], wait_until="domcontentloaded")
+
+            # 【修改 5】：改为显式等待核心容器渲染
+            nav_container = page.locator('#brand-first-nav')
+            nav_container.wait_for(state="visible", timeout=15000)
             time.sleep(3)
 
             if check_risk_control(page):
@@ -363,23 +358,22 @@ def scrape_single_tab(user_data_dir, tab_info):
                                         "new": session_new_count, "update": session_update_count}
 
             clear_popups(page)
-            nav_container = page.locator('#brand-first-nav')
-            nav_container.wait_for(state="visible", timeout=10000)
 
+            # 重新确保容器处于可见态（弹窗清理后可能会有一瞬间遮挡）
+            nav_container.wait_for(state="visible", timeout=5000)
             target_tab_element = nav_container.locator('> div').nth(target_index)
-            target_tab_element.scroll_into_view_if_needed()
 
-            # 【修改 1】：废弃 force=True，改用 evaluate 原生 JS 点击，避免被搜索悬浮框拦截导致穿透
+            # 【修改 6】：彻底删掉 scroll_into_view_if_needed()！
+            # 因为原生 CSS `overflow: hidden` 会导致它抛出超时异常。
+            # 下方的 evaluate("node => node.click()") 是原生 JS 注入点击，完全不需要元素在可视区域内。
             target_tab_element.evaluate("node => node.click()")
             time.sleep(3.5)
 
-            # 【新增 2】：验证是否误入搜索页面 (查探是否有搜索输入框特征出现)
             if page.locator("input[type='search']").count() > 0 and page.locator(
                     "input[type='search']").first.is_visible():
                 logger.warning("[采集/偏航] 点击Tab后误入搜索页面，判定UI交互失败 | 账号: [%s] | Tab: [%s]", acc_name,
                                tab_display)
                 save_error_snapshot(page, tab_name, "异常跑偏_误入搜索页")
-                # 立即中止当前Tab采集，返回专用的跑偏状态码
                 return "PAGE_MISMATCH", {"scrolls": scroll_count, "requests": api_response_count,
                                          "new": session_new_count, "update": session_update_count}
 
@@ -388,7 +382,6 @@ def scrape_single_tab(user_data_dir, tab_info):
             last_api_count = api_response_count
 
             while True:
-                # 定量滑动退出条件
                 if max_scrolls != -1 and scroll_count >= max_scrolls:
                     break
 
@@ -413,7 +406,6 @@ def scrape_single_tab(user_data_dir, tab_info):
 
                 time.sleep(GLOBAL_CONFIG["scroll_interval"])
 
-                # 当模式为 -1 时，利用 XHR 请求计数判定是否到底
                 if max_scrolls == -1:
                     if api_response_count > last_api_count:
                         no_new_req_count = 0
@@ -426,7 +418,6 @@ def scrape_single_tab(user_data_dir, tab_info):
                                     tab_display)
                         break
 
-            # 正常滑动结束后，如果单次tab捕捉请求少于10次，依然视为异常情况捕捉页面
             if api_response_count < 10:
                 save_error_snapshot(page, tab_name, "正常结束_请求不足10次")
 
@@ -438,7 +429,6 @@ def scrape_single_tab(user_data_dir, tab_info):
         finally:
             context.close()
 
-    # 【新增 3】：兜底拦截。即使流程正常走完，但只要一次目标API都没拦截到，必然是跑偏了(空转)
     if api_response_count == 0:
         logger.error("[采集/空转] 整个生命周期未拦截到任何目标请求，疑似页面跑偏 | Tab: [%s]", tab_display)
         return "PAGE_MISMATCH", {"scrolls": scroll_count, "requests": api_response_count, "new": session_new_count,
