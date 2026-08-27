@@ -604,10 +604,18 @@ def main_controller():
                 if status == "SUCCESS":
                     tab_completed = True
 
-                # 【修改：聚合风控与跑偏的重试逻辑，并引入熔断器】
-                elif status in ["RISK_CONTROL", "PAGE_MISMATCH"]:
+                # 【修改：将所有非 SUCCESS 状态全部统一收口为最多3次重试】
+                else:
                     tab_retry_count += 1
-                    reason = "触发风控" if status == "RISK_CONTROL" else "UI跑偏或空转"
+
+                    if status == "RISK_CONTROL":
+                        reason = "触发风控"
+                    elif status == "PAGE_MISMATCH":
+                        reason = "UI跑偏或空转"
+                    elif status == "ERROR":
+                        reason = "系统崩溃异常"
+                    else:
+                        reason = f"未知异常状态({status})"
 
                     if tab_retry_count >= MAX_RETRY_PER_TAB:
                         logger.error(
@@ -618,11 +626,6 @@ def main_controller():
                         logger.warning(
                             "[调度/切换] 执行体失利 | 原因: [%s] | 牺牲账号: [%s] | 目标Tab: [%s] | 进度: 重试 [%d/%d] | 动作: 申请新账号接力",
                             reason, os.path.basename(current_acc), tab_display_main, tab_retry_count, MAX_RETRY_PER_TAB)
-
-                elif status == "ERROR":
-                    logger.error("[调度/跳过] 执行体遭遇毁灭性系统报错 | 目标Tab: [%s] | 策略: 强制标记为完成并跳过",
-                                 tab_display_main)
-                    tab_completed = True
 
                 time.sleep(2)
 
@@ -648,6 +651,7 @@ def main_controller():
             f"[系统/概览数据] 第 {round_count} 轮 总体大盘统计 -> 滑动总计: {total_scrolls} | 捕捉总计: {total_requests} | 新增总计: {total_new} | 更新总计: {total_update}")
         logger.info(
             f"[系统/阶段里程碑] 🎉 ========== 第 {round_count} 轮 全量路由矩阵遍历成功！准备开启下一轮镜像增量 ========== ")
+
 
 if __name__ == "__main__":
     main_controller()
