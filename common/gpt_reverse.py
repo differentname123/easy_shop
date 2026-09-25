@@ -6,7 +6,7 @@ from openai import OpenAI
 # 连接你本机的 EasyCLIProxyAPI 网关
 client = OpenAI(
     base_url="http://127.0.0.1:8317/v1",
-    api_key="123456",
+    api_key="sk-7a5c7ec7086b49ca9bd1f002621d0bec",
     timeout=60.0
 )
 
