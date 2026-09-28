@@ -5,7 +5,7 @@ from openai import OpenAI
 
 # 连接你本机的 EasyCLIProxyAPI 网关
 client = OpenAI(
-    base_url="http://127.0.0.1:8317/v1",
+    base_url="http://127.0.0.1:8083/v1",
     api_key="sk-7a5c7ec7086b49ca9bd1f002621d0bec",
     timeout=60.0
 )
@@ -20,8 +20,7 @@ def run_full_benchmark():
     text_models = [m for m in detected_models if not m.startswith("gpt-image")]
     image_models = [m for m in detected_models if m.startswith("gpt-image")]
 
-    # 额外加入 Plus 账号专属的 3 个高阶旗舰模型进行探测
-    plus_flagship_models = ["gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol"]
+    plus_flagship_models = []
     for pm in plus_flagship_models:
         if pm not in text_models:
             text_models.append(pm)

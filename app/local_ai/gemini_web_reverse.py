@@ -4,7 +4,7 @@ from openai import OpenAI
 # 注意：如果您的 Python 代码和该服务不在同一台机器上，请将 127.0.0.1 替换为实际的服务器 IP 地址
 client = OpenAI(
     api_key="sk-7a5c7ec7086b49ca9bd1f002621d0bec", #[cite: 1]
-    base_url="http://127.0.0.1:2048/v1" #[cite: 1]
+    base_url="http://127.0.0.1:8083/v1" #[cite: 1]
 )
 
 # 发起聊天请求
