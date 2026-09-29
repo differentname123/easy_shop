@@ -10,11 +10,11 @@ from openai import OpenAI
 # 1. 配置待探测的 API 列表与全局参数
 # ==========================================
 API_CONFIGS = [
-    {
-        "base_url": "http://127.0.0.1:8317/v1",
-        "name": "antigravity_codex_web",
-        "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
-    },
+    # {
+    #     "base_url": "http://127.0.0.1:8317/v1",
+    #     "name": "antigravity_codex_web",
+    #     "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
+    # },
 
 
     # {
@@ -23,12 +23,12 @@ API_CONFIGS = [
     #     "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
     # },
 
-    #
-    # {
-    #     "base_url": "http://127.0.0.1:3000/v1",
-    #     "name": "chatgpt_web",
-    #     "api_key": "sk-my-local-key"
-    # },
+
+    {
+        "base_url": "http://127.0.0.1:3000/v1",
+        "name": "chatgpt_web",
+        "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
+    },
     # {
     #     "base_url": "http://127.0.0.1:8083/v1",
     #     "name": "gemini_web",
