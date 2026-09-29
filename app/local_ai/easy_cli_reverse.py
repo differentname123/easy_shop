@@ -11,14 +11,14 @@ from openai import OpenAI
 # ==========================================
 API_CONFIGS = [
     {
-        "base_url": "http://127.0.0.1:8317//v1",
+        "base_url": "http://127.0.0.1:8317/v1",
         "name": "antigravity_codex_web",
         "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
     },
 
 
     # {
-    #     "base_url": "http://127.0.0.1:2048//v1",
+    #     "base_url": "http://127.0.0.1:2048/v1",
     #     "name": "aistudio_web",
     #     "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
     # },
