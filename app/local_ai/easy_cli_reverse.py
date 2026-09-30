@@ -2,6 +2,7 @@ import re
 import time
 import base64
 import httpx
+import mimetypes
 from datetime import datetime
 from pathlib import Path
 from openai import OpenAI
@@ -16,24 +17,23 @@ API_CONFIGS = [
     #     "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
     # },
 
-
     # {
     #     "base_url": "http://127.0.0.1:2048/v1",
     #     "name": "aistudio_web",
     #     "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
     # },
 
-
-    {
-        "base_url": "http://127.0.0.1:3000/v1",
-        "name": "chatgpt_web",
-        "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
-    },
+    #
     # {
-    #     "base_url": "http://127.0.0.1:8083/v1",
-    #     "name": "gemini_web",
+    #     "base_url": "http://127.0.0.1:3000/v1",
+    #     "name": "chatgpt_web",
     #     "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
     # },
+    {
+        "base_url": "http://127.0.0.1:8083/v1",
+        "name": "gemini_web",
+        "api_key": "sk-7a5c7ec7086b49ca9bd1f002621d0bec"
+    },
 ]
 
 TIMEOUT_SECONDS = 180.0
@@ -43,6 +43,18 @@ BASE_DIR = Path(__file__).parent
 TEXT_PROMPT = "请用一句话（50字以内）解释什么是『Python闭包』，直接输出纯文字解释。"
 MEDIA_PROMPT = "请直接创作：一只戴着霓虹墨镜的赛博朋克猫。"
 CANVAS_PROMPT = "请直接输出一个完整的包含 <!DOCTYPE html> 和 <html> 标签的极简赛博朋克风 Hello World 网页代码，不要输出任何额外解释。"
+
+# [新增] 附件测试专用提示词与测试文件列表
+ATTACHMENT_PROMPT = "请按顺序描述我上传的每个附件的内容或特征，并明确告诉我一共上传了多少个文件。直接回答即可。"
+TEST_FILES = [
+    # 请在脚本同目录下放入测试文件，取消注释即可测试。例如：
+
+    "test.jpg",
+    "test.txt",
+    "录制.mp4",
+
+    "report_gemini_web.md"
+]
 
 # Google 内部虚拟占位符正则（不带子域名的 http://googleusercontent.com/... 均非真实公网链接）
 FAKE_PLACEHOLDER_RE = re.compile(r"https?://googleusercontent\.com/[a-zA-Z0-9_/-]+")
@@ -75,6 +87,8 @@ def detect_ext_by_bytes(data: bytes, content_type: str = "", url: str = "") -> t
             return "音频", "mp3"
         if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
             return "音频", "wav"
+        if b"%PDF-" in data[:1024]:  # 新增PDF文件头识别
+            return "文档", "pdf"
 
     # 2. 兜底通过 Content-Type 或 URL 后缀识别
     if "video" in ctype or url_lower.endswith((".mp4", ".mov", ".webm")):
@@ -83,6 +97,8 @@ def detect_ext_by_bytes(data: bytes, content_type: str = "", url: str = "") -> t
         return "音频", "mp3"
     if "image" in ctype or url_lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
         return "图片", "jpg" if "jpeg" in ctype or url_lower.endswith(".jpg") else "png"
+    if "pdf" in ctype or url_lower.endswith(".pdf"):
+        return "文档", "pdf"
 
     return "未知媒体", "bin"
 
@@ -144,12 +160,54 @@ def classify_and_save(reply: str, output_dir: Path, model_name: str) -> tuple[st
     return "纯文本模型", clean_note
 
 
-def call_chat_stream(client: OpenAI, model_name: str, prompt: str) -> tuple[str, float | None, float]:
+# [新增] 将本地文件转为 OpenAI 标准的多模态消息结构
+# [修改] 组装包含多个附件的消息体，并附加上真实的文件名提示
+def prepare_attachment_message(prompt: str, file_paths: list[str]) -> list[dict]:
+    content = []
+
+    # 按顺序处理所有附件
+    for i, file_path in enumerate(file_paths):
+        p = Path(file_path)
+        if not p.exists():
+            print(f"\n    ⚠️ 警告: 测试文件不存在，已跳过 {file_path}", end="")
+            continue
+
+        mime_type, _ = mimetypes.guess_type(str(p))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        with open(p, "rb") as f:
+            file_b64 = base64.b64encode(f.read()).decode('utf-8')
+
+        data_uri = f"data:{mime_type};base64,{file_b64}"
+
+        # 【关键新增】：在每个媒体块之前，插入一个纯文本块告诉模型文件名
+        content.append({
+            "type": "text",
+            "text": f"[系统提示：这是用户上传的第 {i + 1} 个文件，文件名为 `{p.name}`]"
+        })
+
+        # 然后再压入实际的文件数据
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": data_uri}
+        })
+
+    # 最后附加上文本 Prompt
+    content.append({
+        "type": "text",
+        "text": prompt
+    })
+
+    return [{"role": "user", "content": content}]
+
+# [修改] 改为接收完整的 messages 参数以支持多模态数组
+def call_chat_stream(client: OpenAI, model_name: str, messages: list) -> tuple[str, float | None, float]:
     """执行单次 Chat 流式请求，返回 (完整回复, 首字耗时, 总耗时)"""
     start_time = time.time()
     response = client.chat.completions.create(
         model=model_name,
-        messages=[{"role": "user", "content": prompt}],
+        messages=messages,
         stream=True
     )
     first_token_time = None
@@ -167,7 +225,8 @@ def select_initial_prompt(model_name: str) -> str:
     m_lower = model_name.lower()
     if any(k in m_lower for k in ("canvas", "html", "artifact")):
         return CANVAS_PROMPT
-    if any(k in m_lower for k in ("image", "img", "video", "veo", "sora", "music", "audio", "flux", "dall", "wanx", "paint", "draw")):
+    if any(k in m_lower for k in
+           ("image", "img", "video", "veo", "sora", "music", "audio", "flux", "dall", "wanx", "paint", "draw")):
         return MEDIA_PROMPT
     return TEXT_PROMPT
 
@@ -177,17 +236,43 @@ def test_single_model(client: OpenAI, model_name: str, output_dir: Path) -> dict
     prompt = select_initial_prompt(model_name)
     start_time = time.time()
 
+    is_attachment_test = False
+    # 若模型被判定为纯文本问答，且用户配置了测试文件，则构造包含文件的多模态请求
+    if prompt == TEXT_PROMPT and len(TEST_FILES) > 0:
+        messages = prepare_attachment_message(ATTACHMENT_PROMPT, TEST_FILES)
+        is_attachment_test = True
+    else:
+        # 单文本请求保持原结构
+        messages = [{"role": "user", "content": prompt}]
+
     try:
-        full_reply, ttft, total_time = call_chat_stream(client, model_name, prompt)
+        full_reply, ttft, total_time = call_chat_stream(client, model_name, messages)
     except Exception as first_err:
         err_str = str(first_err)
         err_lower = err_str.lower()
         elapsed = time.time() - start_time
 
-        # 自适应重试1：若未知名称的模型在纯文本探针下报「缺少HTML/Canvas」，自动换用 CANVAS_PROMPT 重试
-        if prompt == TEXT_PROMPT and ("html" in err_lower or "canvas" in err_lower):
+        # [新增] 降级逻辑：如果传文件导致此模型报错（比如该模型不支持视觉），回退到原有的纯文本测试
+        if is_attachment_test:
             try:
-                full_reply, ttft, total_time = call_chat_stream(client, model_name, CANVAS_PROMPT)
+                print(f"\n    ⚠️ 附件测试被拒 ({err_str.splitlines()[0][:40]}...)，降级至纯文本探测...", end="",
+                      flush=True)
+                is_attachment_test = False
+                prompt = TEXT_PROMPT
+                messages = [{"role": "user", "content": prompt}]
+                start_time = time.time()
+                full_reply, ttft, total_time = call_chat_stream(client, model_name, messages)
+                elapsed = time.time() - start_time
+            except Exception as fallback_err:
+                err_str = str(fallback_err)
+                err_lower = err_str.lower()
+                elapsed = time.time() - start_time
+
+        # 自适应重试1：若未知名称的模型在纯文本探针下报「缺少HTML/Canvas」，自动换用 CANVAS_PROMPT 重试
+        if not 'full_reply' in locals() and prompt == TEXT_PROMPT and ("html" in err_lower or "canvas" in err_lower):
+            try:
+                full_reply, ttft, total_time = call_chat_stream(client, model_name,
+                                                                [{"role": "user", "content": CANVAS_PROMPT}])
             except Exception as retry_err:
                 return {
                     "model": model_name, "type": "探测失败", "status": "❌ 失败",
@@ -196,9 +281,11 @@ def test_single_model(client: OpenAI, model_name: str, output_dir: Path) -> dict
                 }
 
         # 自适应重试2：若未知名称的模型在纯文本探针下报「缺少图片/视频/媒体」，自动换用 MEDIA_PROMPT 重试
-        elif prompt == TEXT_PROMPT and any(k in err_lower for k in ("image", "video", "media", "generation")):
+        elif not 'full_reply' in locals() and prompt == TEXT_PROMPT and any(
+                k in err_lower for k in ("image", "video", "media", "generation")):
             try:
-                full_reply, ttft, total_time = call_chat_stream(client, model_name, MEDIA_PROMPT)
+                full_reply, ttft, total_time = call_chat_stream(client, model_name,
+                                                                [{"role": "user", "content": MEDIA_PROMPT}])
             except Exception as retry_err:
                 return {
                     "model": model_name, "type": "探测失败", "status": "❌ 失败",
@@ -207,7 +294,8 @@ def test_single_model(client: OpenAI, model_name: str, output_dir: Path) -> dict
                 }
 
         # 自适应重试3：若快速报错且非网关内部提取错误，尝试 /v1/images/generations 专用画图接口
-        elif elapsed < 15.0 and not any(k in err_lower for k in ("timed out", "canvas", "artifact", "media generation")):
+        elif not 'full_reply' in locals() and elapsed < 15.0 and not any(
+                k in err_lower for k in ("timed out", "canvas", "artifact", "media generation")):
             try:
                 img_start = time.time()
                 img_resp = client.images.generate(
@@ -243,14 +331,14 @@ def test_single_model(client: OpenAI, model_name: str, output_dir: Path) -> dict
                     "ttft": "N/A", "total_time": f"{elapsed:.2f}s",
                     "note": err_str.splitlines()[0][:65].replace("|", "/")
                 }
-        else:
+        elif not 'full_reply' in locals():
             return {
                 "model": model_name, "type": "探测失败", "status": "❌ 失败",
                 "ttft": "N/A", "total_time": f"{elapsed:.2f}s",
                 "note": err_str.splitlines()[0][:65].replace("|", "/")
             }
 
-    if not full_reply:
+    if not 'full_reply' in locals() or not full_reply:
         return {
             "model": model_name, "type": "未知", "status": "⚠️ 空回复",
             "ttft": "N/A", "total_time": f"{total_time:.2f}s", "note": "接口返回成功但内容为空"
@@ -258,6 +346,11 @@ def test_single_model(client: OpenAI, model_name: str, output_dir: Path) -> dict
 
     model_type, note = classify_and_save(full_reply, output_dir, model_name)
     status = "⚠️ 半可用" if model_type == "仅返回占位符" else "✅ 可用"
+
+    # [新增] 若附件测试成功执行完毕，对表格内容进行特殊打标
+    if is_attachment_test:
+        model_type = "多模态读取(附件支持)"
+        note = f"[读件成功] " + full_reply.replace("\n", " ").replace("|", "/")[:5000] + "..."
 
     return {
         "model": model_name,
@@ -281,6 +374,8 @@ def run_benchmark():
 
         print(f"\n{'=' * 75}")
         print(f"🚀 开始探测网关: [{name}] ({base_url})")
+        if TEST_FILES:
+            print(f"📎 启用附件测试，配置了 {len(TEST_FILES)} 个文件用于多模态探查")
         print(f"📂 非文本产物目录: {output_dir.name}/ | 报告文件: {report_file.name}")
         print(f"{'=' * 75}")
 
@@ -290,6 +385,9 @@ def run_benchmark():
             f"- **测试时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"- **非文本产物目录**: `./{output_dir.name}/`",
         ]
+
+        if TEST_FILES:
+            report_lines.append(f"- **测试附件数**: {len(TEST_FILES)} (已启用多模态读取并发测试)")
 
         client = OpenAI(base_url=base_url, api_key=api_key, timeout=TIMEOUT_SECONDS)
 
@@ -313,7 +411,8 @@ def run_benchmark():
 
         ok_count = sum(1 for r in results if "✅" in r["status"])
         report_lines.append(f"- **实测完全可用率**: **{ok_count} / {len(results)}**\n")
-        report_lines.append("| 模型名称 | 实测类型(按返回内容) | 状态 | 首字响应(TTFT) | 总耗时 | 响应摘要 / 产物文件 |")
+        report_lines.append(
+            "| 模型名称 | 实测类型(按返回内容) | 状态 | 首字响应(TTFT) | 总耗时 | 响应摘要 / 产物文件 |")
         report_lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
 
         for r in results:
