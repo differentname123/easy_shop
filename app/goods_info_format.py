@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import time
 import unicodedata
@@ -183,14 +184,27 @@ def run_format_round(product_manager):
     products = product_manager.find_pending_format_products()
     counts = {"success": 0, "failed": 0, "skipped": 0}
     logger.info("[调度/本轮] 待格式化商品: [%d]", len(products))
-    for product in products:
+
+    # 定义单件商品的完整处理流程
+    def _process_single_product(product):
         result = gen_goods_format_info(product.get("name"))
         # 存储异常直接结束本轮，不能当作商品格式化失败或再次补计次数。
         if product_manager.save_format_result(product, result):
-            counts[result["status"]] += 1
+            return result["status"]
         else:
-            counts["skipped"] += 1
             logger.warning("[商品/跳过] 记录已变化或不再符合条件 | _id: [%s]", product["_id"])
+            return "skipped"
+
+    # 使用并行度为 5 的线程池执行处理
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(_process_single_product, p) for p in products]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                status = future.result()
+                counts[status] += 1
+            except Exception as e:
+                logger.error("[商品/异常] 并发处理商品时发生未捕获异常: %s", e)
+
     logger.info("[调度/完成] 成功: [%d] 失败: [%d] 跳过: [%d]",
                 counts["success"], counts["failed"], counts["skipped"])
     return counts
