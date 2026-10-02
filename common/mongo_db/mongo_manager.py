@@ -56,6 +56,26 @@ class ProductManager:
         counts = {"new": result.upserted_count, "update": result.matched_count}
         logger.info("商品批量入库完成 | 新增: [%d] 更新: [%d]", counts["new"], counts["update"])
         return counts
+    def find_recent_successful_formats(self, hours=24, limit=0):
+        """
+        查询 updated_at 在指定小时内更新的，且 format_status 成功的记录。
+        默认查询过去 24 小时的数据。
+        """
+        from datetime import timedelta  # 原文件头部未导入 timedelta，这里局部导入
+
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+        query = {
+            "format_status": "success",
+            "updated_at": {"$gte": cutoff_time}
+        }
+
+        return self.db.find_many(
+            self.collection_name,
+            query=query,
+            sort=[("updated_at", -1)],
+            limit=limit
+        )
 
     def find_products(self, platform, limit=100):
         """按平台查询最新商品；limit=0 表示不限制数量。"""
@@ -131,26 +151,6 @@ class AccountStatusManager:
         self.collection_name = self.COLLECTION_NAME
         self.db.create_index(self.collection_name, [("platform", 1), ("account", 1)], unique=True)
 
-    def find_recent_successful_formats(self, hours=24, limit=0):
-        """
-        查询 updated_at 在指定小时内更新的，且 format_status 成功的记录。
-        默认查询过去 24 小时的数据。
-        """
-        from datetime import timedelta  # 原文件头部未导入 timedelta，这里局部导入
-
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-
-        query = {
-            "format_status": "success",
-            "updated_at": {"$gte": cutoff_time}
-        }
-
-        return self.db.find_many(
-            self.collection_name,
-            query=query,
-            sort=[("updated_at", -1)],
-            limit=limit
-        )
     def get_last_used_times(self, platform, accounts):
         platform = _platform(platform)
         accounts = [_required_string(account, "account") for account in accounts]
