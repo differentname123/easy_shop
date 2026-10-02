@@ -28,6 +28,7 @@ class ProductManager:
 
     COLLECTION_NAME = "products"
     UNIQUE_KEYS = ["platform", "product_id"]
+    FORMAT_MAX_RETRIES = 3
 
     def __init__(self, db_instance):
         if db_instance is None:
@@ -75,6 +76,46 @@ class ProductManager:
 
     def count_products(self, platform):
         return self.db.get_collection(self.collection_name).count_documents({"platform": _platform(platform)})
+
+    def _pending_format_query(self):
+        return {
+            "format_status": {"$ne": "success"},
+            "$or": [
+                {"format_retry_count": {"$exists": False}},
+                {"format_retry_count": {"$lt": self.FORMAT_MAX_RETRIES}},
+            ],
+        }
+
+    def find_pending_format_products(self):
+        """跨平台查询本轮候选，历史记录缺失失败次数时按 0 处理。"""
+        return self.db.find_many(
+            self.collection_name, query=self._pending_format_query(),
+            projection={"_id": 1, "name": 1, "format_retry_count": 1},
+        )
+
+    def save_format_result(self, product, result):
+        """仅更新仍符合条件的原商品；一轮最终失败才原子增加一次次数。"""
+        status = result["status"]
+        if status not in ("success", "failed"):
+            raise ValueError("格式化结果 status 必须是 success 或 failed")
+        if status == "success" and not isinstance(result.get("format_info"), dict):
+            raise ValueError("成功的格式化结果必须提供 JSON 对象")
+        query = self._pending_format_query()
+        query["_id"] = product["_id"]
+        query["name"] = {"$eq": product["name"]} if "name" in product else {"$exists": False}
+        update = {
+            "$set": {
+                "format_status": status,
+                "format_info": result["format_info"] if status == "success" else None,
+                "format_model": result.get("model_used"),
+                "format_updated_at": datetime.now(timezone.utc),
+                "format_error": "" if status == "success" else result.get("error", ""),
+            },
+            # 成功时加 0，保留历史失败次数，并为首次成功的旧记录补齐字段。
+            "$inc": {"format_retry_count": 1 if status == "failed" else 0},
+        }
+        saved = self.db.get_collection(self.collection_name).update_one(query, update, upsert=False)
+        return saved.matched_count > 0
 
 
 class AccountStatusManager:

@@ -97,9 +97,45 @@ finally:
 
 采集器没有持久化页码、滚动位置或已完成 Tab 游标。重启后从页面起点重新遍历，通过 Mongo upsert 去重。批量写入不是事务：数据库故障可能产生部分成功写入，失败批次不计入成功统计，重跑时幂等更新。
 
+## 商品 AI 格式化
+
+`app/goods_info_format.py` 是独立的单进程常驻任务，读取 `products` 中各平台商品的 `name`，使用现有模型网关的 `low` 模型组和 `prompt/商品数据结构化清洗.txt` 提取标准化数据。与采集进程分别启动：
+
+```bash
+.venv/Scripts/python.exe -m app.goods_info_format
+```
+
+启动前需准备现有 `config/config.json` 中的 MongoDB 和模型网关配置，并安装项目使用的 `openai`、`pymongo`、`filelock` 依赖。提示词通过脚本所在的项目路径定位，不依赖硬编码盘符。Ctrl+C 可退出并关闭数据库连接。
+
+### 候选与轮次
+
+- 查询 `format_status != "success"` 且 `format_retry_count < 3` 的商品；没有状态或次数字段的历史记录也可处理，缺失次数视为 0。
+- 每轮只查询一次候选列表，每件商品在本轮只处理一次。正常完成、没有候选商品或本轮异常后，均等待 **3600 秒**再开始下一轮，即“本轮耗时 + 1 小时”，不是每小时整点执行。
+- `gen_goods_format_info` 内最多尝试 3 次，失败后分别等待 2、4 秒；模型网关还可能自行重试或切换模型。这些内部尝试**都不增加数据库次数**。
+- 只有该商品本轮所有内部尝试最终失败，才将 `format_retry_count` 原子加 1；第三次最终失败后不再自动处理。成功不增加也不清零已有失败次数。
+- 空白或非字符串 `name` 记录为商品失败；数据库连接、查询、写入或提示词读取异常终止当前轮，记录日志并等待下一轮，不额外计入商品失败。
+
+### 格式化字段
+
+| 字段 | 含义 |
+| --- | --- |
+| `format_status` | `success` 或 `failed`；没有字段表示尚未处理 |
+| `format_retry_count` | 累计最终失败轮数；首次处理成功也保存 0 |
+| `format_info` | 校验后的真实 JSON 对象，保存为 BSON 子文档，不是响应文本或 JSON 字符串；失败为 null |
+| `format_model` | 实际成功模型或最终失败时最后已知的尝试模型；未知为 null |
+| `format_updated_at` | 本次处理结果保存的 UTC BSON 日期 |
+| `format_error` | 最终失败的内部尝试错误说明；成功为空字符串 |
+| `format_source_name` | 本次提取使用的原始商品标题 |
+
+`format_info` 严格遵循提示词的 `core_entities`、`decision_keywords`、`quantity_info` 协议；允许空列表和数量 null，验证字段、类型、分数降序与重复项、数量层级乘积及末层单位。拒绝 Python 字面量、Markdown 围栏、注释、重复 JSON 字段、非标准数值，以及无法保存到 BSON 的超大整数或非法 Unicode 字符。本地校验不保证模型的商品语义判断正确。
+
+保存使用条件更新，不创建缺失商品、不修改采集用的 `updated_at`。处理期间标题变化、商品被删除或不再符合条件时，会丢弃旧结果。数据库写入超时可能发生在服务端已提交之后，因此不盲目补写或再次增加次数，下一轮以数据库实际状态为准。
+
+此任务按**单个格式化进程**使用，不提供多 worker 抢占锁。已成功商品即使后续标题变化，也不会自动重置格式化状态；若需重新处理，应显式重置相关格式化字段。`gen_goods_format_info` 的返回值现为包含 `status`、`format_info`、`model_used`、`error` 的结果字典，而非仅返回业务 JSON 或空字典。
+
 ## 离线测试
 
-无需启动 Chrome、访问拼多多或连接 MongoDB；使用标准库 `unittest.mock` 验证存储契约与采集流程：
+无需启动 Chrome、访问拼多多、调用 AI 或连接 MongoDB；使用标准库 `unittest.mock` 验证商品格式化、轮次重试和存储契约：
 
 ```bash
 .venv/Scripts/python.exe -B -m unittest discover -s tests -v
