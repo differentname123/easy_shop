@@ -46,7 +46,7 @@ MEDIUM_MODEL_LIST = [
     {"model_name": "gemini-web-3.8-flash-thinking-max", "权重": 40, "备注": "来源gemini_web"},
 
 
-    {"model_name": "gemini-aistudio-3.1-pro-preview", "权重": 20, "备注": "来源aistudio_web"},
+    {"model_name": "gemini-aistudio-3.1-pro-preview", "权重": 10, "备注": "来源aistudio_web"},
     {"model_name": "gemini-aistudio-3.8-flash", "权重": 40, "备注": "来源aistudio_web"},
 
 
@@ -104,7 +104,7 @@ def _redact(value):
     return re.sub(r"(https?://)[^/\s@]+@", r"\1***@", text)
 
 
-def _preview(value, limit=120):
+def _preview(value, limit=120000):
     """先脱敏再截断，避免日志留下密钥残片。"""
     text = _redact(value).replace("\r", " ").replace("\n", " ")
     return text[:limit] + ("..." if len(text) > limit else "")
@@ -683,4 +683,7 @@ if __name__ == "__main__":
     # )
     # print(_redact(result))
     # probe_models("model_probe_results.json")
-    generate_content(prompt="证明黎曼猜想", model="gemini-web-3.8-flash-thinking-max")
+
+    generate_content(prompt="请帮我搜索拼多多上单瓶性价比最高的500ml可乐，告诉我具体的商品名称、规格、总价及核算后的单瓶价格，并强制输出以http或https开头的完整真实商品跳转链接，若因平台限制无法获取真实链接请直接明确告知，严禁编造虚假链接、使用隐藏网址的格式或直接留空。", model="gemini-web-3.5-flash-lite-thinking-max")
+    generate_content(prompt="请帮我搜索拼多多上单瓶性价比最高的500ml可乐，告诉我具体的商品名称、规格、总价及核算后的单瓶价格，并强制输出以http或https开头的完整真实商品跳转链接，若因平台限制无法获取真实链接请直接明确告知，严禁编造虚假链接、使用隐藏网址的格式或直接留空。", model="gemini-web-3.5-flash-lite-thinking-max")
+
