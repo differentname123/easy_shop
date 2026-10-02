@@ -81,8 +81,6 @@ def normalize_goods(item, tab_name):
         "original_price": (item.get("origin_price") or 0) / 100,
         "activity_price": (item.get("activity_price") or 0) / 100,
         "saved_price": (item.get("group_order_price_reduce") or 0) / 100,
-        "currency": "CNY",
-        "price_unit": "yuan",
         "sales_tip": item.get("sales_tip", ""),
         "product_url": urljoin("https://mobile.pinduoduo.com/", item.get("link_url") or ""),
         "image_url": item.get("hd_thumb_url", ""),
