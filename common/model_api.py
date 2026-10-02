@@ -104,7 +104,7 @@ def _redact(value):
     return re.sub(r"(https?://)[^/\s@]+@", r"\1***@", text)
 
 
-def _preview(value, limit=120000):
+def _preview(value, limit=120):
     """先脱敏再截断，避免日志留下密钥残片。"""
     text = _redact(value).replace("\r", " ").replace("\n", " ")
     return text[:limit] + ("..." if len(text) > limit else "")
