@@ -1,32 +1,35 @@
 # -*- coding: utf-8 -*-
 # ==============================================================================
 # [功能摘要]
-# 基于动态账号池调度与单标签(Tab)细粒度抓取的拼多多增量采集器，具备防风控冷却与断点续采能力。
+# 基于动态账号池调度与单标签(Tab)细粒度抓取的拼多多增量采集器，具备账号冷却与 Mongo 幂等去重。
 #
 # [输入数据]
 # 1. pdd_browser_data_list: 外部提供的本地浏览器用户数据目录路径列表 (List of Strings)。
 # 2. 目标页面 XHR 接口 (brand-group-home/home/goods_list) 返回的未清洗 JSON 结构。
 #
 # [数据流转/交互]
-# 1. 主控器查询 account_status.json，筛选冷却期大于 30 分钟的可用账号。
+# 1. 主控器查询 MongoDB 账号状态，筛选已满足 30 分钟冷却期的可用账号。
 # 2. 调度账号访问主页，注入 JS 提取页面顶部 Tab 列表特征 (含 name 与 DOM index)。
 # 3. 将 (账号, 目标Tab) 指派给采集引擎，引擎拦截网络请求进行 JSON 数据清洗去重。
 # 4. 触发风控时，立即封存当前账号时间戳并打断流程，外层调度器无缝切换新账号接力。
 #
 # [输出数据]
-# 更新落盘到 pdd_group_items.csv 文件中，包含商品核心字段（价格、名称、销量、URL等）。
+# 增量写入 MongoDB products 集合，商品按 (platform, product_id) 唯一标识。
+# 账号冷却时间写入 crawler_account_status 集合；浏览器目录与异常快照仍保留本地。
 # ==============================================================================
 
 import os
 import time
-import csv
 import logging
-import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urljoin
+
 from playwright.sync_api import sync_playwright
 
 from common.playwright_utils import launch_persistent_context
 from common.common_utils import get_config
+from common.mongo_db.mongo_base import gen_db_object
+from common.mongo_db.mongo_manager import ProductManager, AccountStatusManager
 
 # ------------------------------------------------------------------------------
 # 日志配置：重塑为高可读性、去噪格式
@@ -42,8 +45,7 @@ logger = logging.getLogger("pdd_scraper")
 # ------------------------------------------------------------------------------
 GLOBAL_CONFIG = {
     "target_url": "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel",
-    "output_csv": "pdd_group_items.csv",
-    "account_status_json": "account_status.json",
+    "platform": "pdd",
     "account_cooldown_minutes": 30,
     "wait_no_account_seconds": 60,
     "max_scrolls_per_tab": -1,  # 修改为 -1 表示直到连续10次无新请求则视为到底
@@ -57,105 +59,65 @@ GLOBAL_CONFIG = {
 # 基础工具与存储逻辑
 # ==============================================================================
 
-def read_json(json_path):
-    """读取 JSON 文件。返回空字典以兜底文件不存在或损坏的情况。"""
-    if not os.path.exists(json_path):
-        return {}
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error("[配置/读取] JSON文件解析异常 | 文件: [%s] | 错误: [%s]", json_path, str(e))
-        return {}
+class StorageError(RuntimeError):
+    """业务持久化失败，必须停止采集，不能按页面错误切号重试。"""
 
 
-def save_json(json_path, data):
-    """持久化 JSON 数据，保证原子性或尽力写入。"""
-    try:
-        with open(json_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        logger.error("[配置/写入] JSON文件写入失败 | 文件: [%s] | 错误: [%s]", json_path, str(e))
+def normalize_goods(item, tab_name):
+    """将拼多多频道商品转换为统一存储字段，价格单位为元。"""
+    goods_id = item.get("goods_id")
+    if isinstance(goods_id, bool) or not isinstance(goods_id, (str, int)):
+        return None
+    goods_id = str(goods_id).strip()
+    if not goods_id:
+        return None
 
-
-def load_existing_goods_dict(filename):
-    """
-    加载历史商品数据以支持增量去重。
-    返回形态: { "商品ID_str": {商品完整属性Dict} }
-    注：此处发生异常采用降级策略(静默返回已有或空字典)，防止文件被锁导致主进程崩溃。
-    """
-    if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-        return {}
-
-    existing_goods = {}
-    try:
-        with open(filename, 'r', encoding='utf-8-sig') as f:
-            for row in csv.DictReader(f):
-                goods_id = str(row.get('商品ID', '')).strip()
-                if goods_id:
-                    existing_goods[goods_id] = row
-    except Exception as e:
-        logger.error("[存储/读取] 本地历史CSV读取崩溃 | 文件: [%s] | 原因: [%s]", filename, str(e))
-
-    return existing_goods
-
-
-def save_to_csv_atomic(goods_dict, filename):
-    """
-    原子化保存 CSV 文件。通过 tmp 后缀替换，防止写入中断导致全量数据丢失。
-    注：发生异常仅拦截打印，允许当前批次落盘失败(数据仍在内存中)，等待下批重试。
-    """
-    if not goods_dict:
-        return
-
-    fieldnames = ["商品ID", "所属标签", "商品名称", "品牌", "原价(元)", "补贴价(元)", "立省(元)", "销量提示",
-                  "商品链接", "主图链接", "更新时间"]
-    tmp_filename = f"{filename}.tmp"
-
-    try:
-        with open(tmp_filename, 'w', encoding='utf-8-sig', newline='') as output_file:
-            dict_writer = csv.DictWriter(output_file, fieldnames=fieldnames, extrasaction='ignore')
-            dict_writer.writeheader()
-            dict_writer.writerows(goods_dict.values())
-        os.replace(tmp_filename, filename)
-    except Exception as e:
-        logger.error("[存储/写入] CSV原子替换失败 | 目标文件: [%s] | 原因: [%s]", filename, str(e))
+    return {
+        "platform": GLOBAL_CONFIG["platform"],
+        "product_id": goods_id,
+        "category": tab_name,
+        "name": item.get("goods_name", ""),
+        "brand": item.get("brand_name", ""),
+        "original_price": (item.get("origin_price") or 0) / 100,
+        "activity_price": (item.get("activity_price") or 0) / 100,
+        "saved_price": (item.get("group_order_price_reduce") or 0) / 100,
+        "currency": "CNY",
+        "price_unit": "yuan",
+        "sales_tip": item.get("sales_tip", ""),
+        "product_url": urljoin("https://mobile.pinduoduo.com/", item.get("link_url") or ""),
+        "image_url": item.get("hd_thumb_url", ""),
+    }
 
 
 # ==============================================================================
 # 账号状态与调度调度
 # ==============================================================================
 
-def get_available_account(account_list):
-    """
-    查询满足冷却时长的空闲账号。
-    出参: 返回可用账号的物理路径 (String)，全忙碌则返回 None。
-    """
-    status_dict = read_json(GLOBAL_CONFIG["account_status_json"])
-    now = datetime.now()
+def get_available_account(account_list, account_manager):
+    """查询满足冷却时长的账号，按配置顺序返回；数据库故障直接抛出。"""
+    status_dict = account_manager.get_last_used_times(GLOBAL_CONFIG["platform"], account_list)
+    now = datetime.now(timezone.utc)
     cooldown_delta = timedelta(minutes=GLOBAL_CONFIG["account_cooldown_minutes"])
 
     for account in account_list:
-        last_used_str = status_dict.get(account)
-        if not last_used_str:
-            return account  # 全新账号，无历史记录
-
-        try:
-            last_used_time = datetime.strptime(last_used_str, "%Y-%m-%d %H:%M:%S")
-            if now - last_used_time >= cooldown_delta:
-                return account
-        except ValueError:
+        last_used_time = status_dict.get(account)
+        if last_used_time is None:
+            return account
+        if not isinstance(last_used_time, datetime):
             logger.warning("[调度/校验] 发现脏数据时间戳 | 账号: [%s] | 动作: 强制重置可用", os.path.basename(account))
+            return account
+        # Mongo 的无时区 BSON 日期也表示 UTC，兼容其他客户端写入的数据。
+        if last_used_time.tzinfo is None:
+            last_used_time = last_used_time.replace(tzinfo=timezone.utc)
+        if now - last_used_time >= cooldown_delta:
             return account
 
     return None
 
 
-def update_account_usage_time(account):
-    """刷新指定账号的心跳时间戳。"""
-    status_dict = read_json(GLOBAL_CONFIG["account_status_json"])
-    status_dict[account] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_json(GLOBAL_CONFIG["account_status_json"], status_dict)
+def update_account_usage_time(account, account_manager):
+    """刷新指定账号的 Mongo 使用时间，成功后再记录工作状态。"""
+    account_manager.touch_account(GLOBAL_CONFIG["platform"], account)
     logger.info("[调度/锁定] 账号已切入工作态 | 账号: [%s] | 冷却倒计时: [%d 分钟]",
                 os.path.basename(account), GLOBAL_CONFIG["account_cooldown_minutes"])
 
@@ -245,7 +207,7 @@ def get_tab_list(user_data_dir):
             context.close()
 
 
-def scrape_single_tab(user_data_dir, tab_info):
+def scrape_single_tab(user_data_dir, tab_info, product_manager):
     """
     单 Tab 深度遍历模块。
     """
@@ -258,20 +220,23 @@ def scrape_single_tab(user_data_dir, tab_info):
     tab_display = f"第{round_info}轮-第{tab_idx}/{total_tabs}个({tab_name})"
 
     acc_name = os.path.basename(user_data_dir)
-    output_csv = GLOBAL_CONFIG["output_csv"]
-
     logger.info("[采集/初始化] 开启专项抓取 | 目标Tab: [%s] | 执行账号: [%s]", tab_display, acc_name)
 
-    seen_goods_dict = load_existing_goods_dict(output_csv)
-
+    storage_error = None
     session_new_count = 0
     session_update_count = 0
     hit_risk = False
     api_response_count = 0
     scroll_count = 0
 
+    def raise_storage_error():
+        if storage_error is not None:
+            raise StorageError(f"Tab [{tab_display}] 商品写入失败，已停止采集") from storage_error
+
     def handle_response(response):
-        nonlocal session_new_count, session_update_count, hit_risk, api_response_count
+        nonlocal session_new_count, session_update_count, hit_risk, api_response_count, storage_error
+        if storage_error is not None:
+            return
         if "brand-group-home/home/goods_list" not in response.url or response.status != 200:
             return
 
@@ -279,62 +244,41 @@ def scrape_single_tab(user_data_dir, tab_info):
 
         try:
             data = response.json()
-        except Exception:
-            return
-
-        if not data.get("success") or "result" not in data:
-            return
-
-        if "risk" in str(data).lower():
-            hit_risk = True
-
-        goods_list = data["result"].get("goods_list", [])
-        if not goods_list:
-            return
-
-        try:
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            batch_new, batch_update = 0, 0
-
+            if not isinstance(data, dict) or not data.get("success") or "result" not in data:
+                return
+            result_data = data["result"]
+            if not isinstance(result_data, dict):
+                return
+            if "risk" in str(data).lower():
+                hit_risk = True
+            goods_list = result_data.get("goods_list", [])
+            if not goods_list:
+                return
+            records = []
             for item in goods_list:
-                goods_id = str(item.get("goods_id", "")).strip()
-                if not goods_id:
+                if not isinstance(item, dict):
                     continue
-
-                origin_price_raw = item.get("origin_price") or 0
-                activity_price_raw = item.get("activity_price") or 0
-                reduce_price_raw = item.get("group_order_price_reduce") or 0
-
-                parsed_item = {
-                    "商品ID": goods_id,
-                    "所属标签": tab_name,
-                    "商品名称": item.get("goods_name", ""),
-                    "品牌": item.get("brand_name", ""),
-                    "原价(元)": origin_price_raw / 100,
-                    "补贴价(元)": activity_price_raw / 100,
-                    "立省(元)": reduce_price_raw / 100,
-                    "销量提示": item.get("sales_tip", ""),
-                    "商品链接": "https://mobile.pinduoduo.com/" + str(item.get("link_url", "")),
-                    "主图链接": item.get("hd_thumb_url", ""),
-                    "更新时间": current_time
-                }
-
-                if goods_id in seen_goods_dict:
-                    session_update_count += 1
-                    batch_update += 1
-                else:
-                    session_new_count += 1
-                    batch_new += 1
-
-                seen_goods_dict[goods_id] = parsed_item
-
-            if batch_new > 0 or batch_update > 0:
-                logger.info("[采集/拦截] 解析有效数据流 | Tab: [%s] | 本批新增: [%d] 本批更新: [%d] | 库容: [%d]",
-                            tab_display, batch_new, batch_update, len(seen_goods_dict))
-                save_to_csv_atomic(seen_goods_dict, output_csv)
-
+                parsed_item = normalize_goods(item, tab_name)
+                if parsed_item is not None:
+                    records.append(parsed_item)
         except Exception as e:
             logger.error("[采集/拦截] 解析数据流发生未捕获异常 | Tab: [%s] | 错误: %s", tab_display, str(e))
+            return
+
+        if not records:
+            return
+        try:
+            counts = product_manager.upsert_products(records)
+        except Exception as e:
+            # Playwright 回调内不直接抛异常，交由页面流程清理浏览器后统一上抛。
+            storage_error = e
+            logger.error("[存储/失败] 商品批量写入失败 | Tab: [%s] | 错误: %s", tab_display, str(e))
+            return
+
+        session_new_count += counts["new"]
+        session_update_count += counts["update"]
+        logger.info("[采集/入库] Mongo批次写入成功 | Tab: [%s] | 本批新增: [%d] 本批更新: [%d]",
+                    tab_display, counts["new"], counts["update"])
 
     with sync_playwright() as p:
         context = launch_persistent_context(p, user_data_dir=user_data_dir, headless=GLOBAL_CONFIG["headless_mode"])
@@ -344,11 +288,13 @@ def scrape_single_tab(user_data_dir, tab_info):
         try:
             # 【修改 4】：干掉 networkidle，改为 domcontentloaded
             page.goto(GLOBAL_CONFIG["target_url"], wait_until="domcontentloaded")
+            raise_storage_error()
 
             # 【修改 5】：改为显式等待核心容器渲染
             nav_container = page.locator('#brand-first-nav')
             nav_container.wait_for(state="visible", timeout=15000)
             time.sleep(3)
+            raise_storage_error()
 
             if check_risk_control(page):
                 logger.warning("[采集/阻断] 入口页校验未通过 | 账号: [%s] | 结论: 已触发严格风控", acc_name)
@@ -368,6 +314,7 @@ def scrape_single_tab(user_data_dir, tab_info):
             # 下方的 evaluate("node => node.click()") 是原生 JS 注入点击，完全不需要元素在可视区域内。
             target_tab_element.evaluate("node => node.click()")
             time.sleep(3.5)
+            raise_storage_error()
 
             if page.locator("input[type='search']").count() > 0 and page.locator(
                     "input[type='search']").first.is_visible():
@@ -382,6 +329,7 @@ def scrape_single_tab(user_data_dir, tab_info):
             last_api_count = api_response_count
 
             while True:
+                raise_storage_error()
                 if max_scrolls != -1 and scroll_count >= max_scrolls:
                     break
 
@@ -405,6 +353,7 @@ def scrape_single_tab(user_data_dir, tab_info):
                                     max_scrolls)
 
                 time.sleep(GLOBAL_CONFIG["scroll_interval"])
+                raise_storage_error()
 
                 if max_scrolls == -1:
                     if api_response_count > last_api_count:
@@ -421,13 +370,20 @@ def scrape_single_tab(user_data_dir, tab_info):
             if api_response_count < 10:
                 save_error_snapshot(page, tab_name, "正常结束_请求不足10次")
 
+        except StorageError:
+            raise
         except Exception as e:
+            raise_storage_error()
             logger.error("[采集/崩溃] 页面渲染或交互异常 | Tab: [%s] | 错误详情: %s", tab_display, str(e))
             save_error_snapshot(page, tab_name, "代码崩溃异常")
             return "ERROR", {"scrolls": scroll_count, "requests": api_response_count, "new": session_new_count,
                              "update": session_update_count}
         finally:
-            context.close()
+            try:
+                context.close()
+            finally:
+                # 所有提前返回及关闭时触发的响应回调，都不能掩盖持久化失败。
+                raise_storage_error()
 
     if api_response_count == 0:
         logger.error("[采集/空转] 整个生命周期未拦截到任何目标请求，疑似页面跑偏 | Tab: [%s]", tab_display)
@@ -530,8 +486,22 @@ def main_controller():
         logger.error("[系统/启动] 致命错误: 未配置账号数据池(pdd_browser_data_list), 系统退出。")
         return
 
-    logger.info("[系统/启动] 守护引擎已挂载 | 容量: [%d] 个活跃账号待命", len(pdd_browser_data_list))
+    db_instance = gen_db_object()
+    try:
+        db_instance.ping()
+        product_manager = ProductManager(db_instance)
+        account_manager = AccountStatusManager(db_instance)
+        logger.info("[系统/启动] Mongo存储已就绪 | 容量: [%d] 个活跃账号待命", len(pdd_browser_data_list))
+        run_collection_rounds(pdd_browser_data_list, product_manager, account_manager)
+    except Exception:
+        logger.exception("[系统/终止] 采集器异常退出，未完成的任务不会标记成功")
+        raise
+    finally:
+        db_instance.close()
 
+
+def run_collection_rounds(pdd_browser_data_list, product_manager, account_manager):
+    """循环采集各分类；存储异常向上抛出，页面异常保留原有切号重试。"""
     round_count = 0  # 追踪大循环轮次
 
     while True:
@@ -542,14 +512,14 @@ def main_controller():
         round_tab_stats = []
 
         while not tab_list:
-            acc = get_available_account(pdd_browser_data_list)
+            acc = get_available_account(pdd_browser_data_list, account_manager)
             if not acc:
                 wait_sec = GLOBAL_CONFIG["wait_no_account_seconds"]
                 logger.info("[调度/等待] 全员进入冷却状态 | 动作: 线程挂起待机 [%d] 秒", wait_sec)
                 time.sleep(wait_sec)
                 continue
 
-            update_account_usage_time(acc)
+            update_account_usage_time(acc, account_manager)
             tab_list = get_tab_list(acc)
 
             if tab_list is None:
@@ -583,7 +553,7 @@ def main_controller():
             MAX_RETRY_PER_TAB = 3
 
             while not tab_completed:
-                current_acc = get_available_account(pdd_browser_data_list)
+                current_acc = get_available_account(pdd_browser_data_list, account_manager)
 
                 if not current_acc:
                     wait_sec = GLOBAL_CONFIG["wait_no_account_seconds"]
@@ -592,9 +562,9 @@ def main_controller():
                     time.sleep(wait_sec)
                     continue
 
-                update_account_usage_time(current_acc)
+                update_account_usage_time(current_acc, account_manager)
 
-                status, stats = scrape_single_tab(current_acc, tab)
+                status, stats = scrape_single_tab(current_acc, tab, product_manager)
 
                 tab_total_scrolls += stats.get("scrolls", 0)
                 tab_total_requests += stats.get("requests", 0)

@@ -1,210 +1,112 @@
-# mongo_manager.py
-# -- coding: utf-8 --
+# -*- coding: utf-8 -*-
 
 import logging
-from uuid import uuid4
-from datetime import datetime, timezone # 替换原有的 from datetime import datetime
-from common.common_utils import setup_logger
-from common.mongo_db.mongo_base import gen_db_object
+from datetime import datetime, timezone
 
-setup_logger()
-
-# 拿到属于当前文件的专属 logger
 logger = logging.getLogger(__name__)
 
-class UniversalPostManager:
-    """
-    通用社交媒体帖子数据管理器。
-    兼容 Binance, Zhihu, Xiaohongshu, Bilibili 等全平台通用 Schema。
-    """
 
-    COLLECTION_NAME = "social_media_posts"
-    UNIQUE_KEYS = ["source", "post_id"]
-
-    def __init__(self, db_instance):
-        if not db_instance:
-            raise ValueError("必须提供一个有效的 MongoBase 实例")
-        self.db = db_instance
-        self.collection_name = self.COLLECTION_NAME
-        self._ensure_indexes()
-
-    def _ensure_indexes(self):
-        """
-        初始化核心索引，保障查询速度与数据隔离。
-        - source + post_id : 联合唯一，防止跨平台 ID 冲突与重复写入 (遵循最左前缀)
-        - publish_time     : 时间线拉取
-        - source + card_type : 平台 / 帖子类型维度统计
-        - post_id          : 新增普通索引，用于脱离 source 纯按 ID 检索的场景
-        """
-        self.db.create_index(self.collection_name, [('source', 1), ('post_id', 1)], unique=True)
-        self.db.create_index(self.collection_name, [('publish_time', -1)], unique=False)
-        self.db.create_index(self.collection_name, [('source', 1), ('card_type', 1)], unique=False)
-
-        # 【新增索引】：为了支持单纯按 post_id 列表查询而不引起全表扫描
-        self.db.create_index(self.collection_name, [('post_id', 1)], unique=False)
-
-        logger.info(
-            "索引就绪 | collection=%s | indexes=[uniq(source,post_id), publish_time(-1), (source,card_type), post_id]",
-            self.collection_name
-        )
-
-    def upsert_posts(self, data_list):
-        """
-        将清洗后的通用 Schema 数据批量安全入库。
-        - 命中 (source + post_id) -> 更新最新数据 (如点赞、评论数)
-        - 未命中               -> 插入新帖
-        """
-        if not data_list:
-            logger.warning("upsert_posts 收到空数据集，已跳过入库")
-            return
-
-        # 先做全量前置校验，再统一打标，避免校验失败时残留脏副作用
-        source_counter = {}
-        for i, item in enumerate(data_list):
-            post_id = item.get("post_id")
-            source = item.get("source")
-            if not post_id or not source:
-                logger.error(
-                    "入库校验失败 | index=%s | post_id=%r | source=%r | reason=缺失联合唯一键字段",
-                    i, post_id, source
-                )
-                raise ValueError(f"索引 {i} 数据错误: 必须包含完整的 'post_id' 和 'source'")
-            source_counter[source] = source_counter.get(source, 0) + 1
-
-        # 校验全部通过后，统一追加最后更新时间（UTC，避免跨时区歧义）
-        update_time = datetime.now(timezone.utc)
-        for item in data_list:
-            item['db_update_time'] = update_time
-
-        start = datetime.now(timezone.utc)
-        self.db.bulk_upsert(self.collection_name, data_list, self.UNIQUE_KEYS)
-        cost_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000
-        logger.info(
-            "批量入库完成 | total=%s | dist=%s | cost=%.1fms | keys=%s",
-            len(data_list), source_counter, cost_ms, self.UNIQUE_KEYS
-        )
-
-    def find_posts_by_source(self, source, limit=100):
-        """按平台来源拉取数据，按发布时间最新排序"""
-        posts = self.db.find_many(
-            self.collection_name,
-            query={"source": source},
-            sort=[("publish_time", -1)],
-            limit=limit
-        )
-
-        logger.info(
-            "查询完成 | source=%s | limit=%s | matched=%s",
-            source, limit, len(posts) if posts else 0
-        )
-        return posts
-
-    def find_posts_by_ids(self, post_ids, source=None):
-        """
-        根据 post_id 列表批量拉取帖子数据。
-
-        :param post_ids: list[str], 帖子 ID 列表 (例如: ["binance_1001", "xhs_6688"])
-        :param source: str (可选), 指定平台来源。
-                       强烈建议传入此参数！不仅能防止不同平台间偶然的 ID 冲突，
-                       还能直接命中 (source, post_id) 的联合唯一索引，查询最快。
-        :return: list[dict], 匹配的帖子列表
-        """
-        if not post_ids:
-            return []
-
-        # 核心语法：使用 MongoDB 的 $in 操作符
-        query = {"post_id": {"$in": post_ids}}
-
-        # 如果提供了 source，追加到查询条件中
-        if source:
-            query["source"] = source
-
-        start = datetime.now(timezone.utc)
-        posts = self.db.find_many(
-            self.collection_name,
-            query=query
-        )
-        cost_ms = (datetime.now(timezone.utc) - start).total_seconds() * 1000
-
-        logger.info(
-            "按ID列表查询完成 | source=%s | id_count=%s | matched=%s | cost=%.1fms",
-            source or "ALL_PLATFORMS", len(post_ids), len(posts) if posts else 0, cost_ms
-        )
-        return posts
+def _required_string(value, field):
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"必须提供非空字符串字段: {field}")
+    return value.strip()
 
 
-class GeneratedArticleManager:
-    """
-    生成文章管理器，独立使用 generated_articles 集合。
-    核心原则：本类只做底层纯粹的增改与查询封装，不做任何业务数据校验或拼接。
-    """
+def _platform(value):
+    """平台代码使用小写，允许后续接入新平台而不修改存储层。"""
+    return _required_string(value, "platform").lower()
 
-    COLLECTION_NAME = "generated_articles"
-    UNIQUE_KEYS = ["article_id"]
+
+def _product_id(value):
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        raise ValueError("product_id 必须是非空字符串或整数")
+    return _required_string(str(value), "product_id")
+
+
+class ProductManager:
+    """多平台商品最新信息；联合身份为平台代码和平台内商品 ID。"""
+
+    COLLECTION_NAME = "products"
+    UNIQUE_KEYS = ["platform", "product_id"]
 
     def __init__(self, db_instance):
-        if not db_instance:
-            raise ValueError("必须提供一个有效的 MongoBase 实例")
+        if db_instance is None:
+            raise ValueError("必须提供有效的 MongoBase 实例")
         self.db = db_instance
         self.collection_name = self.COLLECTION_NAME
-        self._ensure_indexes()
+        self.db.create_index(self.collection_name, [("platform", 1), ("product_id", 1)], unique=True)
+        self.db.create_index(self.collection_name, [("platform", 1), ("updated_at", -1)])
 
-    def _ensure_indexes(self):
-        self.db.create_index(self.collection_name, [('article_id', 1)], unique=True)
-        self.db.create_index(
-            self.collection_name,
-            [('source', 1), ('status', 1), ('post_id_list', 1)],
-            unique=False
-        )
-        self.db.create_index(
-            self.collection_name,
-            [('source', 1), ('topic', 1), ('stance', 1), ('status', 1), ('created_at', -1)],
-            unique=False
-        )
-        self.db.create_index(self.collection_name, [('updated_at', -1)], unique=False)
-
-    def upsert_articles(self, data_list):
-        """
-        通用批量更新/插入文章数据的底层方法。
-        自动补齐 updated_at，若为新数据则自动生成 article_id 和 created_at。
-        """
-        if not data_list:
-            logger.warning("upsert_articles 收到空数据集，已跳过入库")
-            return
-
+    def upsert_products(self, records):
+        """完整校验后批量入库；同批相同身份保留最后一条，不修改输入。"""
+        batch = {}
         now = datetime.now(timezone.utc)
-        for record in data_list:
-            # 若没有 article_id，视为新数据并补齐主键与创建时间
-            if not record.get('article_id'):
-                record['article_id'] = uuid4().hex
-                record.setdefault('created_at', now)
-            # 无论新增还是更新，永远刷新 updated_at
-            record['updated_at'] = now
+        for record in records:
+            item = record.copy()
+            item.pop("_id", None)
+            item["platform"] = _platform(item.get("platform"))
+            item["product_id"] = _product_id(item.get("product_id"))
+            item["updated_at"] = now
+            batch[(item["platform"], item["product_id"])] = item
 
-        self.db.bulk_upsert(self.collection_name, data_list, self.UNIQUE_KEYS)
+        if not batch:
+            return {"new": 0, "update": 0}
+        result = self.db.bulk_upsert(self.collection_name, list(batch.values()), self.UNIQUE_KEYS)
+        counts = {"new": result.upserted_count, "update": result.matched_count}
+        logger.info("商品批量入库完成 | 新增: [%d] 更新: [%d]", counts["new"], counts["update"])
+        return counts
 
-    def find_articles(self, query=None, sort=None, limit=0):
-        """通用查询入口"""
-        query = query or {}
-        return self.db.find_many(self.collection_name, query=query, sort=sort, limit=limit)
+    def find_products(self, platform, limit=100):
+        """按平台查询最新商品；limit=0 表示不限制数量。"""
+        return self.db.find_many(
+            self.collection_name, query={"platform": _platform(platform)},
+            sort=[("updated_at", -1)], limit=limit,
+        )
 
-    def find_articles_by_ids(self, article_ids, source=None):
-        """根据 article_id 批量精确查询"""
-        if not article_ids:
+    def find_products_by_ids(self, platform, product_ids):
+        """按指定平台和商品 ID 查询，禁止跨平台混查同名 ID。"""
+        platform = _platform(platform)
+        ids = [_product_id(value) for value in product_ids]
+        if not ids:
             return []
-        query = {"article_id": {"$in": article_ids}}
-        if source:
-            query["source"] = source
-        return self.db.find_many(self.collection_name, query=query)
+        return self.db.find_many(
+            self.collection_name, query={"platform": platform, "product_id": {"$in": ids}},
+        )
 
-# ==========================================
-# 接入清洗流程的使用示例
-# ==========================================
-if __name__ == "__main__":
-    # 1. 建立数据库连接
-    db_instance = gen_db_object()
-    post_manager = UniversalPostManager(db_instance)
+    def count_products(self, platform):
+        return self.db.get_collection(self.collection_name).count_documents({"platform": _platform(platform)})
 
-    # 4. 验证查询
-    binance_posts = post_manager.find_posts_by_source("biance", limit=5)
-    logger.info("样例验证 | binance 帖子数=%s", len(binance_posts) if binance_posts else 0)
+
+class AccountStatusManager:
+    """平台账号的上次使用时间；账号键为完整浏览器用户目录路径。"""
+
+    COLLECTION_NAME = "crawler_account_status"
+    UNIQUE_KEYS = ["platform", "account"]
+
+    def __init__(self, db_instance):
+        if db_instance is None:
+            raise ValueError("必须提供有效的 MongoBase 实例")
+        self.db = db_instance
+        self.collection_name = self.COLLECTION_NAME
+        self.db.create_index(self.collection_name, [("platform", 1), ("account", 1)], unique=True)
+
+    def get_last_used_times(self, platform, accounts):
+        platform = _platform(platform)
+        accounts = [_required_string(account, "account") for account in accounts]
+        if not accounts:
+            return {}
+        records = self.db.find_many(
+            self.collection_name,
+            query={"platform": platform, "account": {"$in": accounts}},
+            projection={"_id": 0, "account": 1, "last_used_at": 1},
+        )
+        return {record["account"]: record.get("last_used_at") for record in records}
+
+    def touch_account(self, platform, account):
+        """在启动账号探测/采集前原子更新使用时间。"""
+        record = {
+            "platform": _platform(platform),
+            "account": _required_string(account, "account"),
+            "last_used_at": datetime.now(timezone.utc),
+        }
+        return self.db.bulk_upsert(self.collection_name, [record], self.UNIQUE_KEYS)
