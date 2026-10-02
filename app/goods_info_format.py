@@ -39,7 +39,7 @@ def _check_ranked_items(items, field, text_keys):
     if not isinstance(items, list):
         return False, f"{field} 必须是列表"
     required_keys = {*text_keys, "score"}
-    seen, previous_score = set(), 10
+    seen = set()  # 移除了 previous_score 变量
     for index, item in enumerate(items):
         location = f"{field}[{index}]"
         if not isinstance(item, dict) or set(item) != required_keys:
@@ -50,9 +50,9 @@ def _check_ranked_items(items, field, text_keys):
         score = item["score"]
         if type(score) is not int or not 1 <= score <= 10:
             return False, f"{location}.score 必须是 1—10 的整数"
-        if score > previous_score:
-            return False, f"{field} 必须按 score 降序排列"
-        previous_score = score
+
+        # 已删除这里的按 score 降序排列的校验逻辑
+
         # : 属性组合沿用冒号拼接；字段包含冒号时可能误判重复，需确认业务后再改为元组。
         combined_key = ":".join(item[key] for key in text_keys)
         normalized_key = " ".join(unicodedata.normalize("NFKC", combined_key).casefold().split())
@@ -67,39 +67,47 @@ def check_format_info(format_info):
     """校验结构与数量一致性，返回 (bool, 错误原因)，不判断商品语义。
 
     输入必须仅含 core_entities: [{name, score}]、decision_keywords: [{attribute_name, attribute_value, score}]，
-    以及 delivery_quantity: None 或 {is_inferred, structure: [{value, unit}], total_value, base_unit, equivalent_description}。
+    以及 pricing_basis: {is_inferred, structure: [{value, unit}], total_value, base_unit, equivalent_description}。
     """
     if not isinstance(format_info, dict) or set(format_info) != {
-        "core_entities", "decision_keywords", "delivery_quantity",
+        "core_entities", "decision_keywords", "pricing_basis",
     }:
-        return False, "顶层必须且只能包含 core_entities、decision_keywords、delivery_quantity"
+        return False, "顶层必须且只能包含 core_entities、decision_keywords、pricing_basis"
+
     # : 两类评分列表允许为空；是否至少包含一个实体或属性属于业务协议，保持原行为。
     for field, text_keys in (
-        ("core_entities", ("name",)),
-        ("decision_keywords", ("attribute_name", "attribute_value")),
+            ("core_entities", ("name",)),
+            ("decision_keywords", ("attribute_name", "attribute_value")),
     ):
         valid, error = _check_ranked_items(format_info[field], field, text_keys)
         if not valid:
             return False, error
 
-    quantity = format_info["delivery_quantity"]
-    if quantity is None:
-        return True, ""
-    if not isinstance(quantity, dict) or set(quantity) != {
+    # 变动 1：字段名改为 pricing_basis
+    pricing = format_info["pricing_basis"]
+
+    # 变动 2：严禁返回 null，因此去掉了 if pricing is None: return True, "" 的逻辑
+    if pricing is None:
+        return False, "pricing_basis 严禁为 null，必须是一个完整的对象"
+
+    if not isinstance(pricing, dict) or set(pricing) != {
         "is_inferred", "structure", "total_value", "base_unit", "equivalent_description",
     }:
-        return False, "delivery_quantity 必须为 null 或包含 is_inferred, structure, total_value, base_unit, equivalent_description 的对象"
-    if not isinstance(quantity["is_inferred"], bool):
-        return False, "delivery_quantity.is_inferred 必须是布尔值 (True 或 False)"
-    if quantity["equivalent_description"] is not None and not _clean_string(quantity["equivalent_description"]):
-        return False, "delivery_quantity.equivalent_description 必须为 null 或非空且无首尾空白的字符串"
+        return False, "pricing_basis 必须包含 is_inferred, structure, total_value, base_unit, equivalent_description 的对象"
 
-    structure = quantity["structure"]
+    if not isinstance(pricing["is_inferred"], bool):
+        return False, "pricing_basis.is_inferred 必须是布尔值 (True 或 False)"
+
+    if pricing["equivalent_description"] is not None and not _clean_string(pricing["equivalent_description"]):
+        return False, "pricing_basis.equivalent_description 必须为 null 或非空且无首尾空白的字符串"
+
+    structure = pricing["structure"]
     if not isinstance(structure, list) or not structure:
-        return False, "delivery_quantity.structure 必须是非空列表"
+        return False, "pricing_basis.structure 必须是非空列表"
+
     total = 1
     for index, layer in enumerate(structure):
-        location = f"delivery_quantity.structure[{index}]"
+        location = f"pricing_basis.structure[{index}]"
         if not isinstance(layer, dict) or set(layer) != {"value", "unit"}:
             return False, f"{location} 必须且只能包含 value、unit"
         if type(layer["value"]) is not int or not 1 <= layer["value"] <= BSON_MAX_INT64:
@@ -107,14 +115,15 @@ def check_format_info(format_info):
         if not _clean_string(layer["unit"]):
             return False, f"{location}.unit 必须是非空且无首尾空白的字符串"
         total *= layer["value"]
-    if type(quantity["total_value"]) is not int or not 1 <= quantity["total_value"] <= BSON_MAX_INT64:
-        return False, "delivery_quantity.total_value 必须是 BSON int64 范围内的正整数"
-    if quantity["total_value"] != total:
-        return False, "delivery_quantity.total_value 必须等于所有层级 value 的乘积"
-    if not _clean_string(quantity["base_unit"]) or quantity["base_unit"] != structure[-1]["unit"]:
-        return False, "delivery_quantity.base_unit 必须与最后一层 unit 一致"
-    return True, ""
 
+    if type(pricing["total_value"]) is not int or not 1 <= pricing["total_value"] <= BSON_MAX_INT64:
+        return False, "pricing_basis.total_value 必须是 BSON int64 范围内的正整数"
+    if pricing["total_value"] != total:
+        return False, "pricing_basis.total_value 必须等于所有层级 value 的乘积"
+    if not _clean_string(pricing["base_unit"]) or pricing["base_unit"] != structure[-1]["unit"]:
+        return False, "pricing_basis.base_unit 必须与最后一层 unit 一致"
+
+    return True, ""
 
 def gen_goods_format_info(good_desc):
     """执行一轮生成，返回 {status, format_info, model_used, error}；重试不增加失败轮数，最终日志由保存节点聚合。"""
