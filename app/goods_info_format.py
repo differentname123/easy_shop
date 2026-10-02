@@ -18,7 +18,7 @@ logger = setup_logger(app_name="goods_format")
 
 PROMPT_FILE_PATH = Path(__file__).resolve().parents[1] / "prompt" / "商品数据结构化清洗.txt"
 LLM_MAX_RETRIES = 3
-FORMAT_WORKERS = 5
+FORMAT_WORKERS =1
 ROUND_INTERVAL_SECONDS = 3600
 BSON_MAX_INT64 = 2 ** 63 - 1
 
@@ -126,6 +126,7 @@ def gen_goods_format_info(good_desc):
     full_prompt = (f"{read_file_to_str(PROMPT_FILE_PATH)}\n"
                    f"<product_input>\n{escape(good_desc, quote=False)}\n</product_input>")
     errors = []
+    content = ""
     for attempt in range(1, LLM_MAX_RETRIES + 1):
         try:
             result = generate_content(prompt=full_prompt, preset_model_group="low")
@@ -135,7 +136,8 @@ def gen_goods_format_info(good_desc):
             if result.get("status") != "✅ 成功":
                 detail = "；".join(str(error) for error in result.get("error_history", []))
                 raise RuntimeError(detail or result.get("content") or "模型调用失败")
-            format_info = string_to_object(result.get("content", ""))
+            content = result.get("content", "")
+            format_info = string_to_object(content)
             valid, error = check_format_info(format_info)
             if not valid:
                 raise ValueError(error)
@@ -150,7 +152,7 @@ def gen_goods_format_info(good_desc):
                     good_desc[:80], attempt, LLM_MAX_RETRIES, delay, " ".join(detail.split()),
                 )
                 time.sleep(delay)
-    outcome["error"] = "；".join(errors)
+    outcome["error"] = "；".join(errors) + content
     return outcome
 
 
