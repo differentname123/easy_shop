@@ -44,7 +44,7 @@ HIGH_MODEL_LIST = [
 ]
 MEDIUM_MODEL_LIST = [
     {"model_name": "gemini-web-3.8-flash-thinking-max", "权重": 40, "备注": "来源gemini_web"},
-
+    {"model_name": "gemini-web-3.1-pro-thinking-max", "权重": 10, "备注": "来源gemini_web"},
 
     {"model_name": "gemini-aistudio-3.1-pro-preview", "权重": 20, "备注": "来源aistudio_web"},
     {"model_name": "gemini-aistudio-3.7-flash", "权重": 0, "备注": "来源aistudio_web"},
@@ -52,7 +52,7 @@ MEDIUM_MODEL_LIST = [
 
 
     {"model_name": "gemini-antigravity-3.8-flash-high-high", "权重": 20, "备注": "来源antigravity"},
-    # {"model_name": "gpt-5.6-terra-max", "权重": 10, "备注": "来源codex 免费"},
+    {"model_name": "gpt-5.6-terra-max", "权重": 0, "备注": "来源codex 免费"},
 
 ]
 LOW_MODEL_LIST = [
