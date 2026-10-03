@@ -110,7 +110,7 @@ class ProductManager:
         """跨平台查询本轮候选，历史记录缺失失败次数时按 0 处理。"""
         return self.db.find_many(
             self.collection_name, query=self._pending_format_query(),
-            projection={"_id": 1, "name": 1, "format_retry_count": 1},
+            # projection={"_id": 1, "name": 1, "format_retry_count": 1},
         )
 
     def save_format_result(self, product, result):
