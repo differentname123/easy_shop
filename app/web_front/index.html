@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>高性价比商品雷达</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+    <div id="app" class="max-w-6xl mx-auto px-4 py-8">
+
+        <!-- 搜索头部 -->
+        <div class="text-center mb-10">
+            <h1 class="text-3xl font-bold text-gray-800 mb-6">🛒 高性价比商品雷达</h1>
+            <div class="flex justify-center max-w-2xl mx-auto gap-2">
+                <input
+                    v-model="keyword"
+                    @keyup.enter="search"
+                    type="text"
+                    placeholder="例如：巴旦木、方便面..."
+                    class="w-full px-4 py-3 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm text-lg"
+                >
+                <button
+                    @click="search"
+                    :disabled="loading"
+                    class="px-8 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 shadow-sm"
+                >
+                    {{ loading ? '搜索中...' : '搜索最高性价比' }}
+                </button>
+            </div>
+        </div>
+
+        <!-- 结果状态 -->
+        <div v-if="hasSearched && products.length === 0 && !loading" class="text-center text-gray-500 mt-10">
+            没有找到相关商品，请尝试其他关键词或延长搜索时间范围。
+        </div>
+
+        <!-- 商品卡片网格 -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div v-for="item in products" :key="item.product_id" class="bg-white rounded-xl shadow-md overflow-hidden hover:shadow-lg transition flex flex-col">
+                <!-- 商品图片 -->
+                <div class="relative h-64 overflow-hidden bg-gray-100 flex-shrink-0">
+                    <img :src="item.image_url" :alt="item.name" class="w-full h-full object-cover">
+                    <span class="absolute top-2 right-2 px-3 py-1 bg-red-500 text-white text-xs font-bold rounded-full shadow">
+                        {{ item.platform === 'pdd' ? '拼多多' : item.platform }}
+                    </span>
+                </div>
+
+                <!-- 商品信息 -->
+                <div class="p-5 flex-1 flex flex-col">
+                    <h3 class="text-lg font-bold text-gray-800 line-clamp-2 mb-2" :title="item.name">{{ item.name }}</h3>
+
+                    <!-- 核心指标区 -->
+                    <div class="bg-blue-50 rounded-lg p-3 mb-4 mt-auto border border-blue-100">
+                        <div class="flex justify-between items-end mb-1">
+                            <span class="text-gray-600 text-sm">活动价</span>
+                            <span class="text-red-600 text-2xl font-bold">¥{{ item.activity_price }}</span>
+                        </div>
+                        <div class="flex justify-between items-center pt-2 border-t border-blue-100/50 mt-1">
+                            <span class="text-gray-600 text-sm">性价比指数</span>
+                            <span class="text-blue-700 font-bold">
+                                {{ item.cost_performance_score.toFixed(2) }} {{ item.base_unit }}/元
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- 跳转链接 -->
+                    <a :href="item.product_url" target="_blank" rel="noopener noreferrer"
+                       class="block w-full py-2.5 text-center bg-gray-900 text-white font-medium rounded-lg hover:bg-gray-800 transition">
+                        直达购买链接
+                    </a>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref } = Vue
+
+        createApp({
+            setup() {
+                const keyword = ref('可乐')
+                const products = ref([])
+                const loading = ref(false)
+                const hasSearched = ref(false)
+
+                const search = async () => {
+                    if (!keyword.value.trim()) return
+
+                    loading.value = true
+                    hasSearched.value = true
+
+                    try {
+                        const response = await fetch(`/api/search?keyword=${encodeURIComponent(keyword.value)}`)
+                        const res = await response.json()
+                        if (res.status === 'success') {
+                            products.value = res.data
+                        }
+                    } catch (error) {
+                        console.error('搜索出错:', error)
+                        alert('请求失败，请检查后端服务是否启动。')
+                    } finally {
+                        loading.value = false
+                    }
+                }
+
+                // 初始自动搜索一次
+                search()
+
+                return {
+                    keyword,
+                    products,
+                    loading,
+                    hasSearched,
+                    search
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>
