@@ -131,12 +131,12 @@ equivalent_description：无法用结构化乘法表达的平行、等价或近�
 "additionalProperties": false,
 "required": ["value", "unit"],
 "properties": {
-"value": {"type": "integer", "minimum": 1},
+"value": {"type": "number", "exclusiveMinimum": 0},
 "unit": {"type": "string", "minLength": 1}
 }
 }
 },
-"total_value": {"type": "integer", "minimum": 1},
+"total_value": {"type": "number", "exclusiveMinimum": 0},
 "base_unit": {"type": "string", "minLength": 1},
 "equivalent_description": {"type": ["string", "null"]}
 }
