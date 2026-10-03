@@ -303,6 +303,9 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
     started = time.monotonic()
     logger.info("[采集/开始] 准备加载目标分类 | 分类: [%s] | 账号: [%s]", tab_display, account_name)
 
+    # 【新增开关】：数据收集控制开关，防止提前写入默认的“首页”数据
+    is_ready_to_collect = False
+
     def check_storage():
         """把事件回调的存储异常交回同步控制流，禁止换号重试掩盖入库故障。"""
         if storage_error is not None:
@@ -311,7 +314,12 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
 
     def handle_response(response):
         """仅处理目标接口 HTTP 200；清洗补丁后就地累计 stats，存储异常留给 check_storage 上抛。"""
-        nonlocal hit_risk, storage_error
+        nonlocal hit_risk, storage_error, is_ready_to_collect
+
+        # 【新增拦截】：如果还未确认点击到目标分类并等待残余请求过期，直接丢弃所有响应，防污染！
+        if not is_ready_to_collect:
+            return
+
         if storage_error is not None or "brand-group-home/home/goods_list" not in response.url or response.status != 200:
             return
         # : requests 仍统计所有目标 HTTP 200，包含无效 JSON、失败业务响应与空批次。
@@ -349,7 +357,7 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
         with sync_playwright() as p, closing(launch_persistent_context(
                 p, user_data_dir=user_data_dir, headless=GLOBAL_CONFIG["headless_mode"])) as context:
             page = context.pages[0] if context.pages else context.new_page()
-            # : 监听仍早于分类点击，首页和迟到响应仍归入目标分类；请求归属需业务确认。
+            # : 监听虽然前置，但已被 is_ready_to_collect 开关阻断旧数据
             page.on("response", handle_response)
             try:
                 page.goto(GLOBAL_CONFIG["target_url"], wait_until="domcontentloaded")
@@ -366,13 +374,46 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                 clear_popups(page)
                 check_storage()
                 navigation.wait_for(state="visible", timeout=5000)
-                # : 沿用探测账号的 DOM 下标；不同账号的导航顺序若不同，可能点错分类。
-                navigation.locator(":scope > div").nth(tab_info["index"]).evaluate("node => node.click()")
+
+                # 【核心修复】：抛弃 index 点击，通过在当前页面执行完全对称的 JS 代码，根据名称精准匹配标签
+                clicked = page.evaluate("""
+                    (targetName) => {
+                        const tabs = Array.from(document.querySelectorAll('#brand-first-nav > div'));
+                        for (let index = 0; index < tabs.length; index++) {
+                            let tab = tabs[index];
+                            let name = tab.innerText.replace('\\n', '').trim();
+                            if (!name) {
+                                const img = tab.querySelector('img');
+                                name = img ? (img.getAttribute('aria-label') || img.getAttribute('alt') || '图片标签_' + index) : '';
+                            }
+                            name = name.trim() || `未知标签_${index}`;
+
+                            if (name === targetName) {
+                                tab.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                """, tab_name)
+
+                if not clicked:
+                    # 彻底解决千人千面：如果这个账号确实没这个分类，安全跳过，留给后续账号
+                    logger.warning("[采集/跳过] 当前账号无目标分类标签，放弃该分类 | 账号: [%s] | 目标: [%s]",
+                                   account_name, tab_name)
+                    return "PAGE_MISMATCH", stats
+
+                # 【核心防御】：点击完毕后，强制等待，让首页滞留的网络请求彻底被抛弃，同时等待新分类数据触发
                 page.wait_for_timeout(3500)
                 check_storage()
+
                 if page.locator("input[type='search']").first.is_visible():
                     save_error_snapshot(page, tab_name, "异常跑偏_误入搜索页")
                     return "PAGE_MISMATCH", stats
+
+                # 【核心开启】：万事俱备，放行拦截器，接下来的数据才是纯净的目标分类数据！
+                is_ready_to_collect = True
+
                 max_scrolls = GLOBAL_CONFIG["max_scrolls_per_tab"]
                 stop_reason = "达到配置滑动上限"
                 idle_scrolls = 0
@@ -419,9 +460,9 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
     # : 仍以存在目标 HTTP 200 判成功；空商品或全部解析失败也可能返回 SUCCESS。
     logger.info("[采集/完成] 分类作业结束 | 分类: [%s] | 账号: [%s] | 滑动/响应: [%d/%d] "
                 "| 新增/更新: [%d/%d] | 耗时: [%.1f 秒] | 结束依据: [%s]", tab_display, account_name,
-                stats["scrolls"], stats["requests"], stats["new"], stats["update"], time.monotonic() - started, stop_reason)
+                stats["scrolls"], stats["requests"], stats["new"], stats["update"], time.monotonic() - started,
+                stop_reason)
     return "SUCCESS", stats
-
 
 def run_collection_rounds(account_pool, product_manager):
     """账号池负责冷却和落盘；分类含 index/name，跨尝试累计 scrolls/requests/new/update。"""
