@@ -28,6 +28,50 @@ product_manager = ProductManager(db_instance)
 
 app = FastAPI(title="性价比商品搜索服务")
 
+sku_unit_base_mapping = {
+    "质量": {
+        "mg": 1,
+        "g": 1000,
+        "克": 1000,
+        "斤": 500000,
+        "kg": 1000000,
+        "Kg": 1000000,
+        "KG": 1000000,
+        "千克": 1000000,
+        "磅": 453592.37
+    },
+    "容积与体积": {
+        "ml": 1,
+        "mL": 1,
+        "ML": 1,
+        "毫升": 1,
+        "L": 1000,
+        "升": 1000
+    },
+    "数据存储": {
+        "G": 1,
+        "GB": 1,
+        "TB": 1024
+    },
+    "电池容量": {
+        "mAh": 1,
+        "Ah": 1000,
+        "AH": 1000
+    },
+    "功率": {
+        "W": 1,
+        "kW": 1000
+    },
+    "生物活性成分": {
+        "iu": 1,
+        "IU": 1
+    },
+    "速率与排量": {
+        "L/日": 1,
+        "升/天": 1
+    }
+}
+
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     # 构建搜索实体
@@ -76,10 +120,46 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
     logger.info(f"过滤后的商品数量: {len(filtered_products)}")
 
+    # 构建单位到类别、以及单位到基数乘数的反向查找字典
+    unit_to_category = {}
+    unit_to_multiplier = {}
+    for category, units in sku_unit_base_mapping.items():
+        for unit, multiplier in units.items():
+            unit_to_category[unit] = category
+            unit_to_multiplier[unit] = multiplier
+
+    # 遍历当前搜索结果，统计各个类别下不同单位的出现频率
+    category_unit_counts = {}
+    for product in filtered_products:
+        base_unit = product.get("format_info", {}).get("pricing_basis", {}).get("base_unit", "件")
+        category = unit_to_category.get(base_unit)
+        if category:
+            if category not in category_unit_counts:
+                category_unit_counts[category] = {}
+            category_unit_counts[category][base_unit] = category_unit_counts[category].get(base_unit, 0) + 1
+
+    # 找到每个类别下，商品数量最多的单位作为统一后的目标单位
+    category_target_unit = {}
+    for category, counts in category_unit_counts.items():
+        # 按频次最高选取单位
+        target_unit = max(counts.items(), key=lambda x: x[1])[0]
+        category_target_unit[category] = target_unit
+
     grouped_products = {}
     for product in filtered_products:
         total_value = product.get("format_info", {}).get("pricing_basis", {}).get("total_value", 1)
         base_unit = product.get("format_info", {}).get("pricing_basis", {}).get("base_unit", "件")
+
+        # 检查是否可以进行单位转换
+        category = unit_to_category.get(base_unit)
+        if category and category in category_target_unit:
+            target_unit = category_target_unit[category]
+            if base_unit != target_unit:
+                # 执行单位转换计算：当前值 * (原单位倍率 / 目标单位倍率)
+                orig_multiplier = unit_to_multiplier[base_unit]
+                target_multiplier = unit_to_multiplier[target_unit]
+                total_value = total_value * (orig_multiplier / target_multiplier)
+                base_unit = target_unit
 
         # 性价比计算：单位价格买到的量，例如 "克/元"
         price = product["activity_price"]
