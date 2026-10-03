@@ -40,6 +40,7 @@ STATUS_REASONS = {
     "RISK_CONTROL": "触发风控",
     "PAGE_MISMATCH": "进入搜索页或未捕获目标响应",
     "ERROR": "页面加载或交互异常",
+    "LOGGED_OUT": "账号掉登录",  # 【新增】状态枚举
 }
 
 
@@ -48,7 +49,7 @@ class StorageError(RuntimeError):
 
 
 class AccountPool:
-    """accounts 为目录列表；JSON 形貌为 {平台: {绝对目录: ISO 时间字符串}}。
+    """accounts 为目录列表；JSON 形貌为 {平台: {绝对目录: ISO 时间字符串 或 状态字符串}}。
     整个调度期间持有操作系统文件锁；临时文件原子替换，避免多进程抢号和半写文件。
     """
 
@@ -82,7 +83,8 @@ class AccountPool:
                     import fcntl
                     fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                raise RuntimeError(f"账号文件无法加锁 [{self.path}]；请检查是否有采集器正在使用此文件或目录权限不足") from exc
+                raise RuntimeError(
+                    f"账号文件无法加锁 [{self.path}]；请检查是否有采集器正在使用此文件或目录权限不足") from exc
             self._state = {}
             if self.path.exists():
                 with self.path.open(encoding="utf-8") as source:
@@ -116,6 +118,25 @@ class AccountPool:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
 
+    def mark_invalid(self, account, reason="LOGGED_OUT"):
+        """【新增功能】将账号标记为失效（如掉登录），不再参与调度，修改 JSON 并显眼输出警报"""
+        if self._lock is None:
+            raise RuntimeError("账号池必须在 with 语句中使用")
+        state = dict(self._state)
+        statuses = state.get(self.platform, {})
+        # 覆盖为 LOGGED_OUT 字符串写入 json 文件中
+        state[self.platform] = {**statuses, account: reason}
+        self._save(state)
+
+        # 控制台最显眼的警报
+        print("\n" + "❗" * 35)
+        print(f"🚨🚨🚨 警报: 检测到账号异常状态 [{reason}] 🚨🚨🚨")
+        print(f"📁 账号目录: {account}")
+        print(f"⚠️  该账号已被移出可用池！状态已写入 JSON")
+        print(f"👉 恢复方法: 重新登录后，请手动修改 JSON 内的状态才能恢复调度！")
+        print("❗" * 35 + "\n")
+        logger.error("❌ [账号/封禁] 账号被标记为 %s，永久跳过调度 | 账号: [%s]", reason, os.path.basename(account))
+
     def acquire(self, task_name):
         """按配置顺序等待可用账号，先成功记录使用时间，再返回绝对目录。"""
         if self._lock is None:
@@ -126,11 +147,15 @@ class AccountPool:
             statuses = self._state.get(self.platform, {})
             for account in self.accounts:
                 last_used = statuses.get(account)
+
+                # 【新增拦截】如果状态为 LOGGED_OUT，永久无视该账号，不计入冷却逻辑
+                if last_used == "LOGGED_OUT":
+                    continue
+
                 if last_used is not None:
                     try:
                         last_used = datetime.fromisoformat(last_used)
                     except (TypeError, ValueError):
-                        # : 原规则允许使用时间格式异常的账号，可能绕过冷却；保留并显式提醒。
                         logger.warning("[调度/时间校验] 时间格式异常，沿用允许使用规则 | 账号: [%s] "
                                        "| 排查: [账号 JSON 的 ISO 时间字段]", os.path.basename(account))
                         last_used = None
@@ -150,7 +175,6 @@ class AccountPool:
             wait_seconds = GLOBAL_CONFIG["wait_no_account_seconds"]
             logger.info("[调度/等待] 暂无可用账号 | 任务: [%s] | 再次检查: [%d 秒后]", task_name, wait_seconds)
             time.sleep(wait_seconds)
-
 
 def normalize_goods(item, tab_name):
     """item 核心键为 goods_id，价格来源为 origin_price/activity_price/group_order_price_reduce（分）。
@@ -201,9 +225,24 @@ def check_risk_control(page):
         logger.warning("[风控/检测] 无法读取提示文案，沿用未命中结果 | 错误: [%s] | 排查: [页面状态、文案节点]", exc)
         return False
 
+def check_logged_out(page):
+    """【新增功能】检测页面是否已重定向至登录页或呈现登录文案"""
+    try:
+        # 1. 检查URL特征
+        if "login" in page.url.lower():
+            return True
+        # 2. 检查常见掉登录/未登录强制弹出的文案
+        for text in ("手机号登录", "密码登录", "登 录", "获取验证码", "一键登录"):
+            if page.get_by_text(text, exact=True).first.is_visible():
+                return True
+        return False
+    except Exception as exc:
+        logger.warning("[登录/检测] 无法读取登录状态文案，视为未掉登录 | 错误: [%s]", exc)
+        return False
+
 
 def get_tab_list(user_data_dir):
-    """探测导航；返回 [{index: DOM 下标, name: 分类名}]，页面失败返回 None，空导航返回 []。"""
+    """探测导航；返回 [{index: DOM 下标, name: 分类名}]，掉线返回 LOGGED_OUT，其余失败返回 None。"""
     account_name = os.path.basename(user_data_dir)
     started = time.monotonic()
     logger.info("[导航/探测] 开始读取分类 | 账号: [%s]", account_name)
@@ -212,9 +251,23 @@ def get_tab_list(user_data_dir):
         page = context.pages[0] if context.pages else context.new_page()
         try:
             page.goto(GLOBAL_CONFIG["target_url"], wait_until="domcontentloaded")
-            # : 保留先等导航再查风控的顺序；没有导航的拦截页仍进入页面异常路径。
-            page.locator("#brand-first-nav").wait_for(state="visible", timeout=15000)
+
+            # 【新增】捕获节点寻找时的异常，如果是登录页则提早退出
+            try:
+                page.locator("#brand-first-nav").wait_for(state="visible", timeout=15000)
+            except Exception as e:
+                if check_logged_out(page):
+                    logger.warning("[导航/拦截] 检测到账号掉登录，需重新扫码 | 账号: [%s]", account_name)
+                    return "LOGGED_OUT"
+                raise e
+
             page.wait_for_timeout(3000)
+
+            # 【新增】正常加载完毕后，做一次登录确认
+            if check_logged_out(page):
+                logger.warning("[导航/拦截] 检测到账号掉登录，需重新扫码 | 账号: [%s]", account_name)
+                return "LOGGED_OUT"
+
             if check_risk_control(page):
                 logger.warning("[导航/拦截] 首页出现风控提示，重新申请账号 | 账号: [%s] "
                                "| 排查: [账号访问限制]", account_name)
@@ -235,13 +288,21 @@ def get_tab_list(user_data_dir):
                                "| 排查: [导航结构变化、页面尚未渲染]", account_name)
                 return tabs
             logger.info("[导航/完成] 分类读取成功 | 账号: [%s] | 分类: [%s] | 耗时: [%.1f 秒]",
-                        account_name, "; ".join(f"{tab['index']}:{tab['name']}" for tab in tabs), time.monotonic() - started)
+                        account_name, "; ".join(f"{tab['index']}:{tab['name']}" for tab in tabs),
+                        time.monotonic() - started)
             return tabs
         except Exception as exc:
+            # 【新增】代码崩溃时最后查验是否是掉登录引起的异常
+            try:
+                if check_logged_out(page):
+                    logger.warning("[导航/拦截] 检测到账号掉登录，需重新扫码 | 账号: [%s]", account_name)
+                    return "LOGGED_OUT"
+            except Exception:
+                pass
+
             logger.warning("[导航/失败] 读取分类失败，重新申请账号 | 账号: [%s] | 错误: [%s] "
                            "| 排查: [网络、导航节点、脚本执行]", account_name, exc)
             return None
-
 
 def clear_popups(page):
     """按图片、按钮、ESC、遮罩的原有顺序关闭弹窗；保留失败后继续采集的容错。"""
