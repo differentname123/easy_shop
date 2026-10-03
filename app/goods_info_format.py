@@ -242,6 +242,28 @@ def main_controller():
         if db_instance is not None:
             db_instance.close()
 
+def get_recent_successful_formats():
+    db_instance = gen_db_object()
+    db_instance.ping()
+    product_manager = ProductManager(db_instance)
+    products = product_manager.find_recent_successful_formats(hours=24)
+    # 只保留 name 和 format_info 字段
+    result = [{"name": product.get("name"), "format_info": product.get("format_info")} for product in products]
+
+    simple_result = [{"name": product.get("name"), "delivery_quantity": product.get("format_info",{}).get("delivery_quantity")} for product in products]
+
+    # 筛选出 delivery_quantity 为 None 的记录
+    filtered_result = [{"name": product.get("name"), "format_info": product.get("format_info")} for product in products  if product.get("format_info",{}).get("delivery_quantity") is None]
+
+
+    return result, simple_result
+
+
+
 
 if __name__ == "__main__":
     main_controller()
+
+    # get_recent_successful_formats()
+    # print()
+    #
