@@ -23,7 +23,7 @@ logger = setup_logger(app_name="goods_format")
 PROMPT_FILE_PATH = Path(__file__).resolve().parents[1] / "prompt" / "商品数据结构化清洗.txt"
 LLM_MAX_RETRIES = 3
 FORMAT_MAX_RETRIES = 3
-FORMAT_WORKERS = 1
+FORMAT_WORKERS = 5
 FORMAT_BATCH_SIZE = 10
 ROUND_INTERVAL_SECONDS = 600
 BSON_MAX_INT64 = 2 ** 63 - 1
