@@ -6,7 +6,7 @@
 :last_date:
     2026/10/3 13:56
 :description:
-    
+
 """
 import os
 from datetime import datetime, timezone, timedelta
@@ -28,6 +28,7 @@ product_manager = ProductManager(db_instance)
 
 app = FastAPI(title="性价比商品搜索服务")
 
+
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     # 构建搜索实体
     target_entity_info_list = [{"name": keyword, "score": 10}]
@@ -38,15 +39,21 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         sort=[("updated_at", -1)], limit=limit,
     )
 
-    # 提取前端展示和计算所需的字段 (新增了 image_url, product_url, platform)
+    # 提取前端展示和计算所需的字段 (增加了更多字段用于增强展示)
     products = [{
         "name": product.get("name"),
         "product_id": product.get("product_id"),
         "platform": product.get("platform"),
         "image_url": product.get("image_url"),
         "product_url": product.get("product_url"),
+        "original_price": product.get("original_price"),
+        "saved_price": product.get("saved_price"),
+        "sales_tip": product.get("sales_tip"),
+        "brand": product.get("brand"),
+        "category": product.get("category"),
         "format_info": product.get("format_info"),
-        "activity_price": product.get("activity_price", 999999) # 避免除以0或空值
+        "activity_price": product.get("activity_price", 999999),
+        "updated_at": product.get("updated_at")
     } for product in raw_products]
 
     # 计算匹配分数
@@ -63,7 +70,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
         simple_product["match_score"] = match_score
 
-    # 过滤并排序 (修复了原代码 sorted 无赋值的 bug)
+    # 过滤并排序
     filtered_products = [p for p in products if p["match_score"] >= min_match_score]
     filtered_products.sort(key=lambda x: x["match_score"], reverse=True)
 
@@ -83,17 +90,16 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             grouped_products[base_unit] = []
         grouped_products[base_unit].append(product)
 
-    # 按照 base_unit 分组，收集每组性价比排名前 3 的商品，而不仅仅是 1 个，方便用户有更多选择
+    # 按照 base_unit 分组，收集每组性价比排名前 3 的商品
     final_results = []
     for base_unit, unit_products in grouped_products.items():
-        # 按照性价比降序排序
         unit_products.sort(key=lambda x: x["cost_performance_score"], reverse=True)
-        # 取前 3 名
         final_results.extend(unit_products[:3])
 
     # 整体再按性价比分值排个序返回
     final_results.sort(key=lambda x: x["cost_performance_score"], reverse=True)
     return final_results
+
 
 # 1. 搜索 API 接口
 @app.get("/api/search")
@@ -101,12 +107,13 @@ def api_search(keyword: str = "方便面", hours: int = 72):
     results = search_product(keyword, min_match_score=10, hours=hours)
     return {"status": "success", "data": results}
 
+
 # 2. 网页路由配置
 @app.get("/", response_class=HTMLResponse)
 def read_index():
     with open("index.html", "r", encoding="utf-8") as f:
         return f.read()
 
+
 if __name__ == "__main__":
-    # 启动本地服务，运行在 8000 端口
     uvicorn.run(app, host="127.0.0.1", port=8000)
