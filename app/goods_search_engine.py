@@ -2,7 +2,10 @@
 提供查询找到最具性价比的功能
 
 """
+from datetime import datetime, timezone, timedelta
+
 from common.common_utils import setup_logger
+
 logger = setup_logger(app_name="goods_search")
 
 from common.mongo_db.mongo_base import gen_db_object
@@ -13,16 +16,18 @@ db_instance.ping()
 product_manager = ProductManager(db_instance)
 
 
-def search_product(target_entity_info_list, min_match_score=10):
-    products = product_manager.find_recent_successful_formats(hours=24)
-    # 对products 只保留 name, format_info, activity_price 这些字段
+def search_product(target_entity_info_list, min_match_score=10, hours=24, limit=0):
+    products = products = product_manager.query(
+        {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
+         sort=[("updated_at", -1)], limit=limit,
+    )
     products = [{
-            "name": product.get("name"),
-            "format_info": product.get("format_info"),
-            "activity_price": product.get("activity_price")
-        } for product in products]
+        "name": product.get("name"),
+        "product_id": product.get("product_id"),
 
-
+        "format_info": product.get("format_info"),
+        "activity_price": product.get("activity_price")
+    } for product in products]
 
     for simple_product in products:
         core_entities = simple_product.get("format_info", {}).get("core_entities", [])
@@ -30,7 +35,11 @@ def search_product(target_entity_info_list, min_match_score=10):
         match_score = 0
         for target_entity in target_entity_info_list:
             for core_entity in core_entities:
-                if core_entity.get("name") == target_entity.get("name"):
+                core_name = core_entity.get("name")
+                target_name = target_entity.get("name")
+                if core_name and target_name and (
+                        core_name.lower() in target_name.lower() or target_name.lower() in core_name.lower()):
+
                     match_score = match_score + target_entity.get("score", 0) + core_entity.get("score", 0)
 
         simple_product["match_score"] = match_score
@@ -60,27 +69,19 @@ def search_product(target_entity_info_list, min_match_score=10):
         best_product = max(products, key=lambda x: x["cost_performance_score"])
         filtered_products.append(best_product)
     for product in filtered_products:
-        print(f"商品名称: {product['name']}, 价格 {product["activity_price"]}, 性价比分数: {product['cost_performance_score']}, 单位: {product['base_unit']}")
-
-
+        print(
+            f"商品名称: {product['name']}, 价格 {product["activity_price"]}, 性价比分数: {product['cost_performance_score']}, 单位: {product['base_unit']}")
 
     return filtered_products
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":
     target_entity_info_list = [
         {
-          "name": "可乐",
-          "score": 10
+            "name": "可乐",
+            "score": 10
         }
-      ]
+    ]
 
     filtered_products = search_product(target_entity_info_list)
     print()

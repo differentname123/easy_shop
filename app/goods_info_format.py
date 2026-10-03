@@ -24,7 +24,7 @@ LLM_MAX_RETRIES = 3
 FORMAT_MAX_RETRIES = 3
 FORMAT_WORKERS = 1
 FORMAT_BATCH_SIZE = 10
-ROUND_INTERVAL_SECONDS = 3600
+ROUND_INTERVAL_SECONDS = 600
 BSON_MAX_INT64 = 2 ** 63 - 1
 COUNT_KEYS = ("success", "failed", "skipped")
 
@@ -339,18 +339,18 @@ def main_controller():
 
 
 def get_recent_successful_formats(hours=24, limit=0):
-    """查询近期成功记录，返回 (包含 name/format_info 的列表, 包含 name/delivery_quantity 的列表)。"""
+    """查询近期成功记录，返回 (包含 name/format_info 的列表, 包含 name/pricing_basis 的列表)。"""
     with closing(gen_db_object()) as db_instance:
         db_instance.ping()
         product_manager = ProductManager(db_instance)
         # : 原规则按商品 updated_at 筛选，并非 format_updated_at；采集刷新可能使旧格式化结果入选。
         products = product_manager.query(
             {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
-            projection={"name": 1, "format_info": 1, "_id": 0}, sort=[("updated_at", -1)], limit=limit,
+             sort=[("updated_at", -1)], limit=limit,
         )
     result = [{"name": product.get("name"), "format_info": product.get("format_info")} for product in products]
-    # : 保留原返回键 delivery_quantity，但当前协议仅定义 pricing_basis；是否改为 total_value 需业务确认。
-    simple_result = [{"name": product.get("name"), "delivery_quantity": (product.get("format_info") or {}).get("delivery_quantity")}
+    # : 保留原返回键 pricing_basis，但当前协议仅定义 pricing_basis；是否改为 total_value 需业务确认。
+    simple_result = [{"name": product.get("name"), "pricing_basis": (product.get("format_info") or {}).get("pricing_basis")}
                      for product in products]
     return result, simple_result
 
