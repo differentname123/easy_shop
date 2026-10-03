@@ -75,13 +75,57 @@ def search_product(target_entity_info_list, min_match_score=10, hours=24, limit=
     return filtered_products
 
 
-if __name__ == "__main__":
-    target_entity_info_list = [
-        {
-            "name": "方便面",
-            "score": 10
-        }
-    ]
+def extract_unique_units(hours=24, limit=0):
+    """
+    查询数据库获取最近更新的商品，提取所有不重复的 unit，
+    并保存该 unit 第一次出现时的商品 name。
 
-    filtered_products = search_product(target_entity_info_list)
-    print()
+    返回: dict, key 为 unit, value 为 name
+    """
+    # 1. 查询数据
+    products = product_manager.query(
+        {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
+        sort=[("updated_at", -1)],
+        limit=limit,
+    )
+
+    unique_units_dict = {}
+
+    # 2. 遍历商品进行处理
+    for product in products:
+        name = product.get("name")
+        if not name:
+            continue
+
+        # 安全获取 pricing_basis (兼容在 format_info 内部或外层的情况)
+        format_info = product.get("format_info", {})
+        pricing_basis = format_info.get("pricing_basis") or product.get("pricing_basis", {})
+
+        structure = pricing_basis.get("structure", [])
+
+        # 3. 遍历 structure 获取 unit
+        for item in structure:
+            unit = item.get("unit")
+            # 如果 unit 存在且是第一次出现（还不在 dict 的 key 中），则记录
+            if unit and unit not in unique_units_dict:
+                unique_units_dict[unit] = name
+
+        # 补充逻辑(可选)：如果你想把 base_unit 也一并收录进去，可以取消下面这两行的注释：
+        # base_unit = pricing_basis.get("base_unit")
+        # if base_unit and base_unit not in unique_units_dict:
+        #     unique_units_dict[base_unit] = name
+
+    return unique_units_dict
+
+if __name__ == "__main__":
+    extract_unique_units()
+    #
+    # target_entity_info_list = [
+    #     {
+    #         "name": "可乐",
+    #         "score": 10
+    #     }
+    # ]
+    #
+    # filtered_products = search_product(target_entity_info_list)
+    # print()
