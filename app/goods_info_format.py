@@ -373,8 +373,10 @@ def get_recent_successful_formats(hours=24, limit=0):
             "pricing_basis": pricing_basis
         })
 
+
     # 转换为普通 dict 并返回
-    return dict(grouped_data)
+    grouped_data_info = dict(grouped_data)
+    return grouped_data_info
 
 
 if __name__ == "__main__":
