@@ -1,173 +1,104 @@
-# -*- coding: utf-8 -*-
+# [功能摘要] 对 products 只提供查询和局部更新两个业务接口。
+# [输入数据] Mongo 查询字典；单个商品补丁或补丁列表，每项必含 platform/product_id。
+# [数据流转/交互] 统一商品身份 → 合并同批字段补丁 → 完整校验 → 使用 $set/$inc 批量写入；
+#                 筛选规则、时间戳、格式化结果和重试次数均由应用层显式传入。
+# [输出数据] 返回商品字典列表或 {new, update, modified} 计数；未传字段保持原值，异常上抛。
 
-import logging
-from datetime import datetime, timezone
+import math
 
-logger = logging.getLogger(__name__)
-
-
-def _required_string(value, field):
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"必须提供非空字符串字段: {field}")
-    return value.strip()
-
-
-def _platform(value):
-    """平台代码使用小写，允许后续接入新平台而不修改存储层。"""
-    return _required_string(value, "platform").lower()
-
-
-def _product_id(value):
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
-        raise ValueError("product_id 必须是非空字符串或整数")
-    return _required_string(str(value), "product_id")
+from pymongo import UpdateOne
 
 
 class ProductManager:
-    """多平台商品最新信息；联合身份为平台代码和平台内商品 ID。"""
+    """唯一身份为 (platform, product_id)，不填默认业务字段，也不替换整条商品。"""
 
     COLLECTION_NAME = "products"
-    UNIQUE_KEYS = ["platform", "product_id"]
-    FORMAT_MAX_RETRIES = 3
 
     def __init__(self, db_instance):
         if db_instance is None:
             raise ValueError("必须提供有效的 MongoBase 实例")
-        self.db = db_instance
-        self.collection_name = self.COLLECTION_NAME
-        self.db.create_index(self.collection_name, [("platform", 1), ("product_id", 1)], unique=True)
-        self.db.create_index(self.collection_name, [("platform", 1), ("updated_at", -1)])
+        self._db = db_instance
+        self._db.create_index(self.COLLECTION_NAME, [("platform", 1), ("product_id", 1)], unique=True)
+        self._db.create_index(self.COLLECTION_NAME, [("platform", 1), ("updated_at", -1)])
 
-    def upsert_products(self, records):
-        """完整校验后批量入库；同批相同身份保留最后一条，不修改输入。"""
+    def query(self, query=None, projection=None, sort=None, limit=0):
+        """入参沿用 Mongo 条件/投影/排序形貌；返回 list[dict]，业务过滤条件由应用层构造。"""
+        return self._db.find_many(
+            self.COLLECTION_NAME, query=query, projection=projection, sort=sort, limit=limit,
+        )
+
+    @staticmethod
+    def _prepare_updates(records, condition, increments, upsert):
+        """把补丁完整校验为 [(身份条件, 更新字典)]，确保非法批次在任何数据库写入前失败。"""
+        if isinstance(records, dict):
+            records = [records]
+        if not isinstance(records, (list, tuple)):
+            raise TypeError("records 必须是商品字典或商品字典列表")
+        if type(upsert) is not bool:
+            raise TypeError("upsert 必须是布尔值")
+        if condition is not None and not isinstance(condition, dict):
+            raise TypeError("condition 必须是 Mongo 查询字典")
+        if condition and upsert:
+            raise ValueError("带附加条件的更新必须设置 upsert=False，避免条件不符时误插入")
+        if increments is not None and not isinstance(increments, dict):
+            raise TypeError("increments 必须是 {字段: 增量} 字典")
+        increments = {} if increments is None else increments.copy()
+        for field, value in increments.items():
+            if not isinstance(field, str) or field.split(".")[0] in {"_id", "platform", "product_id"}:
+                raise ValueError("不能递增商品身份字段，增量字段名必须是字符串")
+            valid_int = type(value) is int and -(2 ** 63) <= value < 2 ** 63
+            valid_float = type(value) is float and math.isfinite(value)
+            if not (valid_int or valid_float):
+                raise ValueError(f"增量必须是可存储的有限数值: {field}")
+
         batch = {}
-        now = datetime.now(timezone.utc)
         for record in records:
+            if not isinstance(record, dict):
+                raise TypeError("每个商品补丁必须是字典")
             item = record.copy()
             item.pop("_id", None)
-            item["platform"] = _platform(item.get("platform"))
-            item["product_id"] = _product_id(item.get("product_id"))
-            item["updated_at"] = now
-            batch[(item["platform"], item["product_id"])] = item
+            platform, product_id = item.get("platform"), item.get("product_id")
+            if not isinstance(platform, str) or not platform.strip():
+                raise ValueError("platform 必须是非空字符串")
+            if type(product_id) not in (str, int) or not str(product_id).strip():
+                raise ValueError("product_id 必须是非空字符串或整数，不能是布尔值")
+            item.update(platform=platform.strip().lower(), product_id=str(product_id).strip())
+            identity = (item["platform"], item["product_id"])
+            batch.setdefault(identity, {}).update(item)
 
-        if not batch:
-            return {"new": 0, "update": 0}
-        result = self.db.bulk_upsert(self.collection_name, list(batch.values()), self.UNIQUE_KEYS)
-        counts = {"new": result.upserted_count, "update": result.matched_count}
-        logger.info("商品批量入库完成 | 新增: [%d] 更新: [%d]", counts["new"], counts["update"])
-        return counts
-    def find_recent_successful_formats(self, hours=24, limit=0):
+        prepared = []
+        for (platform, product_id), fields in batch.items():
+            paths = list(fields) + list(increments)
+            if any(not isinstance(path, str) or "\x00" in path or
+                   any(not part or part.startswith("$") for part in path.split(".")) for path in paths):
+                raise ValueError("更新字段名不能含空路径、空字符或以 $ 开头的路径片段")
+            if any(path.split(".")[0] in {"_id", "platform", "product_id"} and "." in path for path in paths):
+                raise ValueError("不能更新商品身份的子字段")
+            if len(set(paths)) != len(paths):
+                raise ValueError("同一字段不能同时赋值和递增")
+            path_set = set(paths)
+            if any(".".join(path.split(".")[:index]) in path_set
+                   for path in paths for index in range(1, len(path.split(".")))):
+                raise ValueError("同一次更新不能同时提交父字段和它的子字段")
+            identity = {"platform": platform, "product_id": product_id}
+            query = {"$and": [identity, condition]} if condition else identity
+            update = {"$set": fields}
+            if increments:
+                update["$inc"] = increments
+            prepared.append((query, update))
+        return prepared
+
+    def update(self, records, *, condition=None, increments=None, upsert=True):
+        """records: {platform, product_id, 需修改字段} 或其列表；返回 {new, update, modified}。
+        只赋值显式字段；None/空值是显式赋值，嵌套局部更新使用 '父字段.子字段' 点路径。
+        condition 是附加匹配条件，increments 是原子增量；带条件时禁止插入。
+        字典/列表字段作为整体赋值；同批同身份按字段合并，重复字段以后一次为准，增量执行一次。
         """
-        查询 updated_at 在指定小时内更新的，且 format_status 成功的记录。
-        默认查询过去 24 小时的数据。
-        """
-        from datetime import timedelta  # 原文件头部未导入 timedelta，这里局部导入
-
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
-
-        query = {
-            "format_status": "success",
-            "updated_at": {"$gte": cutoff_time}
-        }
-
-        return self.db.find_many(
-            self.collection_name,
-            query=query,
-            sort=[("updated_at", -1)],
-            limit=limit
-        )
-
-    def find_products(self, platform, limit=100):
-        """按平台查询最新商品；limit=0 表示不限制数量。"""
-        return self.db.find_many(
-            self.collection_name, query={"platform": _platform(platform)},
-            sort=[("updated_at", -1)], limit=limit,
-        )
-
-    def find_products_by_ids(self, platform, product_ids):
-        """按指定平台和商品 ID 查询，禁止跨平台混查同名 ID。"""
-        platform = _platform(platform)
-        ids = [_product_id(value) for value in product_ids]
-        if not ids:
-            return []
-        return self.db.find_many(
-            self.collection_name, query={"platform": platform, "product_id": {"$in": ids}},
-        )
-
-    def count_products(self, platform):
-        return self.db.get_collection(self.collection_name).count_documents({"platform": _platform(platform)})
-
-    def _pending_format_query(self):
-        return {
-            "format_status": {"$ne": "success"},
-            "$or": [
-                {"format_retry_count": {"$exists": False}},
-                {"format_retry_count": {"$lt": self.FORMAT_MAX_RETRIES}},
-            ],
-        }
-
-    def find_pending_format_products(self):
-        """跨平台查询本轮候选，历史记录缺失失败次数时按 0 处理。"""
-        return self.db.find_many(
-            self.collection_name, query=self._pending_format_query(),
-            # projection={"_id": 1, "name": 1, "format_retry_count": 1},
-        )
-
-    def save_format_result(self, product, result):
-        """仅更新仍符合条件的原商品；一轮最终失败才原子增加一次次数。"""
-        status = result["status"]
-        if status not in ("success", "failed"):
-            raise ValueError("格式化结果 status 必须是 success 或 failed")
-        if status == "success" and not isinstance(result.get("format_info"), dict):
-            raise ValueError("成功的格式化结果必须提供 JSON 对象")
-        query = self._pending_format_query()
-        query["_id"] = product["_id"]
-        query["name"] = {"$eq": product["name"]} if "name" in product else {"$exists": False}
-        update = {
-            "$set": {
-                "format_status": status,
-                "format_info": result["format_info"] if status == "success" else None,
-                "format_model": result.get("model_used"),
-                "format_updated_at": datetime.now(timezone.utc),
-                "format_error": "" if status == "success" else result.get("error", ""),
-            },
-            # 成功时加 0，保留历史失败次数，并为首次成功的旧记录补齐字段。
-            "$inc": {"format_retry_count": 1 if status == "failed" else 0},
-        }
-        saved = self.db.get_collection(self.collection_name).update_one(query, update, upsert=False)
-        return saved.matched_count > 0
-
-
-class AccountStatusManager:
-    """平台账号的上次使用时间；账号键为完整浏览器用户目录路径。"""
-
-    COLLECTION_NAME = "crawler_account_status"
-    UNIQUE_KEYS = ["platform", "account"]
-
-    def __init__(self, db_instance):
-        if db_instance is None:
-            raise ValueError("必须提供有效的 MongoBase 实例")
-        self.db = db_instance
-        self.collection_name = self.COLLECTION_NAME
-        self.db.create_index(self.collection_name, [("platform", 1), ("account", 1)], unique=True)
-
-    def get_last_used_times(self, platform, accounts):
-        platform = _platform(platform)
-        accounts = [_required_string(account, "account") for account in accounts]
-        if not accounts:
-            return {}
-        records = self.db.find_many(
-            self.collection_name,
-            query={"platform": platform, "account": {"$in": accounts}},
-            projection={"_id": 0, "account": 1, "last_used_at": 1},
-        )
-        return {record["account"]: record.get("last_used_at") for record in records}
-
-    def touch_account(self, platform, account):
-        """在启动账号探测/采集前原子更新使用时间。"""
-        record = {
-            "platform": _platform(platform),
-            "account": _required_string(account, "account"),
-            "last_used_at": datetime.now(timezone.utc),
-        }
-        return self.db.bulk_upsert(self.collection_name, [record], self.UNIQUE_KEYS)
+        prepared = self._prepare_updates(records, condition, increments, upsert)
+        if not prepared:
+            return {"new": 0, "update": 0, "modified": 0}
+        operations = [UpdateOne(query, update, upsert=upsert) for query, update in prepared]
+        result = self._db.get_collection(self.COLLECTION_NAME).bulk_write(operations, ordered=False)
+        if not result.acknowledged:
+            raise RuntimeError("商品写入未获得数据库确认，请检查 write concern 配置")
+        return {"new": result.upserted_count, "update": result.matched_count, "modified": result.modified_count}
