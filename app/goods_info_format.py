@@ -7,6 +7,7 @@
 import json
 import math
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -339,21 +340,43 @@ def main_controller():
 
 
 def get_recent_successful_formats(hours=24, limit=0):
-    """查询近期成功记录，返回 (包含 name/format_info 的列表, 包含 name/pricing_basis 的列表)。"""
+    """查询近期成功记录，按 category 分组返回。"""
     with closing(gen_db_object()) as db_instance:
         db_instance.ping()
         product_manager = ProductManager(db_instance)
         # : 原规则按商品 updated_at 筛选，并非 format_updated_at；采集刷新可能使旧格式化结果入选。
         products = product_manager.query(
             {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
-             sort=[("updated_at", -1)], limit=limit,
+            sort=[("updated_at", -1)], limit=limit,
         )
-    result = [{"name": product.get("name"), "format_info": product.get("format_info")} for product in products]
-    # : 保留原返回键 pricing_basis，但当前协议仅定义 pricing_basis；是否改为 total_value 需业务确认。
-    simple_result = [{"name": product.get("name"), "pricing_basis": (product.get("format_info") or {}).get("pricing_basis")}
-                     for product in products]
-    return result, simple_result
+
+    # 使用 defaultdict 初始化嵌套字典，每个 category 下包含 result 和 simple_result 两个列表
+    grouped_data = defaultdict(lambda: {"result": [], "simple_result": []})
+
+    for product in products:
+        # 提取 category，如果数据库中可能没有该字段，默认归入 "uncategorized"
+        category = product.get("category", "uncategorized")
+
+        name = product.get("name")
+        format_info = product.get("format_info")
+        pricing_basis = (format_info or {}).get("pricing_basis")
+
+        # 将数据分别追加到对应 category 的两个列表中
+        grouped_data[category]["result"].append({
+            "name": name,
+            "format_info": format_info
+        })
+
+        # : 保留原返回键 pricing_basis，但当前协议仅定义 pricing_basis；是否改为 total_value 需业务确认。
+        grouped_data[category]["simple_result"].append({
+            "name": name,
+            "pricing_basis": pricing_basis
+        })
+
+    # 转换为普通 dict 并返回
+    return dict(grouped_data)
 
 
 if __name__ == "__main__":
+    # get_recent_successful_formats()
     main_controller()
