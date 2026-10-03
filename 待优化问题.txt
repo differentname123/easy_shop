@@ -47,3 +47,61 @@
     "equivalent_description": "每箱1373g"
   }
 }
+
+
+【GEMEZ】印尼小鸡面干脆面烧烤辣味散装30包408g网红休闲零食方便面
+  {
+    'name': '【GEMEZ】印尼小鸡面干脆面烧烤辣味散装30包408g网红休闲零食方便面',
+    'product_id': '1000865127308',
+    'format_info': {
+      'product_id': '1000865127308',
+      'core_entities': [
+        {
+          'name': '干脆面',
+          'score': 10
+        },
+        {
+          'name': '方便面零食',
+          'score': 7
+        }
+      ],
+      'decision_keywords': [
+        {
+          'attribute_name': '品牌',
+          'attribute_value': 'GEMEZ',
+          'score': 9
+        },
+        {
+          'attribute_name': '口味',
+          'attribute_value': '烧烤辣味',
+          'score': 8
+        },
+        {
+          'attribute_name': '包装数量',
+          'attribute_value': '30包',
+          'score': 8
+        },
+        {
+          'attribute_name': '净含量',
+          'attribute_value': '408g',
+          'score': 7
+        }
+      ],
+      'pricing_basis': {
+        'is_inferred': False,
+        'structure': [
+          {
+            'value': 30,
+            'unit': '包'
+          }
+        ],
+        'total_value': 30,
+        'base_unit': '包',
+        'equivalent_description': '总净含量408g'
+      }
+    },
+    'activity_price': 24.6,
+    'match_score': 17,
+    'cost_performance_score': 1.2195121951219512,
+    'base_unit': '包'
+  }
