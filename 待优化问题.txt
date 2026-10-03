@@ -1,0 +1,49 @@
+1.多规格提取的计价基准不正确， 现在 一箱既是 10件 也就是 1373g：
+    name: "【3箱】百草味中秋节坚果零食礼盒1373g/10件坚果送礼送长辈"
+    format_info: {
+  "product_id": "313428630282",
+  "core_entities": [
+    {
+      "name": "坚果礼盒",
+      "score": 10
+    }
+  ],
+  "decision_keywords": [
+    {
+      "attribute_name": "品牌",
+      "attribute_value": "百草味",
+      "score": 7
+    },
+    {
+      "attribute_name": "规格",
+      "attribute_value": "10件坚果",
+      "score": 7
+    },
+    {
+      "attribute_name": "重量",
+      "attribute_value": "1373g",
+      "score": 6
+    },
+    {
+      "attribute_name": "用途",
+      "attribute_value": "送礼",
+      "score": 4
+    }
+  ],
+  "pricing_basis": {
+    "is_inferred": false,
+    "structure": [
+      {
+        "value": 3,
+        "unit": "箱"
+      },
+      {
+        "value": 10,
+        "unit": "件"
+      }
+    ],
+    "total_value": 30,
+    "base_unit": "件",
+    "equivalent_description": "每箱1373g"
+  }
+}

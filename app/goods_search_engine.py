@@ -78,7 +78,7 @@ def search_product(target_entity_info_list, min_match_score=10, hours=24, limit=
 if __name__ == "__main__":
     target_entity_info_list = [
         {
-            "name": "可乐",
+            "name": "方便面",
             "score": 10
         }
     ]
