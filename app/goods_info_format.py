@@ -12,8 +12,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-from common.common_utils import read_file_to_str, setup_logger, string_to_object
+import multiprocessing
+from app.pdd_utils import batch_convert_pdd_urls
+from common.common_utils import read_file_to_str, setup_logger, string_to_object, get_config
 from common.model_api import generate_content
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
@@ -23,6 +24,7 @@ logger = setup_logger(app_name="goods_format")
 PROMPT_FILE_PATH = Path(__file__).resolve().parents[1] / "prompt" / "商品数据结构化清洗.txt"
 LLM_MAX_RETRIES = 3
 FORMAT_MAX_RETRIES = 3
+PROMOTION_MAX_RETRIES = 3
 FORMAT_WORKERS = 5
 FORMAT_BATCH_SIZE = 10
 ROUND_INTERVAL_SECONDS = 600
@@ -310,8 +312,12 @@ def run_format_round(product_manager):
     return counts
 
 
-def main_controller():
-    """复用健康连接，每小时执行一轮；轮级异常保留原重连规则，退出时关闭连接。"""
+def _task_worker_loop(task_name, round_func):
+    """
+    通用的后台进程守护循环（从原 main_controller 抽取）。
+    复用健康连接，每小时（根据 ROUND_INTERVAL_SECONDS）执行一轮；
+    子进程维护自己独立的数据库连接对象，避免多进程内存冲突。
+    """
     db_instance = product_manager = None
     try:
         while True:
@@ -323,20 +329,169 @@ def main_controller():
                     db_instance = gen_db_object()
                     db_instance.ping()
                     product_manager = ProductManager(db_instance)
-                run_format_round(product_manager)
+
+                # 执行具体的一轮业务逻辑
+                round_func(product_manager)
+
             except Exception as exc:
                 product_manager = None
-                logger.exception("❌ [调度/异常] 本轮终止，下轮重新连接 | 间隔: [%d 秒] | 原因: [%s] "
-                                 "| 排查: [数据库、提示词路径、候选查询与线程池]",
-                                 ROUND_INTERVAL_SECONDS, " ".join(str(exc).split())[:400])
-                # : 沿用下一轮前关闭故障连接的时机；等待一小时期间仍持有该连接池。
-            logger.info("[调度/等待] 本轮结束 | 等待: [%d 秒]", ROUND_INTERVAL_SECONDS)
+                logger.exception("❌ [%s调度/异常] 本轮终止，下轮重新连接 | 间隔: [%d 秒] | 原因: [%s] "
+                                 "| 排查: [数据库、候选查询与线程池或网络请求]",
+                                 task_name, ROUND_INTERVAL_SECONDS, " ".join(str(exc).split())[:400])
+
+            logger.info("[%s调度/等待] 本轮结束 | 等待: [%d 秒]", task_name, ROUND_INTERVAL_SECONDS)
             time.sleep(ROUND_INTERVAL_SECONDS)
+
     except KeyboardInterrupt:
-        logger.info("[系统/退出] 收到中断，停止格式化任务")
+        # 子进程屏蔽 KeyboardInterrupt，由主进程统一截获并打印退出日志
+        pass
     finally:
         if db_instance is not None:
             db_instance.close()
+
+
+def main_controller():
+    """主入口：利用多进程并行启动 [商品结构化格式化] 与 [推广链接转链] 两个任务"""
+
+    # 1. 创建两个独立的进程，分别指向不同的业务方法
+    format_process = multiprocessing.Process(
+        target=_task_worker_loop, args=("格式化", run_format_round), name="FormatWorkerProcess"
+    )
+    promotion_process = multiprocessing.Process(
+        target=_task_worker_loop, args=("转链", run_promotion_round), name="PromotionWorkerProcess"
+    )
+
+    # 2. 设为守护进程（随主程序一起退出）
+    format_process.daemon = True
+    promotion_process.daemon = True
+
+    # 3. 启动进程
+    format_process.start()
+    logger.info("[系统/启动] 已启动 格式化 进程 (PID: %d)", format_process.pid)
+
+    promotion_process.start()
+    logger.info("[系统/启动] 已启动 转链 进程 (PID: %d)", promotion_process.pid)
+
+    # 4. 主进程保持存活并监控
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("[系统/退出] 收到中断，正在停止所有后台并行任务...")
+
+def pending_promotion_query():
+    """新采集商品尚无 promotion_* 相关推广链接字段，或转链失败但未达到尝试上限。"""
+    return {
+        "promotion_status": {"$ne": "success"},
+        "$or": [
+            {"promotion_retry_count": {"$exists": False}},
+            {"promotion_retry_count": {"$lt": PROMOTION_MAX_RETRIES}},
+        ],
+    }
+
+
+def run_promotion_round(product_manager):
+    pdd_client_id = get_config("pdd_client_id")
+    pdd_client_secret = get_config("pdd_client_secret")
+    pdd_pid = get_config("pdd_pid")
+    pdd_custom_parameters = get_config("pdd_custom_parameters")
+
+    """一次查询待转链商品候选，批量处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
+    started = time.monotonic()
+
+    # 根据要求，拉取 product_url 及必要的基础字段
+    products = product_manager.query(
+        pending_promotion_query(),
+        projection={"_id": 1, "platform": 1, "product_id": 1, "product_url": 1}
+    )
+    counts = dict.fromkeys(COUNT_KEYS, 0)
+
+    if not products:
+        logger.info("[转链调度/完成] 本轮无待处理商品 | 数量: [0] | 耗时: [%.2f 秒]", time.monotonic() - started)
+        return counts
+
+    logger.info("[转链调度/本轮] 开始批量转链商品 | 待处理: [%d]", len(products))
+
+    failure_details = []
+    skipped_ids = []
+
+    for product in products:
+        product_url = product.get("product_url")
+        product_id = product.get("product_id")
+
+        # 兜底：如果没有 url 字段，直接标记失败
+        if not product_url:
+            status = "failed"
+            error = "product_url 为空"
+        else:
+            # 调取洗链功能
+            results = batch_convert_pdd_urls(
+                client_id=pdd_client_id,
+                client_secret=pdd_client_secret,
+                pid=pdd_pid,
+                url_list=[product_url],
+                uid=pdd_custom_parameters  # 绑定返利用户
+            )
+
+            # 提取本条链接的结果
+            item_result = results.get(product_url, {})
+
+            if item_result.get("status") == "success":
+                status = "success"
+                short_url = item_result.get("h5_jump_url")
+                error = ""
+            else:
+                status = "failed"
+                short_url = ""
+                error = item_result.get("error_msg", "未知转链错误")
+
+        # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束）
+        condition = pending_promotion_query()
+        condition.update({"_id": product["_id"]})
+
+        # 构造需要写入 DB 的数据
+        db_update_data = {
+            "platform": product.get("platform"),
+            "product_id": product_id,
+            "promotion_status": status,
+            "promotion_updated_at": datetime.now(timezone.utc),
+            "promotion_error": error,
+        }
+
+        if status == "success":
+            db_update_data["promotion_url"] = short_url
+
+        # 将结果写回 DB，若失败累加 promotion_retry_count
+        saved = product_manager.update(
+            db_update_data,
+            condition=condition,
+            increments={"promotion_retry_count": 1 if status == "failed" else 0},
+            upsert=False,
+        )
+
+        # 统计结果
+        if not saved["update"]:
+            counts["skipped"] += 1
+            skipped_ids.append(product_id)
+            continue
+
+        counts[status] += 1
+        if status == "failed":
+            failure_details.append(f"{product_id}: {' '.join(error.split())[:240]}")
+
+    # 打印本轮统计日志
+    failed, skipped = counts["failed"], counts["skipped"]
+    all_failed = failed == len(products)
+
+    log = logger.error if all_failed else logger.warning if failed or skipped else logger.info
+    message = "❌ [转链调度/批次完成] 全批生成失败" if all_failed else "[转链调度/批次完成] 商品结果已逐项处理"
+    detail = "; ".join(failure_details)[:800] if failure_details else "无"
+
+    log("%s | 成功/失败/跳过: [%d/%d/%d] | 耗时: [%.2f 秒] | 失败摘要: [%s] | 跳过 ID: [%s]",
+        message, counts["success"], failed, skipped, time.monotonic() - started,
+        detail, ", ".join(map(str, skipped_ids)) or "无")
+
+    return counts
 
 
 def get_recent_successful_formats(hours=24, limit=0):
