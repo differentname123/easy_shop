@@ -1,17 +1,25 @@
 # -*- coding: utf-8 -*-
-""":authors:
-    zhuxiaohu (Unified Version)
-:description:
-    拼多多商品详情大一统查询器
-    - 支持 goods_sign 规范查询 (pdd.ddk.goods.detail)
-    - 支持 goods_id 短链洗白截胡查询 (zs.unit.url.gen + search)
-    - 统一返回字段结构，自动占位缺失数据
 """
+=============================================================================
+[顶层数据流] 拼多多商品详情大一统查询器 & 批量洗链工具
+=============================================================================
+* [功能摘要]：对外屏蔽拼多多复杂的接口鉴权与多链路查询差异，提供统一的商品信息获取与转链（CPS佣金链接生成）能力。
+* [输入数据]：PDD应用凭证(client_id/secret)、推广位标识[pid]、商品唯一标识[goods_sign]或[goods_id]、原始商品链接。
+* [数据流转/交互]：
+    1. 接收标识参数 -> 剔除空值 -> 字典排序后附带secret进行MD5签名 -> 包装为JSON POST至PDD网关。
+    2. [查询链路]：优先使用 goods_sign 走官方 Detail 接口；若只有 goods_id，则先过 url.gen 接口洗出短链，再用短链过 search 接口“截胡”商品信息。
+    3. [转链链路]：接收外部原始链接，注入自定义追踪参数(uid)，请求 url.gen 接口生成带个人佣金标识的全新短链。
+* [输出数据]：经过标准化清洗、字段对齐的统一商品信息字典 (包含预估佣金、DSR评分等) 或 转链结果字典。遇到异常抛出包含明确 error 信息的结构体。
+=============================================================================
+"""
+
 import time
 import json
 import hashlib
 import requests
-from common.common_utils import get_config
+from common.common_utils import get_config, setup_logger
+
+logger = setup_logger(app_name="pdd_utils")
 
 
 def call_pdd_api(client_id, client_secret, api_type, business_params):
@@ -20,24 +28,18 @@ def call_pdd_api(client_id, client_secret, api_type, business_params):
     """
     url = "https://gw-api.pinduoduo.com/api/router"
 
-    # 1. 构造基础参数
     params = {
         "type": api_type,
         "client_id": client_id,
         "timestamp": str(int(time.time())),
         "data_type": "JSON",
-        "version": "V1",
+        "version": "V1"
     }
-
-    # 合并业务参数并过滤 None 值
     params.update({k: v for k, v in business_params.items() if v is not None})
 
-    # 2. 签名生成 (MD5 签名算法)
-    sorted_keys = sorted(params.keys())
     sign_str = client_secret
-    for key in sorted_keys:
+    for key in sorted(params.keys()):
         val = params[key]
-        # PDD 的 bool 类型签名时必须转为小写字符串
         if isinstance(val, bool):
             val = "true" if val else "false"
         sign_str += f"{key}{val}"
@@ -45,298 +47,254 @@ def call_pdd_api(client_id, client_secret, api_type, business_params):
 
     params["sign"] = hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
 
-    # 3. 发起请求
     try:
-        headers = {'Content-Type': 'application/json;charset=utf-8'}
-        response = requests.post(url, json=params, headers=headers, timeout=10)
+        response = requests.post(
+            url,
+            json=params,
+            headers={'Content-Type': 'application/json;charset=utf-8'},
+            timeout=10
+        )
         response.raise_for_status()
         result = response.json()
-
-        if "error_response" in result:
-            print(f"[-] 接口 {api_type} 返回错误: {result['error_response'].get('error_msg')}")
-            return None
-
-        return result
     except Exception as e:
-        print(f"[-] 接口 {api_type} 网络请求异常: {str(e)}")
-        return None
+        # [修改点] 移除零碎日志，直接上抛，交由顶层统打单行日志
+        raise RuntimeError(f"网络层崩溃: {str(e)}")
+
+    if "error_response" in result:
+        # [核心修改点] 完整透传拼多多的深层错误代码(sub_msg / sub_code)，揭穿隐形风控
+        err_resp = result['error_response']
+        error_msg = err_resp.get('error_msg', '未知业务错误')
+        sub_msg = err_resp.get('sub_msg', '')
+        error_code = err_resp.get('error_code', '')
+        sub_code = err_resp.get('sub_code', '')
+
+        full_error = f"[{error_code}:{sub_code}] {error_msg} - {sub_msg}".strip(" -:")
+        raise RuntimeError(f"PDD接口拒接: {full_error}")
+
+    return result
 
 
 def format_unified_response(raw_data, source_type):
     """
     统一数据清洗与格式化模块
-    基于真实 API 返回值特征，提取核心高频字段，并进行安全占位。
     """
     if not raw_data:
         return None
 
+    min_group_price = raw_data.get("min_group_price", 0)
+    coupon_discount = raw_data.get("coupon_discount", 0)
+    promotion_rate = raw_data.get("promotion_rate", 0)
+
+    estimated_commission = int((min_group_price - coupon_discount) * promotion_rate / 1000) if promotion_rate > 0 else 0
+
     return {
-        # ================= 1. 基础信息 =================
         "goods_id": raw_data.get("goods_id", 0),
         "goods_sign": raw_data.get("goods_sign", ""),
         "goods_name": raw_data.get("goods_name", ""),
         "goods_desc": raw_data.get("goods_desc", ""),
         "category_name": raw_data.get("category_name", ""),
         "brand_name": raw_data.get("brand_name", ""),
-
-        # ================= 2. 图片信息 =================
-        "goods_thumbnail_url": raw_data.get("goods_thumbnail_url", ""),  # 缩略图(适合列表页)
-        "goods_image_url": raw_data.get("goods_image_url", ""),  # 高清主图(适合详情页/海报)
-
-        # ================= 3. 价格与佣金 =================
-        "min_group_price": raw_data.get("min_group_price", 0),  # 拼团价 (单位：分)
-        "min_normal_price": raw_data.get("min_normal_price",
-                                         raw_data.get("min_group_price", 0)),  # 单买价 (单位：分)
-        "promotion_rate": raw_data.get("promotion_rate", 0),  # 佣金比例 (单位：千分之几)
-
-        # 预估佣金收益绝对值（分） = (拼团价 - 优惠券) * 佣金比例 / 1000
-        # 这里顺手算好，方便外部直接展示预估赚多少钱
-        "estimated_commission": int(
-            (raw_data.get("min_group_price", 0) - raw_data.get("coupon_discount", 0))
-            * raw_data.get("promotion_rate", 0) / 1000
-        ) if raw_data.get("promotion_rate", 0) > 0 else 0,
-
-        # ================= 4. 销量与标签 =================
-        "sales_tip": raw_data.get("sales_tip", "0"),  # 已拼件数 (如 "2732")
-        "unified_tags": raw_data.get("unified_tags", []),  # 服务保障标签 (如 ['坏了包赔', '退货包运费'])
-
-        # ================= 5. 店铺与 DSR 评分 =================
-        "mall_name": raw_data.get("mall_name", ""),  # 店铺名称
-        "merchant_type": raw_data.get("merchant_type", 1),  # 商家类型 (1个人,2企业,3旗舰店,4专卖店,5专营店,6普通店)
-        "desc_txt": raw_data.get("desc_txt", "平"),  # 描述相符评分 (高/平/低)
-        "serv_txt": raw_data.get("serv_txt", "平"),  # 服务态度评分 (高/平/低)
-        "lgst_txt": raw_data.get("lgst_txt", "平"),  # 物流服务评分 (高/平/低)
-
-        # ================= 6. 优惠券详情 =================
-        "has_coupon": raw_data.get("has_coupon", False),  # 是否有平台券
-        "coupon_discount": raw_data.get("coupon_discount", 0),  # 平台券面额 (单位：分)
-        "coupon_min_order_amount": raw_data.get("coupon_min_order_amount", 0),  # 券使用门槛 (单位：分)
-        "coupon_remain_quantity": raw_data.get("coupon_remain_quantity", 0),  # 剩余券量
-        "coupon_total_quantity": raw_data.get("coupon_total_quantity", 0),  # 券总量
-        "coupon_start_time": raw_data.get("coupon_start_time", 0),  # 券生效时间 (时间戳)
-        "coupon_end_time": raw_data.get("coupon_end_time", 0),  # 券失效时间 (时间戳)
-        "has_mall_coupon": raw_data.get("has_mall_coupon", False),  # 是否有店铺专属券
-
-        # ================= 7. 溯源追踪 =================
-        "search_id": raw_data.get("search_id", ""),  # 转链时带上此ID能提升收益或作为追踪凭证
-        "_source_api": source_type,  # 标志是从 detail 还是 search 接口拿到的
-        "_raw_data": raw_data  # 兜底：保留原始JSON，供未来取生僻字段使用
+        "goods_thumbnail_url": raw_data.get("goods_thumbnail_url", ""),
+        "goods_image_url": raw_data.get("goods_image_url", ""),
+        "min_group_price": min_group_price,
+        "min_normal_price": raw_data.get("min_normal_price", min_group_price),
+        "promotion_rate": promotion_rate,
+        "estimated_commission": estimated_commission,
+        "sales_tip": raw_data.get("sales_tip", "0"),
+        "unified_tags": raw_data.get("unified_tags", []),
+        "mall_name": raw_data.get("mall_name", ""),
+        "merchant_type": raw_data.get("merchant_type", 1),
+        "desc_txt": raw_data.get("desc_txt", "平"),
+        "serv_txt": raw_data.get("serv_txt", "平"),
+        "lgst_txt": raw_data.get("lgst_txt", "平"),
+        "has_coupon": raw_data.get("has_coupon", False),
+        "coupon_discount": coupon_discount,
+        "coupon_min_order_amount": raw_data.get("coupon_min_order_amount", 0),
+        "coupon_remain_quantity": raw_data.get("coupon_remain_quantity", 0),
+        "coupon_total_quantity": raw_data.get("coupon_total_quantity", 0),
+        "coupon_start_time": raw_data.get("coupon_start_time", 0),
+        "coupon_end_time": raw_data.get("coupon_end_time", 0),
+        "has_mall_coupon": raw_data.get("has_mall_coupon", False),
+        "search_id": raw_data.get("search_id", ""),
+        "_source_api": source_type,
+        "_raw_data": raw_data
     }
+
 
 def get_unified_pdd_goods_info(client_id, client_secret, pid, goods_sign=None, goods_id=None, uid=None):
     """
     大一统商品信息查询函数
-    :param client_id: 拼多多应用 ID
-    :param client_secret: 拼多多应用密钥
-    :param pid: 推广位 PID
-    :param goods_sign: 商品唯一标识 (优先使用)
-    :param goods_id: 裸商品ID (作为备用策略)
-    :param uid: 用户唯一标识 (走洗链策略时用于备案参数)
-    :return: 统一格式的字典 / {"error": "..."}
     """
+    if not goods_sign and not goods_id:
+        return {"error": "缺乏核心参数: 必须提供 [goods_sign] 或 [goods_id] 至少一项"}
 
-    # 构造自定义参数 custom_parameters
-    custom_params_str = json.dumps({"uid": uid}, separators=(',', ':')) if uid else None
+    custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':')) if uid else None
 
-    # =========================================================
-    # 策略 A: 拥有 goods_sign，走标准 Detail 接口
-    # =========================================================
     if goods_sign:
-        print(f"[*] 触发策略 A: 使用 goods_sign 进行 Detail 查询...")
-        params = {
-            "goods_sign": goods_sign,
-            "pid": pid,
-            "custom_parameters": custom_params_str
-        }
-        res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.detail", params)
-        if res and "goods_detail_response" in res:
-            goods_list = res["goods_detail_response"].get("goods_details", [])
+        try:
+            res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.detail", {
+                "goods_sign": goods_sign,
+                "pid": pid,
+                "custom_parameters": custom_params_str
+            })
+            goods_list = res.get("goods_detail_response", {}).get("goods_details", [])
             if goods_list:
                 return format_unified_response(goods_list[0], source_type="detail_api")
-        return {"error": "Detail 接口查询失败或商品不存在"}
+            return {"error": "Detail接口查询为空，可能商品已下架或无推广计划"}
+        except Exception as e:
+            return {"error": f"标准Detail查询失败: {str(e)}"}
 
-    # =========================================================
-    # 策略 B: 只有 goods_id，走 洗链 + Search 截胡策略
-    # =========================================================
-    elif goods_id:
-        print(f"[*] 触发策略 B: 使用 goods_id 进行洗链 + Search 查询...")
-
-        # 1. 裸 ID 转官方短链
-        zs_params = {
+    try:
+        zs_res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.zs.unit.url.gen", {
             "source_url": f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}",
             "pid": pid,
             "custom_parameters": custom_params_str
-        }
-        zs_res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.zs.unit.url.gen", zs_params)
-
-        if not zs_res:
-            return {"error": "转链接口洗白失败"}
+        })
 
         zs_data = zs_res.get("goods_zs_unit_generate_response", {})
         short_url = zs_data.get("mobile_short_url") or zs_data.get("short_url")
-
         if not short_url:
-            return {"error": "无法获取官方短链，洗链失败"}
+            return {"error": "洗链提取短链失败(无短链返回)"}
 
-        print(f"    -> 洗出短链: {short_url}，正在截取 Search 核心数据...")
-
-        # 2. 短链入 Search 接口截获数据
-        search_params = {
+        search_res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.search", {
             "keyword": short_url,
             "pid": pid,
             "custom_parameters": custom_params_str,
             "page": 1,
             "page_size": 10
-        }
-        search_res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.search", search_params)
+        })
 
-        if search_res and "goods_search_response" in search_res:
-            goods_list = search_res["goods_search_response"].get("goods_list", [])
-            if goods_list:
-                return format_unified_response(goods_list[0], source_type="search_api")
-        return {"error": "Search 接口解析短链失败或商品已下架"}
+        goods_list = search_res.get("goods_search_response", {}).get("goods_list", [])
+        if goods_list:
+            return format_unified_response(goods_list[0], source_type="search_api")
+        return {"error": "Search接口未命中有效商品(可能已下架或被风控过滤)"}
 
-    # =========================================================
-    # 异常: 参数缺失
-    # =========================================================
-    else:
-        return {"error": "必须提供 goods_sign 或 goods_id 中的至少一个"}
+    except Exception as e:
+        return {"error": f"洗链截胡策略(Strategy B)执行中断: {str(e)}"}
 
 
 def batch_convert_pdd_urls(client_id, client_secret, pid, url_list, uid=None, generate_short_link=False):
     """
-    批量洗链（转链）函数：将其他人的拼多多推广链接转换为自己的
-
-    :param client_id: 拼多多应用 ID
-    :param client_secret: 拼多多应用密钥
-    :param pid: 你的推广位 PID
-    :param url_list: 需要转链的原始链接列表 (List[str])
-    :param uid: 用户自定义标识 (常用于返利追踪)
-    :param generate_short_link: 是否获取微信 ShortLink 链接 (仅支持单个商品)
-    :return: 字典，key 为原始链接，value 为转链结果详情
+    批量洗链（转链）函数
     """
-
-    # 构建自定义参数，用于后续订单溯源
-    custom_params_str = None
-    if uid:
-        custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':'))
-
+    custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':')) if uid else None
     result_dict = {}
 
     for original_url in url_list:
-        # 过滤空链接
         if not original_url or not isinstance(original_url, str):
             continue
 
         try:
-            # 1. 构造业务参数
             business_params = {
                 "pid": pid,
                 "source_url": original_url,
+                "custom_parameters": custom_params_str,
+                "generate_short_link": True if generate_short_link else None
             }
-            if custom_params_str:
-                business_params["custom_parameters"] = custom_params_str
-            if generate_short_link:
-                business_params["generate_short_link"] = True
 
-            # 2. 调用上一节封装好的基础请求函数
             res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.zs.unit.url.gen", business_params)
+            response_data = res.get("goods_zs_unit_generate_response", {})
+            best_h5_url = response_data.get("mobile_short_url") or response_data.get("short_url")
 
-            # 3. 处理正常响应
-            if res and "goods_zs_unit_generate_response" in res:
-                response_data = res["goods_zs_unit_generate_response"]
-
-                # 针对 H5 场景优化：优先提取移动端短链 mobile_short_url，用于高效拉起 APP
-                best_h5_url = response_data.get("mobile_short_url") or response_data.get("short_url")
-
+            if best_h5_url:
                 result_dict[original_url] = {
                     "status": "success",
                     "h5_jump_url": best_h5_url,
-                    "raw_data": response_data  # 保留完整原始返回字典，方便拿取 multi_group_url 等特殊链接
+                    "raw_data": response_data
                 }
-
-            # 4. 处理 API 明确返回的错误 (如：链接已失效、商品下架)
             else:
-                error_msg = "未知转链错误"
-                if res and "error_response" in res:
-                    error_msg = res["error_response"].get("error_msg", "接口返回异常信息")
-
                 result_dict[original_url] = {
                     "status": "error",
-                    "error_msg": error_msg
+                    "error_msg": "接口返回正常但未包含可用的 short_url"
                 }
 
-        # 5. 终极防崩溃兜底：捕获单次循环内的任何代码/网络崩溃
         except Exception as e:
+            # [修改点] 移除零碎日志，包裹进返回字典
             result_dict[original_url] = {
                 "status": "error",
-                "error_msg": f"本地执行异常: {str(e)}"
+                "error_msg": f"转链API交互崩溃: {str(e)}"
             }
 
     return result_dict
 
+
+def verify_and_convert_pdd_goods(client_id, client_secret, pid, original_url, goods_sign=None, goods_id=None, uid=None,
+                                 generate_short_link=False):
+    """
+    聚合功能：拦截低价/无用商品，验证统一价格大于0后才进行实质转链。
+    [核心优化] 此处收束所有错误日志输出，确保多进程下每次调用最多只产出“唯一的一行日志”。
+    """
+    # 1. 探针：获取商品详细信息
+    goods_info = get_unified_pdd_goods_info(client_id, client_secret, pid, goods_sign, goods_id, uid)
+
+    if "error" in goods_info:
+        msg = f"探针查询失败 | 商品ID: {goods_id} | 错误详情: {goods_info['error']}"
+        logger.warning(f"[聚合转链-失败] ❌ {msg}")
+        return {"status": "error", "error_msg": msg, "goods_info": goods_info}
+
+    # 2. 拦截器：验证价格与商品真实性（识别风控假数据）
+    min_group_price = goods_info.get("min_group_price", 0)
+    goods_name = goods_info.get('goods_name', '').strip()
+
+    # [核心修改点]：如果名字为空且价格为0，极大概率是遇到了API返回空数据的风控拦截（防爬机制）
+    if min_group_price <= 0 or not goods_name:
+        msg = f"价格/风控异常拦截 | 商品: {goods_id} 【{goods_name}】 | 当前价格: [{min_group_price}分] (疑遭风控脱敏或商品下架)"
+        logger.warning(f"[聚合转链-拦截] ❌ {msg}")
+        return {"status": "error", "error_msg": msg, "goods_info": goods_info}
+
+    # 3. 执行核心转链
+    convert_result_dict = batch_convert_pdd_urls(
+        client_id, client_secret, pid,
+        url_list=[original_url],
+        uid=uid,
+        generate_short_link=generate_short_link
+    )
+    url_convert_info = convert_result_dict.get(original_url, {})
+
+    # 4. 结果组装
+    if url_convert_info.get("status") == "success":
+        # 成功时，由上游主流程去打日志，这里不打，保持整洁
+        return {
+            "status": "success",
+            "msg": "价格验证通过且转链成功",
+            "goods_info": goods_info,
+            "convert_info": url_convert_info
+        }
+
+    # 转链失败记录日志
+    err_msg = url_convert_info.get('error_msg', '未知错误')
+    msg = f"探针通过但核心转链失败 | 原始链接: <{original_url[:30]}...> | 排查: {err_msg}"
+    logger.warning(f"[聚合转链-失败] ❌ {msg}")
+
+    return {
+        "status": "error",
+        "error_msg": msg,
+        "goods_info": goods_info,
+        "convert_info": url_convert_info
+    }
+
+
 if __name__ == "__main__":
-    # 配置你的信息 (这里模拟读取)
+    # 配置信息读取
     pdd_client_id = get_config("pdd_client_id")
     pdd_client_secret = get_config("pdd_client_secret")
     pdd_pid = get_config("pdd_pid")
     pdd_custom_parameters = get_config("pdd_custom_parameters")
 
-    # print("\n========= 测试场景 1: 传入 goods_sign =========")
-    # result_sign = get_unified_pdd_goods_info(
-    #     client_id=pdd_client_id,
-    #     client_secret=pdd_client_secret,
-    #     pid=pdd_pid,
-    #     goods_sign="E9j2RLMbqvlgMvVVwvfAgIglclkvdd4B_JLOCUS6xv"
-    # )
-    # if "error" not in result_sign:
-    #     print(f"[成功] 获取到商品: {result_sign['goods_name']}")
-    #     print(f"数据来源: {result_sign['_source_api']}")
-    #     print(f"统一价格(分): {result_sign['min_group_price']}")
-    # else:
-    #     print(result_sign)
-    #
-    # print("\n========= 测试场景 2: 传入 goods_id =========")
-    # result_id = get_unified_pdd_goods_info(
-    #     client_id=pdd_client_id,
-    #     client_secret=pdd_client_secret,
-    #     pid=pdd_pid,
-    #     goods_id="1008762570418",
-    #     uid=pdd_custom_parameters
-    # )
-    # if "error" not in result_id:
-    #     print(f"[成功] 获取到商品: {result_id['goods_name']}")
-    #     print(f"数据来源: {result_id['_source_api']}")
-    #     print(f"统一价格(分): {result_id['min_group_price']}")
-    #     print(f"解析出的纯净Sign: {result_id['goods_sign']}")
-    # else:
-    #     print(result_id)
+    original_target_url = "https://mobile.pinduoduo.com/goods.html?goods_id=627575562243"
 
-
-    print("\n========= 测试场景 3: 转链接 =========")
-
-
-    urls_to_convert = [
-        "https://mobile.pinduoduo.com/goods.html?goods_id=952734066583&_oak_rcto=YWJSFwoMNFWt2rHE4xU7HWIOyOMQri1ZtFGapHWy3HTptpMyvVUcHrH2&_oak_gallery_token=9a8b4131bfbc922e06eef31ecdc99599&_oak_gallery=https%3A%2F%2Fimg.pddpic.com%2Fmms-material-img%2F2024-09-29%2F487077ea-e6d6-4f66-9331-483febb72fbb.jpeg&page_from=219",  # 正常链接
-        "https://mobile.pinduoduo.com/goods.html?goods_id=1008762570418&_oak_rcto=YWKB3tlBjbl-PoNg6A7tATsnyOMQri1ZtFGapHWy3HTptpMyvVUcHrH2&_oak_gallery_token=fe8e5d7f0a012c28c7f80b3eebe2fa0f&_oak_gallery=https%3A%2F%2Fimg.pddpic.com%2Fmms-goods-image%2F2026-09-23%2F4a9fd9ad-e902-4dc7-91c1-07d62ebbd06c.jpeg.a.jpeg&page_from=219",  # 别人的短链
-        "https://invalid.url",  # 无效链接，会导致转链失败
-        ""  # 空链接
-    ]
-
-    # 调用批量转链
-    results = batch_convert_pdd_urls(
+    # 执行聚合转链业务
+    agg_result = verify_and_convert_pdd_goods(
         client_id=pdd_client_id,
         client_secret=pdd_client_secret,
         pid=pdd_pid,
-        url_list=urls_to_convert,
-        uid=pdd_custom_parameters  # 绑定返利用户
+        original_url=original_target_url,
+        goods_id="627575562243",
+        uid=pdd_custom_parameters
     )
 
-    # 打印结果查看
-    for original, info in results.items():
-        print(f"\n【原始链接】: {original}")
-        if info["status"] == "success":
-            print(f"✅ 转链成功 -> 佣金链接: {info['short_url']}")
-            # 如果你需要小程序链接，可以在 info["raw_data"] 里拿
-        else:
-            print(f"❌ 转链失败 -> 原因: {info['error_msg']}")
+    # 外部仅关心成功时的日志。失败的已经在内部打过单行警告日志了。
+    if agg_result["status"] == "success":
+        goods = agg_result['goods_info']
+        logger.info(
+            f"[主流程] ✅ 转链成功 | 商品: 【{goods['goods_name']}】 | 验证价格: [{goods['min_group_price']}分] | 预估佣金: [{goods['estimated_commission']}分] | 转链地址: <{agg_result['convert_info']['h5_jump_url']}>")

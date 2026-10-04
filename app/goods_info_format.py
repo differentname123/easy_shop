@@ -13,7 +13,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import multiprocessing
-from app.pdd_utils import batch_convert_pdd_urls
+from app.pdd_utils import batch_convert_pdd_urls, verify_and_convert_pdd_goods
 from common.common_utils import read_file_to_str, setup_logger, string_to_object, get_config
 from common.model_api import generate_content
 from common.mongo_db.mongo_base import gen_db_object
@@ -353,34 +353,45 @@ def run_promotion_round(product_manager):
     for product in products:
         product_url = product.get("product_url")
         product_id = product.get("product_id")
+        promotion_info = None
 
         # 兜底：如果没有 url 字段，直接标记失败
         if not product_url:
             status = "failed"
             error = "product_url 为空"
+            short_url = ""
         else:
-            # 调取洗链功能
-            results = batch_convert_pdd_urls(
+            # 调取洗链功能，适配新版返回值直接为结果字典的形式
+            item_result = verify_and_convert_pdd_goods(
                 client_id=pdd_client_id,
                 client_secret=pdd_client_secret,
                 pid=pdd_pid,
-                url_list=[product_url],
+                original_url=product_url,
+                goods_id=product_id,
                 uid=pdd_custom_parameters  # 绑定返利用户
             )
 
-            # 提取本条链接的结果
-            item_result = results.get(product_url, {})
-
-            if item_result.get("status") == "success":
+            # 判断顶层状态与转链信息(convert_info)状态
+            if item_result.get("status") == "success" and item_result.get("convert_info", {}).get(
+                    "status") == "success":
                 status = "success"
-                short_url = item_result.get("h5_jump_url")
+                short_url = item_result["convert_info"].get("h5_jump_url", "")
+
+                # 提取推广信息
+                goods_info = item_result.get("goods_info", {})
+                promotion_info = {
+                    "promotion_rate": goods_info.get("promotion_rate"),
+                    "estimated_commission": goods_info.get("estimated_commission"),
+                    "has_mall_coupon": goods_info.get("has_mall_coupon")
+                }
+
                 error = ""
-                logger.info("[转链调度/成功] 商品转链成功 | product_id: [%s] ",
-                            product_id)
+                logger.info("[转链调度/成功] 商品转链成功 | product_id: [%s] ", product_id)
             else:
                 status = "failed"
                 short_url = ""
-                error = item_result.get("error_msg", "未知转链错误")
+                # 兼容获取错误信息，新格式提示在 'msg' 中，如果不存在退化取 'error_msg'
+                error = item_result.get("msg") or item_result.get("error_msg", "未知转链错误")
 
         # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束）
         condition = pending_promotion_query()
@@ -397,6 +408,8 @@ def run_promotion_round(product_manager):
 
         if status == "success":
             db_update_data["promotion_url"] = short_url
+            if promotion_info is not None:
+                db_update_data["promotion_info"] = promotion_info
 
         # 将结果写回 DB，若失败累加 promotion_retry_count
         saved = product_manager.update(
@@ -429,7 +442,6 @@ def run_promotion_round(product_manager):
         detail, ", ".join(map(str, skipped_ids)) or "无")
 
     return counts
-
 
 def get_recent_successful_formats(hours=24, limit=0):
     """查询近期成功记录，按 category 分组返回。"""
