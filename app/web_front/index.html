@@ -620,7 +620,7 @@
                 return [...new Set(units)]
             })
             const activeUnitFilter = ref('')
-            const activeCommissionFilter = ref('') // 新增佣金筛选状态
+            const activeCommissionFilter = ref('yes') // 新增佣金筛选状态
             const availableFilters = ref([])
             const activeFilters = ref({})
 
@@ -688,7 +688,7 @@
 
             const clearFilters = () => {
                 activeUnitFilter.value = ''
-                activeCommissionFilter.value = '' // 新增佣金清理
+                activeCommissionFilter.value = 'yes' // 新增佣金清理
                 for (const key in activeFilters.value) {
                     activeFilters.value[key] = ''
                 }
@@ -785,7 +785,7 @@
                 availableFilters.value = []
                 activeFilters.value = {}
                 activeUnitFilter.value = ''
-                activeCommissionFilter.value = '' // 新增佣金重置
+                activeCommissionFilter.value = 'yes' // 新增佣金重置
                 window.scrollTo({ top: 0, behavior: 'smooth' })
             }
 
