@@ -229,7 +229,7 @@ def verify_and_convert_pdd_goods(client_id, client_secret, pid, original_url, go
 
     if "error" in goods_info:
         msg = f"探针查询失败 | 商品ID: {goods_id} | 错误详情: {goods_info['error']}"
-        logger.warning(f"[聚合转链-失败] ❌ {msg}")
+        logger.error(f"[聚合转链-失败] ❌ {msg}")
         return {"status": "error", "error_msg": msg, "goods_info": goods_info}
 
     # 2. 拦截器：验证价格与商品真实性（识别风控假数据）
@@ -239,7 +239,7 @@ def verify_and_convert_pdd_goods(client_id, client_secret, pid, original_url, go
     # [核心修改点]：如果名字为空且价格为0，极大概率是遇到了API返回空数据的风控拦截（防爬机制）
     if min_group_price <= 0 or not goods_name:
         msg = f"价格/风控异常拦截 | 商品: {goods_id} 【{goods_name}】 | 当前价格: [{min_group_price}分] (疑遭风控脱敏或商品下架)"
-        logger.warning(f"[聚合转链-拦截] ❌ {msg}")
+        logger.error(f"[聚合转链-拦截] ❌ {msg}")
         return {"status": "error", "error_msg": msg, "goods_info": goods_info}
 
     # 3. 执行核心转链
@@ -264,7 +264,7 @@ def verify_and_convert_pdd_goods(client_id, client_secret, pid, original_url, go
     # 转链失败记录日志
     err_msg = url_convert_info.get('error_msg', '未知错误')
     msg = f"探针通过但核心转链失败 | 原始链接: <{original_url[:30]}...> | 排查: {err_msg}"
-    logger.warning(f"[聚合转链-失败] ❌ {msg}")
+    logger.error(f"[聚合转链-失败] ❌ {msg}")
 
     return {
         "status": "error",
@@ -289,7 +289,7 @@ if __name__ == "__main__":
         client_secret=pdd_client_secret,
         pid=pdd_pid,
         original_url=original_target_url,
-        goods_id="627575562243",
+        goods_id="1627575562243",
         uid=pdd_custom_parameters
     )
 
