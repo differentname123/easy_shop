@@ -28,10 +28,10 @@
                             500: '#71717a', 600: '#52525b', 700: '#3f3f46', 800: '#27272a', 900: '#18181b',
                         },
                         brand: {
-                            50: '#eef2ff', 100: '#e0e7ff', 500: '#6366f1', 600: '#4f46e5', 900: '#312e81' // Indigo AI vibe
+                            50: '#eef2ff', 100: '#e0e7ff', 500: '#6366f1', 600: '#4f46e5', 900: '#312e81'
                         },
                         accent: {
-                            500: '#10b981', // Emerald for money/savings
+                            500: '#10b981',
                             600: '#059669'
                         }
                     },
@@ -84,23 +84,13 @@
 
         /* ============ 动画系统 ============ */
         @keyframes scaleIn {
-            from {
-                opacity: 0;
-                transform: scale(0.95) translateY(10px);
-            }
-            to {
-                opacity: 1;
-                transform: scale(1) translateY(0);
-            }
+            from { opacity: 0; transform: scale(0.95) translateY(10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
         }
 
         @keyframes slideUpNative {
-            from {
-                transform: translateY(100%);
-            }
-            to {
-                transform: translateY(0);
-            }
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
         }
 
         .animate-card {
@@ -115,22 +105,10 @@
             animation: slideUpNative 0.3s cubic-bezier(0.32, 0.72, 0, 1) reverse;
         }
 
-        /* 延迟阶梯动画 */
-        .delay-0 {
-            animation-delay: 0ms;
-        }
-
-        .delay-1 {
-            animation-delay: 50ms;
-        }
-
-        .delay-2 {
-            animation-delay: 100ms;
-        }
-
-        .delay-3 {
-            animation-delay: 150ms;
-        }
+        .delay-0 { animation-delay: 0ms; }
+        .delay-1 { animation-delay: 50ms; }
+        .delay-2 { animation-delay: 100ms; }
+        .delay-3 { animation-delay: 150ms; }
 
         /* ============ 卡片交互 ============ */
         .product-card {
@@ -156,21 +134,15 @@
         }
 
         @keyframes skeleton-loading {
-            0% {
-                background-position: 200% 0;
-            }
-            100% {
-                background-position: -200% 0;
-            }
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
 
-        /* 数字字体优化 */
         .num-font {
             font-feature-settings: "tnum";
             font-variant-numeric: tabular-nums;
         }
 
-        /* 搜索框流光边框 */
         .search-wrap:focus-within {
             background: linear-gradient(white, white) padding-box,
             linear-gradient(135deg, #6366f1, #a855f7) border-box;
@@ -182,21 +154,17 @@
 <div id="app" class="min-h-screen flex flex-col">
 
     <!-- ============ 顶部导航/搜索栏 ============ -->
-    <header class="sticky top-0 z-40 glass-panel border-b border-zinc-200/50 pt-[env(safe-area-inset-top)]">
+    <header
+        ref="headerRef"
+        class="fixed left-0 right-0 top-0 z-40 glass-panel border-b border-zinc-200/50 pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-in-out shadow-sm"
+        :class="showHeader ? 'translate-y-0' : '-translate-y-full'"
+    >
         <div class="max-w-5xl mx-auto px-4 py-3 sm:py-4">
-            <div class="flex flex-col sm:flex-row sm:items-center gap-4">
-                <!-- Logo区域 -->
-                <div class="flex items-center gap-2 cursor-pointer" @click="resetView">
-                    <div class="w-9 h-9 rounded-xl bg-zinc-900 flex items-center justify-center shadow-md">
-                        <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                  d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <h1 class="text-lg font-bold leading-tight tracking-tight">智惠</h1>
-                        <p class="text-[10px] font-semibold text-brand-600 uppercase tracking-widest">Value Engine</p>
-                    </div>
+            <div class="flex items-center gap-3 w-full">
+                <!-- 纯文字 Logo，去掉了原有的黑底图标 -->
+                <div class="cursor-pointer hidden sm:block flex-shrink-0" @click="resetView">
+                    <h1 class="text-lg font-bold leading-tight tracking-tight">智惠</h1>
+                    <p class="text-[10px] font-semibold text-brand-600 uppercase tracking-widest">Value Engine</p>
                 </div>
 
                 <!-- 搜索输入框 -->
@@ -213,6 +181,7 @@
                                 v-model="keyword"
                                 type="text"
                                 :placeholder="placeholderText"
+                                @focus="showHeader = true"
                                 class="w-full bg-transparent border-none focus:ring-0 py-3.5 px-3 text-base sm:text-sm font-medium outline-none placeholder-zinc-400"
                         >
                         <button
@@ -251,8 +220,54 @@
                     {{ term }}
                 </button>
             </div>
+
+            <!-- ============ 将动态维度与单位过滤栏移至搜索栏下方 ============ -->
+            <div v-if="hasSearched && (availableUnits.length > 1 || availableFilters.length > 0)"
+                 class="mt-3 flex gap-3 overflow-x-auto no-scrollbar pb-1">
+
+                <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeUnitFilter"
+                            class="appearance-none bg-brand-50 border border-brand-200 text-sm font-bold text-brand-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">计量单位 (全选)</option>
+                        <option v-for="unit in availableUnits" :key="unit" :value="unit">仅看 {{ unit }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-brand-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeFilters[filter.attribute_name]"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">{{ filter.attribute_name }} (全部)</option>
+                        <option v-for="opt in filter.options" :key="opt" :value="opt">{{ opt }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <div v-if="hasActiveFilter" class="flex items-center">
+                    <button @click="clearFilters"
+                            class="text-xs font-semibold text-zinc-500 hover:text-brand-600 px-2 py-2 transition-colors whitespace-nowrap">
+                        重置筛选
+                    </button>
+                </div>
+            </div>
+
         </div>
     </header>
+
+    <!-- 用于防止 Fixed Header 遮挡主内容的动态占位符 -->
+    <div :style="{ height: headerHeight + 'px' }" class="flex-shrink-0 w-full transition-all duration-300"></div>
 
     <!-- ============ 主体内容 ============ -->
     <main class="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
@@ -301,11 +316,11 @@
                 <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-4">
                     <div>
                         <h3 class="text-xl font-bold text-zinc-900">
-                            <!-- 动态展示经过筛选后的数量 -->
                             找到 {{ sortedProducts.length }} 个「<span class="text-brand-600">{{ currentKeyword }}</span>」
                         </h3>
                         <p class="text-sm text-zinc-500 mt-1 font-medium">已按 AI 计算的真实单价为您排序</p>
                     </div>
+                    <!-- 排序维度仍保留在数据面板这里，更加合理 -->
                     <div class="flex gap-2 bg-zinc-100 p-1 rounded-xl">
                         <button
                                 v-for="option in sortOptions"
@@ -319,8 +334,8 @@
                     </div>
                 </div>
 
-                <!-- 洞察数据条 (根据当前筛选结果动态更新) -->
-                <div class="grid grid-cols-3 gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100 mb-5">
+                <!-- 洞察数据条 -->
+                <div class="grid grid-cols-3 gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
                     <div>
                         <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">大盘均价</p>
                         <p class="text-lg font-bold text-zinc-800 num-font">
@@ -338,56 +353,8 @@
                     <div>
                         <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">最高差价</p>
                         <p class="text-lg font-bold text-zinc-800 num-font">
-                            {{ stats.minUnitPrice > 0 ? (((stats.maxUnitPrice - stats.minUnitPrice) / stats.minUnitPrice) * 100).toFixed(0) : 0
-                            }}%
+                            {{ stats.minUnitPrice > 0 ? (((stats.maxUnitPrice - stats.minUnitPrice) / stats.minUnitPrice) * 100).toFixed(0) : 0 }}%
                         </p>
-                    </div>
-                </div>
-
-                <!-- ============ 动态维度与单位过滤栏 ============ -->
-                <div v-if="availableUnits.length > 1 || availableFilters.length > 0"
-                     class="flex gap-3 overflow-x-auto no-scrollbar py-1">
-
-                    <!-- 1. 新增：物理计量单位过滤 (突出显示) -->
-                    <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
-                        <select
-                                v-model="activeUnitFilter"
-                                class="appearance-none bg-brand-50 border border-brand-200 text-sm font-bold text-brand-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
-                        >
-                            <option value="">计量单位 (全选)</option>
-                            <option v-for="unit in availableUnits" :key="unit" :value="unit">仅看 {{ unit }}</option>
-                        </select>
-                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-brand-500">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                      d="M19 9l-7 7-7-7"/>
-                            </svg>
-                        </div>
-                    </div>
-
-                    <!-- 2. 原有的：动态属性过滤 -->
-                    <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
-                        <select
-                                v-model="activeFilters[filter.attribute_name]"
-                                class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
-                        >
-                            <option value="">{{ filter.attribute_name }} (全部)</option>
-                            <option v-for="opt in filter.options" :key="opt" :value="opt">{{ opt }}</option>
-                        </select>
-                        <!-- 自定义下拉箭头图标 -->
-                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                      d="M19 9l-7 7-7-7"/>
-                            </svg>
-                        </div>
-                    </div>
-                    <!-- 清除过滤按钮 -->
-                    <div v-if="hasActiveFilter" class="flex items-center">
-                        <button @click="clearFilters"
-                                class="text-xs font-semibold text-zinc-500 hover:text-brand-600 px-2 py-2 transition-colors whitespace-nowrap">
-                            重置筛选
-                        </button>
                     </div>
                 </div>
             </div>
@@ -408,7 +375,7 @@
                         class="product-card bg-white rounded-2xl p-3 sm:p-4 flex sm:flex-col gap-3 sm:gap-4 border border-zinc-200 shadow-sm cursor-pointer relative overflow-hidden"
                         :class="'delay-' + Math.min(index, 3)"
                 >
-                    <!-- 排名角标 (Top3展示) -->
+                    <!-- 排名角标 -->
                     <div v-if="sortBy === 'value' && index < 3"
                          class="absolute top-0 right-0 w-12 h-12 overflow-hidden z-10 pointer-events-none">
                         <div class="absolute top-1 right-[-14px] w-16 text-center rotate-45 text-[10px] font-bold py-0.5 text-white shadow-sm"
@@ -417,12 +384,9 @@
                         </div>
                     </div>
 
-                    <!-- 左侧/上方：图片与平台 -->
+                    <!-- 图片与平台 -->
                     <div class="w-28 h-28 sm:w-full sm:h-48 rounded-xl bg-zinc-50 relative flex-shrink-0 overflow-hidden">
-                        <img :src="item.image_url" :alt="item.name" loading="lazy"
-                             class="w-full h-full object-cover mix-blend-multiply">
-
-                        <!-- 平台小标 -->
+                        <img :src="item.image_url" :alt="item.name" loading="lazy" class="w-full h-full object-cover mix-blend-multiply">
                         <div class="absolute bottom-1.5 left-1.5">
                                 <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-white shadow-sm"
                                       :style="{ backgroundColor: getPlatformColor(item.platform) }">
@@ -431,49 +395,35 @@
                         </div>
                     </div>
 
-                    <!-- 右侧/下方：核心信息 -->
+                    <!-- 核心信息 -->
                     <div class="flex-1 flex flex-col justify-between min-w-0">
-
-                        <!-- 标题与标签 -->
                         <div>
-                            <h3 class="text-sm font-bold text-zinc-900 leading-snug line-clamp-2 mb-1.5">
-                                {{ item.name }}
-                            </h3>
+                            <h3 class="text-sm font-bold text-zinc-900 leading-snug line-clamp-2 mb-1.5">{{ item.name }}</h3>
                             <div class="flex flex-wrap gap-1 mb-2">
-                                    <span v-for="kw in getDecisionKeywords(item).slice(0,3)" :key="kw.attribute_name"
-                                          class="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded text-[10px] font-medium border border-zinc-200">
-                                        {{ kw.attribute_value }}
-                                    </span>
+                                <span v-for="kw in getDecisionKeywords(item).slice(0,3)" :key="kw.attribute_name"
+                                      class="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded text-[10px] font-medium border border-zinc-200">
+                                    {{ kw.attribute_value }}
+                                </span>
                             </div>
                         </div>
 
-                        <!-- 价格对比核算区 -->
+                        <!-- 价格核算区 -->
                         <div class="bg-brand-50/50 rounded-lg p-2 border border-brand-100/50 mt-1">
-                            <!-- 真实单价 (强调显示) -->
                             <div class="flex items-end gap-1 mb-1.5">
                                 <span class="text-[10px] text-brand-600 font-semibold mb-0.5">真单价</span>
-                                <span class="text-lg font-bold text-brand-600 leading-none num-font">¥{{ getUnitPrice(item)
-                                    }}</span>
-                                <span class="text-[10px] text-brand-600/70 font-medium mb-0.5">/{{ item.base_unit
-                                    }}</span>
+                                <span class="text-lg font-bold text-brand-600 leading-none num-font">¥{{ getUnitPrice(item) }}</span>
+                                <span class="text-[10px] text-brand-600/70 font-medium mb-0.5">/{{ item.base_unit }}</span>
                             </div>
-
-                            <!-- 表面包装价与对比 -->
                             <div class="flex items-center justify-between mt-1 pt-1 border-t border-brand-100">
                                 <div class="flex items-center gap-1.5">
-                                    <span class="text-xs font-bold text-zinc-800 num-font">¥{{ item.activity_price.toFixed(2)
-                                        }}</span>
-                                    <span class="text-[10px] text-zinc-400 line-through num-font"
-                                          v-if="item.original_price > item.activity_price">¥{{ item.original_price
-                                        }}</span>
+                                    <span class="text-xs font-bold text-zinc-800 num-font">¥{{ item.activity_price.toFixed(2) }}</span>
+                                    <span class="text-[10px] text-zinc-400 line-through num-font" v-if="item.original_price > item.activity_price">¥{{ item.original_price }}</span>
                                 </div>
-
-                                <!-- 与均价对比徽章 -->
                                 <span v-if="getCompareIndicator(item)"
                                       class="text-[9px] font-bold px-1.5 py-0.5 rounded"
                                       :class="getCompareIndicator(item).better ? 'bg-accent-100 text-accent-700' : 'bg-red-100 text-red-600'">
-                                        {{ getCompareIndicator(item).text }}
-                                    </span>
+                                    {{ getCompareIndicator(item).text }}
+                                </span>
                             </div>
                         </div>
                     </div>
@@ -492,68 +442,47 @@
         </div>
     </main>
 
-    <!-- ============ 沉浸式详情抽屉 (Bottom Sheet) ============ -->
+    <!-- ============ 沉浸式详情抽屉 ============ -->
     <Teleport to="body">
-        <!-- 遮罩 -->
-        <div v-if="selectedProduct"
-             class="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-50 transition-opacity"
-             @click="closeDetail">
-        </div>
+        <div v-if="selectedProduct" class="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-50 transition-opacity" @click="closeDetail"></div>
 
-        <!-- 抽屉本体 -->
         <Transition name="drawer">
             <div v-if="selectedProduct"
                  class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[90vh] flex flex-col"
                  style="padding-bottom: var(--sab);">
 
-                <!-- 拖拽手柄 -->
                 <div class="w-full flex justify-center pt-3 pb-2 cursor-pointer" @click="closeDetail">
                     <div class="w-10 h-1.5 bg-zinc-200 rounded-full"></div>
                 </div>
 
-                <!-- 滚动内容区 -->
                 <div class="flex-1 overflow-y-auto px-5 pb-24 no-scrollbar">
-
-                    <!-- 头部信息 -->
                     <div class="flex gap-4 mb-6">
-                        <img :src="selectedProduct.image_url"
-                             class="w-24 h-24 rounded-2xl object-cover border border-zinc-100 shadow-sm">
+                        <img :src="selectedProduct.image_url" class="w-24 h-24 rounded-2xl object-cover border border-zinc-100 shadow-sm">
                         <div class="flex-1 pt-1">
-                                <span class="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold text-white mb-2 shadow-sm"
-                                      :style="{ backgroundColor: getPlatformColor(selectedProduct.platform) }">
-                                    {{ getPlatformName(selectedProduct.platform) }}
-                                </span>
-                            <h2 class="text-base font-bold text-zinc-900 leading-snug line-clamp-3">
-                                {{ selectedProduct.name }}
-                            </h2>
+                            <span class="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold text-white mb-2 shadow-sm" :style="{ backgroundColor: getPlatformColor(selectedProduct.platform) }">
+                                {{ getPlatformName(selectedProduct.platform) }}
+                            </span>
+                            <h2 class="text-base font-bold text-zinc-900 leading-snug line-clamp-3">{{ selectedProduct.name }}</h2>
                         </div>
                     </div>
 
                     <!-- 核心区域：AI 剥洋葱分析 -->
                     <div class="bg-zinc-900 rounded-3xl p-5 mb-6 text-white relative overflow-hidden shadow-float">
                         <div class="absolute -right-10 -top-10 w-32 h-32 bg-brand-500 rounded-full blur-3xl opacity-40"></div>
-
                         <div class="flex items-center gap-2 mb-4 relative z-10">
                             <svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                      d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                             </svg>
                             <span class="text-xs font-bold tracking-widest text-zinc-300">AI 算账报告</span>
                         </div>
-
                         <div class="flex flex-col gap-3 relative z-10">
                             <div class="flex justify-between items-center bg-white/10 rounded-xl p-3 backdrop-blur-md">
                                 <span class="text-sm text-zinc-400">表面售价</span>
-                                <span class="text-xl font-bold num-font">¥{{ selectedProduct.activity_price.toFixed(2)
-                                    }}</span>
+                                <span class="text-xl font-bold num-font">¥{{ selectedProduct.activity_price.toFixed(2) }}</span>
                             </div>
-
                             <div class="flex justify-center -my-2 z-20">
-                                <div class="w-6 h-6 rounded-full bg-zinc-800 border-2 border-zinc-900 flex items-center justify-center text-zinc-400 text-sm font-bold">
-                                    ÷
-                                </div>
+                                <div class="w-6 h-6 rounded-full bg-zinc-800 border-2 border-zinc-900 flex items-center justify-center text-zinc-400 text-sm font-bold">÷</div>
                             </div>
-
                             <div class="flex justify-between items-center bg-white/10 rounded-xl p-3 backdrop-blur-md">
                                 <span class="text-sm text-zinc-400">AI 提取实际总容量</span>
                                 <div class="text-right">
@@ -561,23 +490,16 @@
                                     <span class="text-xs text-zinc-400 ml-1">{{ selectedProduct.base_unit }}</span>
                                     <div class="text-[10px] text-zinc-500 mt-0.5">
                                         (<span v-for="(struct, i) in getPricingStructure(selectedProduct)" :key="i">
-                                                {{ struct.value }}{{ struct.unit
-                                        }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
-                                            </span>)
+                                            {{ struct.value }}{{ struct.unit }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
+                                        </span>)
                                     </div>
                                 </div>
                             </div>
-
                             <div class="h-px bg-white/10 my-1"></div>
-
                             <div class="flex justify-between items-end">
-                                <div class="pb-1">
-                                    <span class="text-xs text-brand-400 font-medium">不掺水的真实单价</span>
-                                </div>
+                                <div class="pb-1"><span class="text-xs text-brand-400 font-medium">不掺水的真实单价</span></div>
                                 <div class="text-right">
-                                        <span class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-300 to-brand-100 num-font">
-                                            ¥{{ getUnitPrice(selectedProduct) }}
-                                        </span>
+                                    <span class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-300 to-brand-100 num-font">¥{{ getUnitPrice(selectedProduct) }}</span>
                                     <span class="text-sm text-zinc-400">/{{ selectedProduct.base_unit }}</span>
                                 </div>
                             </div>
@@ -588,42 +510,30 @@
                     <div class="mb-6">
                         <h3 class="text-sm font-bold text-zinc-900 mb-3 px-1">AI 识别规格</h3>
                         <div class="flex flex-wrap gap-2">
-                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name"
-                                 class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
+                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name" class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
                                 <span class="text-xs text-zinc-500 mr-2">{{ kw.attribute_name }}</span>
                                 <span class="text-sm font-bold text-zinc-800">{{ kw.attribute_value }}</span>
                             </div>
-                            <div v-if="selectedProduct.brand"
-                                 class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
+                            <div v-if="selectedProduct.brand" class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
                                 <span class="text-xs text-zinc-500 mr-2">品牌</span>
                                 <span class="text-sm font-bold text-zinc-800">{{ selectedProduct.brand }}</span>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 促销节省 -->
-                    <div v-if="selectedProduct.saved_price > 0"
-                         class="bg-accent-50 rounded-2xl p-4 border border-accent-100 flex items-center justify-between">
+                    <div v-if="selectedProduct.saved_price > 0" class="bg-accent-50 rounded-2xl p-4 border border-accent-100 flex items-center justify-between">
                         <div>
                             <p class="text-xs text-accent-700 font-bold mb-0.5">促销优惠力度</p>
                             <p class="text-[10px] text-accent-600/80">相比原价为您省下</p>
                         </div>
-                        <div class="text-xl font-extrabold text-accent-600 num-font">
-                            ¥{{ selectedProduct.saved_price.toFixed(2) }}
-                        </div>
+                        <div class="text-xl font-extrabold text-accent-600 num-font">¥{{ selectedProduct.saved_price.toFixed(2) }}</div>
                     </div>
                 </div>
 
-                <!-- 底部吸附按钮 -->
-                <div class="absolute bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-zinc-100"
-                     style="padding-bottom: calc(1rem + var(--sab));">
-                    <a :href="selectedProduct.product_url" target="_blank" rel="noopener noreferrer"
-                       class="flex items-center justify-center w-full py-3.5 bg-zinc-900 text-white rounded-2xl font-bold text-base shadow-float hover:bg-zinc-800 active:scale-[0.98] transition-transform">
+                <div class="absolute bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-zinc-100" style="padding-bottom: calc(1rem + var(--sab));">
+                    <a :href="selectedProduct.product_url" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center w-full py-3.5 bg-zinc-900 text-white rounded-2xl font-bold text-base shadow-float hover:bg-zinc-800 active:scale-[0.98] transition-transform">
                         去 {{ getPlatformName(selectedProduct.platform) }} 抢购
-                        <svg class="w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
-                                  d="M14 5l7 7m0 0l-7 7m7-7H3"/>
-                        </svg>
+                        <svg class="w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
                     </a>
                 </div>
             </div>
@@ -633,20 +543,56 @@
 </div>
 
 <script>
-    const {createApp, ref, computed, onMounted} = Vue
+    const { createApp, ref, computed, onMounted, onUnmounted } = Vue
 
     createApp({
         setup() {
+            // ======== 页面滚动交互状态 ========
+            const showHeader = ref(true)
+            const headerRef = ref(null)
+            const headerHeight = ref(100)
+            const lastScrollTop = ref(0)
+            let resizeObserver = null
+
+            // 处理滚动的核心逻辑
+            const handleScroll = () => {
+                const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop
+
+                // 1. 到达顶部时必须显示
+                if (currentScrollTop <= 0) {
+                    showHeader.value = true
+                    lastScrollTop.value = currentScrollTop
+                    return
+                }
+
+                // 2. 忽略 iOS 的橡皮筋过度滚动
+                if (currentScrollTop > document.documentElement.scrollHeight - window.innerHeight) {
+                    return
+                }
+
+                // 3. 判断滚动方向及阈值 (大于 10px 视为有效意图)
+                if (Math.abs(currentScrollTop - lastScrollTop.value) < 10) return
+
+                if (currentScrollTop > lastScrollTop.value && currentScrollTop > headerHeight.value) {
+                    // 向下滚动，且已经超过 Header 的高度 -> 隐藏
+                    showHeader.value = false
+                } else if (currentScrollTop < lastScrollTop.value) {
+                    // 向上滚动 -> 显示
+                    showHeader.value = true
+                }
+
+                lastScrollTop.value = currentScrollTop
+            }
+
             const keyword = ref('可乐')
             const currentKeyword = ref('')
             const products = ref([])
 
-            // 新增：过滤相关的响应式状态
             const availableUnits = computed(() => {
                 const units = products.value.map(p => p.base_unit).filter(Boolean)
                 return [...new Set(units)]
             })
-            const activeUnitFilter = ref('') // 默认全选
+            const activeUnitFilter = ref('')
             const availableFilters = ref([])
             const activeFilters = ref({})
 
@@ -674,27 +620,17 @@
 
             const getUnitPrice = (item) => {
                 const num = getUnitPriceNum(item);
-
-                // 正常单价保留标准的 2 位小数
-                if (num >= 0.1) {
-                    return num.toFixed(2);
-                }
-
-                // 遇到极微小单价（如毫升/克），动态保留至少3位有效数字，并剔除末尾多余的 0
+                if (num >= 0.1) return num.toFixed(2);
                 return parseFloat(num.toPrecision(3)).toString();
             }
 
-
-            // 核心：基于所有选项的多重过滤和排序
             const sortedProducts = computed(() => {
                 let arr = [...products.value]
 
-                // 1. 单位强过滤
                 if (activeUnitFilter.value) {
                     arr = arr.filter(p => p.base_unit === activeUnitFilter.value)
                 }
 
-                // 2. 进行动态下拉过滤匹配
                 for (const [attrName, selectedValue] of Object.entries(activeFilters.value)) {
                     if (selectedValue) {
                         arr = arr.filter(p => {
@@ -704,7 +640,6 @@
                     }
                 }
 
-                // 3. 排序
                 if (sortBy.value === 'value') {
                     return arr.sort((a, b) => getUnitPriceNum(a) - getUnitPriceNum(b))
                 } else {
@@ -712,7 +647,6 @@
                 }
             })
 
-            // 监听当前是否有激活的过滤条件
             const hasActiveFilter = computed(() => {
                 return activeUnitFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
             })
@@ -724,16 +658,11 @@
                 }
             }
 
-            // 统计数据：改为基于经过筛选后的 sortedProducts 实时计算，防止物理单位跨界计算导致大盘数据被污染
             const stats = computed(() => {
                 if (sortedProducts.value.length === 0) return {
-                    avgUnitPrice: 0,
-                    minUnitPrice: 0,
-                    maxUnitPrice: 0,
-                    baseUnit: '件'
+                    avgUnitPrice: 0, minUnitPrice: 0, maxUnitPrice: 0, baseUnit: '件'
                 }
 
-                // 统计当前列表中出现频次最高的单位作为主导单位
                 const unitCounts = {}
                 sortedProducts.value.forEach(p => {
                     const u = p.base_unit || '件'
@@ -741,15 +670,11 @@
                 })
                 const dominantUnit = Object.keys(unitCounts).reduce((a, b) => unitCounts[a] > unitCounts[b] ? a : b)
 
-                // 仅使用主导单位的商品来计算均价、最低价（剔除跨单位干扰），并排序
                 const validProducts = sortedProducts.value.filter(p => (p.base_unit || '件') === dominantUnit)
                 const unitPrices = validProducts.map(p => getUnitPriceNum(p)).sort((a, b) => a - b)
 
-                // 使用中位数代替均值，彻底杜绝极端异常数据拉高均价
                 const mid = Math.floor(unitPrices.length / 2)
-                const medianPrice = unitPrices.length % 2 !== 0
-                    ? unitPrices[mid]
-                    : (unitPrices[mid - 1] + unitPrices[mid]) / 2
+                const medianPrice = unitPrices.length % 2 !== 0 ? unitPrices[mid] : (unitPrices[mid - 1] + unitPrices[mid]) / 2
 
                 return {
                     minUnitPrice: unitPrices[0],
@@ -783,38 +708,28 @@
                 const uPrice = getUnitPriceNum(item)
                 const avg = stats.value.avgUnitPrice
                 if (!avg) return null
-
-                if (uPrice < avg * 0.9) {
-                    const diff = Math.round((1 - uPrice / avg) * 100)
-                    return {better: true, text: `比均价低 ${diff}%`}
-                }
-                if (uPrice > avg * 1.1) {
-                    const diff = Math.round((uPrice / avg - 1) * 100)
-                    return {better: false, text: `比均价贵 ${diff}%`}
-                }
+                if (uPrice < avg * 0.9) return {better: true, text: `比均价低 ${Math.round((1 - uPrice / avg) * 100)}%`}
+                if (uPrice > avg * 1.1) return {better: false, text: `比均价贵 ${Math.round((uPrice / avg - 1) * 100)}%`}
                 return null
             }
 
             const search = async () => {
                 if (!keyword.value.trim()) return
-
                 const term = keyword.value.trim()
                 currentKeyword.value = term
                 loading.value = true
                 hasSearched.value = true
                 searchInputRef.value?.blur()
+                showHeader.value = true
 
                 try {
                     const response = await fetch(`/api/search?keyword=${encodeURIComponent(term)}`)
                     const res = await response.json()
                     if (res.status === 'success') {
                         products.value = res.data
-                        // 接收后端计算好的 filters，并自动初始化下拉框 v-model 绑定值为空
                         availableFilters.value = res.filters || []
                         const initialFilters = {}
-                        availableFilters.value.forEach(f => {
-                            initialFilters[f.attribute_name] = ''
-                        })
+                        availableFilters.value.forEach(f => initialFilters[f.attribute_name] = '')
                         activeFilters.value = initialFilters
                     } else {
                         products.value = []
@@ -834,6 +749,7 @@
                 availableFilters.value = []
                 activeFilters.value = {}
                 activeUnitFilter.value = ''
+                window.scrollTo({ top: 0, behavior: 'smooth' })
             }
 
             const openDetail = (item) => {
@@ -847,13 +763,31 @@
 
             onMounted(() => {
                 setInterval(() => placeholderIndex.value++, 3000)
+                if (keyword.value) search()
 
-                if (keyword.value) {
-                    search()
+                // ======== 挂载滚动监听和 Header 尺寸监听 ========
+                if (headerRef.value) {
+                    headerHeight.value = headerRef.value.offsetHeight
+                    // 监听 Header 内部高度变化 (下拉选项呈现后重置高度，解决内容遮挡)
+                    resizeObserver = new ResizeObserver((entries) => {
+                        for (let entry of entries) {
+                            headerHeight.value = entry.target.offsetHeight
+                        }
+                    })
+                    resizeObserver.observe(headerRef.value)
+                }
+                window.addEventListener('scroll', handleScroll, { passive: true })
+            })
+
+            onUnmounted(() => {
+                window.removeEventListener('scroll', handleScroll)
+                if (resizeObserver && headerRef.value) {
+                    resizeObserver.unobserve(headerRef.value)
                 }
             })
 
             return {
+                showHeader, headerRef, headerHeight,
                 keyword, currentKeyword, products, loading, hasSearched,
                 selectedProduct, searchInputRef, sortBy, sortOptions, hotKeywords,
                 placeholderText, sortedProducts, stats,
