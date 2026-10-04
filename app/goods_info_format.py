@@ -331,7 +331,7 @@ def run_promotion_round(product_manager):
     pdd_pid = get_config("pdd_pid")
     pdd_custom_parameters = get_config("pdd_custom_parameters")
 
-    """一次查询待转链商品候选，批量处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
+    """一次查询待转链商品候选，批量并行处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
     started = time.monotonic()
 
     # 根据要求，拉取 product_url 及必要的基础字段
@@ -345,13 +345,15 @@ def run_promotion_round(product_manager):
         logger.info("[转链调度/完成] 本轮无待处理商品 | 数量: [0] | 耗时: [%.2f 秒]", time.monotonic() - started)
         return counts
 
-    logger.info("[转链调度/本轮] 开始批量转链商品 | 待处理: [%d]", len(products))
+    total_products = len(products)
+    PROMOTION_WORKERS = 5  # 设置并行度为 5
+    logger.info("[转链调度/本轮] 开始批量转链商品 | 待处理: [%d] | 并发度: [%d]", total_products, PROMOTION_WORKERS)
 
     failure_details = []
     skipped_ids = []
 
-    # 修改点 1：使用 enumerate 获取当前处理的序号 index，默认从 1 开始
-    for index, product in enumerate(products, 1):
+    # 提取单次处理逻辑，供线程池并发调用
+    def process_promotion(index, product):
         product_url = product.get("product_url")
         product_id = product.get("product_id")
         promotion_info = None
@@ -362,7 +364,7 @@ def run_promotion_round(product_manager):
             error = "product_url 为空"
             short_url = ""
         else:
-            # 调取洗链功能，适配新版返回值直接为结果字典的形式
+            # 调取洗链功能，网络请求交由各线程独立阻塞
             item_result = verify_and_convert_pdd_goods(
                 client_id=pdd_client_id,
                 client_secret=pdd_client_secret,
@@ -387,12 +389,13 @@ def run_promotion_round(product_manager):
                 }
 
                 error = ""
-                # 修改点 2：在日志中加入进度参数，打印当前索引和总数
-                logger.info("[转链调度/成功] 商品转链成功 | 进度: [%d/%d] | product_id: [%s] ", index, len(products), product_id)
+                # 在日志中加入进度参数，打印当前索引和总数
+                logger.info("[转链调度/成功] 商品转链成功 | 进度: [%d/%d] | product_id: [%s] ", index, total_products,
+                            product_id)
             else:
                 status = "failed"
                 short_url = ""
-                # 兼容获取错误信息，新格式提示在 'msg' 中，如果不存在退化取 'error_msg'
+                # 兼容获取错误信息
                 error = item_result.get("msg") or item_result.get("error_msg", "未知转链错误")
 
         # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束）
@@ -421,19 +424,48 @@ def run_promotion_round(product_manager):
             upsert=False,
         )
 
-        # 统计结果
-        if not saved["update"]:
-            counts["skipped"] += 1
-            skipped_ids.append(product_id)
-            continue
+        return {
+            "product_id": product_id,
+            "status": status,
+            "error": error,
+            "updated": saved["update"]
+        }
 
-        counts[status] += 1
-        if status == "failed":
-            failure_details.append(f"{product_id}: {' '.join(error.split())[:240]}")
+    # 使用线程池并发执行单品转链与 DB 写入
+    with ThreadPoolExecutor(max_workers=PROMOTION_WORKERS) as executor:
+        futures = {
+            executor.submit(process_promotion, index, product): product
+            for index, product in enumerate(products, 1)
+        }
+
+        # 通过 as_completed 实时捕获已完成的线程结果
+        for future in as_completed(futures):
+            product = futures[future]
+            product_id = product.get("product_id")
+            try:
+                result = future.result()
+                status = result["status"]
+
+                # 统计结果
+                if not result["updated"]:
+                    counts["skipped"] += 1
+                    skipped_ids.append(product_id)
+                else:
+                    counts[status] += 1
+                    if status == "failed":
+                        failure_details.append(f"{product_id}: {' '.join(result['error'].split())[:240]}")
+
+            except Exception as exc:
+                # 处理单条线程执行中发生的未捕获异常
+                counts["failed"] += 1
+                error_msg = f"并行处理异常: {type(exc).__name__}: {exc}"
+                failure_details.append(f"{product_id}: {error_msg[:240]}")
+                logger.exception("❌ [转链调度/单品异常] 线程执行出错 | product_id: [%s] | 原因: [%s]", product_id,
+                                 error_msg)
 
     # 打印本轮统计日志
     failed, skipped = counts["failed"], counts["skipped"]
-    all_failed = failed == len(products)
+    all_failed = failed == total_products and total_products > 0
 
     log = logger.error if all_failed else logger.warning if failed or skipped else logger.info
     message = "❌ [转链调度/批次完成] 全批生成失败" if all_failed else "[转链调度/批次完成] 商品结果已逐项处理"
@@ -444,6 +476,7 @@ def run_promotion_round(product_manager):
         detail, ", ".join(map(str, skipped_ids)) or "无")
 
     return counts
+
 
 def get_recent_successful_formats(hours=24, limit=0):
     """查询近期成功记录，按 category 分组返回。"""
