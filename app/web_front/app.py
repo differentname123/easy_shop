@@ -160,6 +160,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 target_multiplier = unit_to_multiplier[target_unit]
                 total_value = total_value * (orig_multiplier / target_multiplier)
                 base_unit = target_unit
+                product["format_info"]["pricing_basis"]["total_value"] = total_value
 
         # 性价比计算：单位价格买到的量，例如 "克/元"
         price = product["activity_price"]
@@ -170,22 +171,64 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             grouped_products[base_unit] = []
         grouped_products[base_unit].append(product)
 
-    # 按照 base_unit 分组，收集每组性价比排名前 3 的商品
+    # 按照 base_unit 分组，收集所有的商品以支持前端的多维度筛选
     final_results = []
     for base_unit, unit_products in grouped_products.items():
         unit_products.sort(key=lambda x: x["cost_performance_score"], reverse=True)
-        final_results.extend(unit_products[:3])
+        final_results.extend(unit_products)  # 去掉了原有的 [:3] 限制
 
     # 整体再按性价比分值排个序返回
     final_results.sort(key=lambda x: x["cost_performance_score"], reverse=True)
-    return final_results
+
+    # ========== 核心修改：动态统计并生成过滤维度 ==========
+    attribute_stats = {}
+    for product in final_results:
+        keywords = product.get("format_info", {}).get("decision_keywords", [])
+        for kw in keywords:
+            attr_name = kw.get("attribute_name")
+            attr_val = kw.get("attribute_value")
+            score = kw.get("score", 0)
+
+            if not attr_name or not attr_val:
+                continue
+
+            if attr_name not in attribute_stats:
+                attribute_stats[attr_name] = {"score": 0, "values": set()}
+
+            attribute_stats[attr_name]["score"] += score
+            attribute_stats[attr_name]["values"].add(attr_val)
+
+    # 1. 过滤掉仅有1个值的属性（没有筛选意义）
+    valid_attributes = []
+    for attr_name, stats in attribute_stats.items():
+        if len(stats["values"]) > 1:
+            valid_attributes.append({
+                "attribute_name": attr_name,
+                "score": stats["score"],
+                "options": list(stats["values"])
+            })
+
+    # 2. 根据得分降序排列，取前5个最能影响决策的关键词进行筛选
+    valid_attributes.sort(key=lambda x: x["score"], reverse=True)
+    top_filters = valid_attributes[:5]
+    # ===================================================
+
+    return {
+        "results": final_results,
+        "filters": top_filters
+    }
 
 
 # 1. 搜索 API 接口
 @app.get("/api/search")
 def api_search(keyword: str = "方便面", hours: int = 72):
-    results = search_product(keyword, min_match_score=10, hours=hours)
-    return {"status": "success", "data": results}
+    search_data = search_product(keyword, min_match_score=10, hours=hours)
+    # 将商品列表 results 和 动态过滤项 filters 一起返回给前端
+    return {
+        "status": "success",
+        "data": search_data["results"],
+        "filters": search_data["filters"]
+    }
 
 
 # 2. 网页路由配置
