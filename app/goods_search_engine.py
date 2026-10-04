@@ -118,14 +118,14 @@ def extract_unique_units(hours=24, limit=0):
     return unique_units_dict
 
 if __name__ == "__main__":
-    extract_unique_units()
-    #
-    # target_entity_info_list = [
-    #     {
-    #         "name": "可乐",
-    #         "score": 10
-    #     }
-    # ]
-    #
-    # filtered_products = search_product(target_entity_info_list)
-    # print()
+    # extract_unique_units()
+
+    target_entity_info_list = [
+        {
+            "name": "可乐",
+            "score": 10
+        }
+    ]
+
+    filtered_products = search_product(target_entity_info_list)
+    print()
