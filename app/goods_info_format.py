@@ -350,7 +350,8 @@ def run_promotion_round(product_manager):
     failure_details = []
     skipped_ids = []
 
-    for product in products:
+    # 修改点 1：使用 enumerate 获取当前处理的序号 index，默认从 1 开始
+    for index, product in enumerate(products, 1):
         product_url = product.get("product_url")
         product_id = product.get("product_id")
         promotion_info = None
@@ -386,7 +387,8 @@ def run_promotion_round(product_manager):
                 }
 
                 error = ""
-                logger.info("[转链调度/成功] 商品转链成功 | product_id: [%s] ", product_id)
+                # 修改点 2：在日志中加入进度参数，打印当前索引和总数
+                logger.info("[转链调度/成功] 商品转链成功 | 进度: [%d/%d] | product_id: [%s] ", index, len(products), product_id)
             else:
                 status = "failed"
                 short_url = ""
