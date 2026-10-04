@@ -375,6 +375,8 @@ def run_promotion_round(product_manager):
                 status = "success"
                 short_url = item_result.get("h5_jump_url")
                 error = ""
+                logger.info("[转链调度/成功] 商品转链成功 | product_id: [%s] ",
+                            product_id)
             else:
                 status = "failed"
                 short_url = ""
