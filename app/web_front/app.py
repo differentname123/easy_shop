@@ -89,7 +89,10 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         "product_id": product.get("product_id"),
         "platform": product.get("platform"),
         "image_url": product.get("image_url"),
-        "product_url": product.get("product_url"),
+        # 修改：优先使用 promotion_url，没有才使用 product_url
+        "product_url": product.get("promotion_url") or product.get("product_url"),
+        # 新增：判断是否有佣金 (存在 promotion_url 即为有佣金)
+        "has_commission": bool(product.get("promotion_url")),
         "original_price": product.get("original_price"),
         "saved_price": product.get("saved_price"),
         "sales_tip": product.get("sales_tip"),
