@@ -2,2452 +2,812 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>智惠 · 好物有优惠，规格算明白</title>
-    <meta name="description"
-          content="发现商品优惠，核算每100克、每100毫升或每件的参考价格，按需求选规格，前往购物平台完成购买。">
-    <!-- 保留 Vue 3；样式改为内置 CSS，取消 Tailwind 和在线字体依赖。 -->
-    <script defer src="https://unpkg.com/vue@3.5.13/dist/vue.global.prod.js"></script>
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>智惠 · AI购物精算师</title>
+    <meta name="description" content="AI智能核算单位价格，帮您算清单价，领券省钱">
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+                    },
+                    colors: {
+                        zinc: {
+                            50: '#fafafa', 100: '#f4f4f5', 200: '#e4e4e7', 300: '#d4d4d8', 400: '#a1a1aa',
+                            500: '#71717a', 600: '#52525b', 700: '#3f3f46', 800: '#27272a', 900: '#18181b',
+                        },
+                        brand: {
+                            50: '#eef2ff', 100: '#e0e7ff', 500: '#6366f1', 600: '#4f46e5', 900: '#312e81'
+                        },
+                        accent: {
+                            500: '#10b981',
+                            600: '#059669'
+                        }
+                    },
+                    boxShadow: {
+                        'glass': '0 4px 30px rgba(0, 0, 0, 0.05)',
+                        'float': '0 20px 40px -15px rgba(0,0,0,0.05)',
+                        'drawer': '0 -10px 40px rgba(0,0,0,0.1)',
+                    }
+                }
+            }
+        }
+    </script>
+
     <style>
+        /* ============ 核心重置与基础体验 ============ */
         :root {
-            --brand: #4f46e5;
-            --brand-light: #eef2ff;
-            --ink: #18181b;
-            --muted: #62626e;
-            --line: #e4e4eb;
-            --green: #087a59;
-            --sab: env(safe-area-inset-bottom, 0px);
-            --sat: env(safe-area-inset-top, 0px);
+            --sat: env(safe-area-inset-top);
+            --sab: env(safe-area-inset-bottom);
         }
 
         * {
-            box-sizing: border-box;
             -webkit-tap-highlight-color: transparent;
         }
 
-        [v-cloak] {
-            display: none !important;
-        }
-
         body {
-            margin: 0;
-            background: #f6f6fa;
-            color: var(--ink);
-            font: 15px/1.6 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background-color: #f4f4f5;
+            background-image: radial-gradient(circle at 50% 0%, #ffffff 0%, #f4f4f5 70%);
+            background-attachment: fixed;
+            min-height: 100vh;
             -webkit-font-smoothing: antialiased;
         }
 
-        button, input, select, textarea {
-            font: inherit;
-        }
-
-        button, a, input, select, textarea {
-            touch-action: manipulation;
-        }
-
-        button, a {
-            -webkit-user-select: none;
-        }
-
-        button {
-            cursor: pointer;
-        }
-
-        button:disabled {
-            cursor: default;
-            opacity: .55;
-        }
-
-        button {
-            border: 0;
-        }
-
-        a {
-            color: inherit;
-            text-decoration: none;
-        }
-
-        :focus-visible {
-            outline: 3px solid #a5b4fc;
-            outline-offset: 3px;
-        }
-
-        h1, h2, h3, p {
-            margin: 0;
-        }
-
-        svg {
-            display: block;
-        }
-
-        .container {
-            max-width: 1080px;
-            width: 100%;
-            margin: auto;
-            padding: 0 24px;
-        }
-
-        .num {
-            font-variant-numeric: tabular-nums;
-        }
-
-        .sr-only {
-            position: absolute;
-            width: 1px;
-            height: 1px;
-            padding: 0;
-            margin: -1px;
-            overflow: hidden;
-            clip: rect(0, 0, 0, 0);
-            white-space: nowrap;
-            border: 0;
-        }
-
-        .header {
-            position: fixed;
-            inset: 0 0 auto;
-            padding-top: var(--sat);
-            z-index: 20;
-            background: rgba(255, 255, 255, .94);
-            backdrop-filter: blur(20px);
-            border-bottom: 1px solid var(--line);
-            transition: transform .25s;
-        }
-
-        .header.hidden {
-            transform: translateY(-100%);
-        }
-
-        .header-inner {
-            padding-top: 15px;
-            padding-bottom: 12px;
-        }
-
-        .top-row {
-            display: flex;
-            align-items: center;
-            gap: 26px;
-        }
-
-        .logo {
-            padding: 0;
-            background: none;
-            text-align: left;
-            white-space: nowrap;
-        }
-
-        .logo strong {
-            display: block;
-            font-size: 23px;
-            letter-spacing: -1px;
-            line-height: 1.1;
-        }
-
-        .logo small {
-            font-size: 10px;
-            color: var(--brand);
-            letter-spacing: 2px;
-        }
-
-        .search-form {
-            flex: 1;
-            min-width: 0;
-        }
-
-        .search-wrap {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 5px;
-            border: 2px solid var(--line);
-            background: white;
-            border-radius: 17px;
-            transition: border-color .2s;
-        }
-
-        .search-wrap:focus-within {
-            border-color: var(--brand);
-        }
-
-        .search-icon {
-            width: 20px;
-            height: 20px;
-            margin-left: 10px;
-            color: #838391;
-            flex-shrink: 0;
-        }
-
-        .search-wrap input {
-            width: 100%;
-            min-width: 0;
-            padding: 8px 3px;
-            border: 0;
-            background: transparent;
-            outline: 0;
-            font-size: 16px;
-        }
-
-        .clear-search {
-            flex-shrink: 0;
-            border-radius: 8px;
-            padding: 5px 8px;
-            color: var(--muted);
-            background: #f4f4f7;
-        }
-
-        .primary {
-            display: inline-flex;
-            justify-content: center;
-            align-items: center;
-            gap: 7px;
-            padding: 10px 17px;
-            background: var(--brand);
-            color: white;
-            border-radius: 12px;
-            font-weight: 700;
-            white-space: nowrap;
-            transition: background .2s;
-        }
-
-        .primary:hover {
-            background: #4338ca;
-        }
-
-        .secondary {
-            padding: 9px 15px;
-            border: 1px solid var(--line);
-            border-radius: 11px;
-            background: white;
-            font-weight: 600;
-        }
-
-        .text-button {
-            padding: 4px 0;
-            background: none;
-            color: var(--brand);
-            font-size: 13px;
-        }
-
-        .categories {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            margin-top: 11px;
-            overflow: auto;
-            scrollbar-width: none;
-        }
-
-        .categories::-webkit-scrollbar {
+        /* 隐藏滚动条但保留功能 */
+        .no-scrollbar::-webkit-scrollbar {
             display: none;
         }
 
-        .categories span {
-            color: #787885;
-            font-size: 12px;
-            white-space: nowrap;
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
         }
 
-        .chip {
-            padding: 5px 12px;
-            border: 1px solid var(--line);
-            border-radius: 8px;
-            background: white;
-            color: var(--muted);
-            font-size: 12px;
-            white-space: nowrap;
+        /* ============ 玻璃拟态组件 ============ */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
         }
 
-        .chip:hover {
-            border-color: var(--brand);
-            color: var(--brand);
+        /* ============ 动画系统 ============ */
+        @keyframes scaleIn {
+            from { opacity: 0; transform: scale(0.95) translateY(10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
         }
 
-        main.container {
-            padding-top: 30px;
-            padding-bottom: 35px;
-            min-height: 60vh;
+        @keyframes slideUpNative {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
         }
 
-        .hero {
-            display: grid;
-            grid-template-columns:1.2fr .8fr;
-            gap: 35px;
-            align-items: center;
-            padding: 38px;
-            border: 1px solid #e4e4f3;
-            border-radius: 27px;
-            background: linear-gradient(120deg, #fff 25%, #f0f0ff);
-            margin-bottom: 25px;
+        .animate-card {
+            animation: scaleIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
         }
 
-        .eyebrow {
-            display: inline-flex;
-            gap: 7px;
-            align-items: center;
-            color: var(--brand);
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 1px;
-            margin-bottom: 15px;
+        .drawer-enter-active {
+            animation: slideUpNative 0.4s cubic-bezier(0.32, 0.72, 0, 1);
         }
 
-        .dot {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--brand);
+        .drawer-leave-active {
+            animation: slideUpNative 0.3s cubic-bezier(0.32, 0.72, 0, 1) reverse;
         }
 
-        .hero h1 {
-            font-size: 38px;
-            line-height: 1.3;
-            letter-spacing: -1.1px;
-            margin-bottom: 14px;
-        }
+        .delay-0 { animation-delay: 0ms; }
+        .delay-1 { animation-delay: 50ms; }
+        .delay-2 { animation-delay: 100ms; }
+        .delay-3 { animation-delay: 150ms; }
 
-        .hero h1 em {
-            font-style: normal;
-            color: var(--brand);
-        }
-
-        .hero p {
-            color: var(--muted);
-            font-size: 14px;
-            max-width: 460px;
-        }
-
-        .hero-steps {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 9px;
-            margin-top: 23px;
-        }
-
-        .step {
-            padding: 7px 11px;
-            border: 1px solid #e3e3f1;
-            border-radius: 9px;
-            font-size: 12px;
-            background: #ffffffb0;
-        }
-
-        .step b {
-            color: var(--brand);
-            margin-right: 5px;
-        }
-
-        .example {
-            padding: 23px;
-            border: 1px solid #fff;
-            border-radius: 20px;
-            box-shadow: 0 10px 35px #4f46e512;
-            background: #ffffffd9;
-        }
-
-        .example small {
-            color: #767685;
-            font-size: 11px;
-        }
-
-        .example .equation {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin: 14px 0;
-        }
-
-        .example .amount {
-            font-size: 28px;
-            font-weight: 800;
-        }
-
-        .example .unit-result {
-            padding: 13px 15px;
-            border-radius: 13px;
-            background: var(--brand-light);
-            color: var(--brand);
-        }
-
-        .unit-result strong {
-            font-size: 30px;
-            letter-spacing: -1px;
-        }
-
-        .hero.compact {
-            padding: 23px 28px;
-            grid-template-columns:1fr;
-        }
-
-        .hero.compact h1 {
-            font-size: 25px;
-            margin-bottom: 5px;
-        }
-
-        .hero.compact .eyebrow {
-            margin-bottom: 7px;
-        }
-
-        .notice {
-            display: flex;
-            align-items: flex-start;
-            gap: 9px;
-            border: 1px solid #dce1fa;
-            background: #f0f3ff;
-            color: #454375;
-            padding: 12px 15px;
-            border-radius: 13px;
-            font-size: 12px;
-            margin-bottom: 20px;
-        }
-
-        .notice.demo {
-            background: #fff8e7;
-            border-color: #f1dfb1;
-            color: #705222;
-            justify-content: space-between;
-        }
-
-        .notice .text-button {
-            color: inherit;
-            white-space: nowrap;
-        }
-
-        .results-panel {
-            background: white;
-            border: 1px solid var(--line);
-            border-radius: 22px;
-            padding: 22px;
-            margin-bottom: 22px;
-        }
-
-        .results-heading {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 16px;
-        }
-
-        .results-heading h2 {
-            font-size: 20px;
-        }
-
-        .results-heading small {
-            color: var(--muted);
-            font-size: 11px;
-        }
-
-        .sort-tabs {
-            display: flex;
-            padding: 4px;
-            border-radius: 11px;
-            background: #f1f1f6;
-            flex-shrink: 0;
-        }
-
-        .sort-tabs button {
-            padding: 7px 11px;
-            border-radius: 8px;
-            color: var(--muted);
-            background: none;
-            font-size: 13px;
-        }
-
-        .sort-tabs button.active {
-            background: white;
-            color: var(--brand);
-            font-weight: 700;
-            box-shadow: 0 1px 4px #18181b0d;
-        }
-
-        .metrics {
-            display: grid;
-            grid-template-columns:repeat(3, 1fr);
-            border: 1px solid #e9e9f1;
-            border-radius: 13px;
-            background: #fafafd;
-            padding: 13px 17px;
-            margin-bottom: 17px;
-        }
-
-        .metric + .metric {
-            border-left: 1px solid #e9e9f1;
-            padding-left: 24px;
-        }
-
-        .metric strong {
-            font-size: 23px;
-        }
-
-        .metric small {
-            margin-left: 5px;
-            color: var(--muted);
-            font-size: 11px;
-        }
-
-        .metric p {
-            color: var(--muted);
-            font-size: 11px;
-        }
-
-        .filters {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 9px;
-        }
-
-        .filter-field {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .filter-field > span {
-            font-size: 12px;
-            color: var(--muted);
-        }
-
-        .filters select {
-            max-width: 240px;
-            padding: 8px 9px;
-            border: 1px solid var(--line);
-            background: white;
-            border-radius: 9px;
-            font-size: 12px;
-            color: var(--ink);
-        }
-
-        .check-filter {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            font-size: 12px;
-            padding: 8px 0;
-        }
-
-        input[type=checkbox] {
-            accent-color: var(--brand);
-            width: 15px;
-            height: 15px;
-        }
-
-        .sort-note {
-            color: var(--muted);
-            font-size: 11px;
-            margin-top: 13px;
-        }
-
-        .group {
-            margin-top: 24px;
-        }
-
-        .group-heading {
-            display: flex;
-            justify-content: space-between;
-            gap: 12px;
-            align-items: baseline;
-            margin: 0 2px 12px;
-        }
-
-        .group-heading h3 {
-            font-size: 14px;
-            font-weight: 700;
-        }
-
-        .group-heading span {
-            font-size: 11px;
-            color: var(--muted);
-            white-space: nowrap;
-        }
-
-        .product-grid {
-            display: grid;
-            grid-template-columns:repeat(3, minmax(0, 1fr));
-            gap: 17px;
-        }
-
+        /* ============ 卡片交互 ============ */
         .product-card {
-            display: flex;
-            flex-direction: column;
-            border: 1px solid var(--line);
-            border-radius: 19px;
-            background: white;
-            overflow: hidden;
-            transition: transform .2s, box-shadow .2s;
+            transition: all 0.3s ease;
         }
 
-        .product-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 13px 30px #18181b0c;
+        @media (min-width: 640px) {
+            .product-card:hover {
+                transform: translateY(-4px);
+                box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.1);
+            }
         }
 
-        .product-image {
-            position: relative;
-            padding: 13px 13px 0;
+        .product-card:active {
+            transform: scale(0.98);
         }
 
-        .product-image img {
-            display: block;
-            width: 100%;
-            height: 174px;
-            object-fit: contain;
-            background: #f8f8fc;
-            border-radius: 12px;
-        }
-
-        .platform-badge {
-            display: inline-flex;
-            padding: 2px 7px;
-            border-radius: 5px;
-            background: #fff;
-            color: #555;
-            font-weight: 700;
-            font-size: 10px;
-            border: 1px solid #e6e6ed;
-        }
-
-        .product-image .platform-badge {
-            position: absolute;
-            bottom: 8px;
-            left: 21px;
-        }
-
-        .card-body {
-            display: flex;
-            flex-direction: column;
-            flex: 1;
-            padding: 13px;
-            min-width: 0;
-        }
-
-        .card-title {
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-            font-size: 14px;
-            line-height: 1.5;
-            min-height: 42px;
-            margin-bottom: 3px;
-        }
-
-        .shop {
-            color: #7a7a88;
-            font-size: 10px;
-            margin-bottom: 8px;
-        }
-
-        .tags {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 4px;
-            margin-bottom: 10px;
-            min-height: 22px;
-        }
-
-        .tag {
-            padding: 2px 6px;
-            font-size: 10px;
-            border-radius: 5px;
-            background: #f5f5f8;
-            color: var(--muted);
-        }
-
-        .price-box {
-            background: #f4f4ff;
-            border: 1px solid #e6e5ff;
-            border-radius: 11px;
-            padding: 10px;
-            margin-top: auto;
-        }
-
-        .unit-line {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: baseline;
-            column-gap: 4px;
-            color: var(--brand);
-        }
-
-        .unit-line strong {
-            font-size: 24px;
-            line-height: 1.25;
-            letter-spacing: -.8px;
-        }
-
-        .unit-line span {
-            font-size: 10px;
-        }
-
-        .unit-line.pending {
-            color: var(--muted);
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .sale-line {
-            display: flex;
-            justify-content: space-between;
-            gap: 7px;
-            align-items: baseline;
-            margin-top: 7px;
-            padding-top: 6px;
-            border-top: 1px solid #e2e1ff;
-        }
-
-        .sale-line strong {
-            font-size: 14px;
-        }
-
-        .sale-line small {
-            color: var(--muted);
-            font-size: 10px;
-        }
-
-        .coupon-tag {
-            padding: 5px 8px;
-            border-radius: 7px;
-            background: #ecf8f1;
-            color: var(--green);
-            font-size: 11px;
-            font-weight: 600;
-            margin-top: 8px;
-        }
-
-        .ad-label {
-            font-size: 10px;
-            color: #707080;
-            margin: 8px 0;
-        }
-
-        .card-actions {
-            display: flex;
-            gap: 7px;
-        }
-
-        .card-actions .secondary {
-            font-size: 11px;
-            padding: 8px 9px;
-        }
-
-        .buy {
-            flex: 1;
-            font-size: 11px;
-            padding: 9px 8px;
-        }
-
-        .buy-disabled {
-            flex: 1;
-            text-align: center;
-            padding: 9px 5px;
-            font-size: 11px;
-            border-radius: 10px;
-            color: #6b6b78;
-            background: #f0f0f6;
-        }
-
-        .empty {
-            text-align: center;
-            padding: 45px 20px;
-        }
-
-        .empty-icon {
-            margin: auto auto 14px;
-            width: 52px;
-            height: 52px;
-            display: grid;
-            place-items: center;
-            border-radius: 16px;
-            background: white;
-            border: 1px solid var(--line);
-            color: var(--brand);
-            font-size: 24px;
-        }
-
-        .empty h2 {
-            font-size: 18px;
-            margin-bottom: 7px;
-        }
-
-        .empty p {
-            font-size: 13px;
-            color: var(--muted);
-            margin-bottom: 17px;
-        }
-
-        .empty .primary, .empty .secondary {
-            margin: 4px;
-        }
-
-        .loading-label {
-            padding: 8px 0 15px;
-            color: var(--muted);
-            font-size: 13px;
-        }
-
-        .skeleton-card {
-            padding: 14px;
-            border-radius: 19px;
-            border: 1px solid var(--line);
-            background: white;
-        }
-
-        .skeleton {
-            background: linear-gradient(90deg, #ebebf2 25%, #f7f7fb 50%, #ebebf2 75%);
+        /* ============ 骨架屏 ============ */
+        .skeleton-pulse {
+            background: linear-gradient(90deg, #e4e4e7 25%, #f4f4f5 50%, #e4e4e7 75%);
             background-size: 200% 100%;
-            animation: pulse 1.5s infinite;
-            border-radius: 9px;
+            animation: skeleton-loading 1.5s infinite;
         }
 
-        .skeleton-image {
-            height: 174px;
-            margin-bottom: 14px;
+        @keyframes skeleton-loading {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
 
-        .skeleton-line {
-            height: 15px;
-            margin: 10px 0;
+        .num-font {
+            font-feature-settings: "tnum";
+            font-variant-numeric: tabular-nums;
         }
 
-        @keyframes pulse {
-            from {
-                background-position: 200% 0
-            }
-            to {
-                background-position: -200% 0
-            }
-        }
-
-        .footer {
-            border-top: 1px solid var(--line);
-            padding: 23px 0 calc(23px + var(--sab));
-            color: var(--muted);
-            font-size: 11px;
-            background: #fff9;
-        }
-
-        .footer-top {
-            display: flex;
-            gap: 20px;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
-
-        .footer-top strong {
-            color: var(--ink);
-            font-size: 13px;
-        }
-
-        .footer-links {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 15px;
-        }
-
-        .footer p {
-            max-width: 850px;
-        }
-
-        dialog {
-            color: var(--ink);
-            padding: 0;
-            border: 1px solid var(--line);
-            background: white;
-            box-shadow: 0 24px 70px #18181b25;
-        }
-
-        dialog::backdrop {
-            background: #18181b66;
-            backdrop-filter: blur(3px);
-        }
-
-        .drawer {
-            position: fixed;
-            inset: auto 0 0;
-            margin: 0 auto;
-            width: min(100%, 620px);
-            max-height: 92vh;
-            max-height: 92dvh;
-            border-radius: 24px 24px 0 0;
-        }
-
-        .drawer[open] {
-            display: flex;
-            flex-direction: column;
-        }
-
-        .dialog-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 22px;
-            border-bottom: 1px solid #eeeef3;
-        }
-
-        .dialog-header h2 {
-            font-size: 14px;
-        }
-
-        .close {
-            width: 34px;
-            height: 34px;
-            border-radius: 50%;
-            background: #f3f3f8;
-            color: var(--muted);
-            font-size: 21px;
-            line-height: 1;
-        }
-
-        .drawer-body {
-            overflow: auto;
-            padding: 20px 22px;
-            min-height: 0;
-        }
-
-        .detail-product {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 19px;
-        }
-
-        .detail-product img {
-            width: 85px;
-            height: 85px;
-            object-fit: contain;
-            border: 1px solid #eeeef4;
-            border-radius: 12px;
-            background: #fafafd;
-            flex-shrink: 0;
-        }
-
-        .detail-product h3 {
-            font-size: 14px;
-            line-height: 1.5;
-            margin-top: 7px;
-        }
-
-        .calculation {
-            padding: 20px;
-            border-radius: 18px;
-            color: white;
-            background: #202035;
-            margin-bottom: 20px;
-        }
-
-        .calculation h3 {
-            color: #ceceef;
-            font-size: 12px;
-            margin-bottom: 12px;
-        }
-
-        .calc-row {
-            display: flex;
-            justify-content: space-between;
-            gap: 15px;
-            padding: 10px 0;
-            font-size: 12px;
-            align-items: baseline;
-        }
-
-        .calc-row > span {
-            color: #bbbccf;
-            flex-shrink: 0;
-        }
-
-        .calc-row > strong {
-            text-align: right;
-            font-size: 16px;
-        }
-
-        .calc-structure {
-            text-align: right;
-            font-size: 11px;
-            color: #bbbccf;
-            padding-bottom: 12px;
-        }
-
-        .calc-result {
-            border-top: 1px solid #ffffff24;
-            margin-top: 6px;
-            padding-top: 15px;
-        }
-
-        .calc-result strong {
-            font-size: 33px;
-            color: #c7d2fe;
-        }
-
-        .calc-result small {
-            font-size: 12px;
-            color: #c7d2fe;
-        }
-
-        .calc-equation {
-            font-size: 11px;
-            color: #c7c7dc;
-            margin-top: 8px;
-            word-break: break-word;
-        }
-
-        .calc-note {
-            font-size: 10px;
-            color: #bebed2;
-            margin-top: 9px;
-        }
-
-        .detail-section {
-            margin-bottom: 19px;
-        }
-
-        .detail-section h3 {
-            font-size: 13px;
-            margin-bottom: 8px;
-        }
-
-        .detail-section p {
-            color: var(--muted);
-            font-size: 12px;
-        }
-
-        .detail-section .tags {
-            margin-bottom: 7px;
-        }
-
-        .detail-section .tag {
-            font-size: 11px;
-            padding: 5px 9px;
-        }
-
-        .coupon-box {
-            border: 1px solid #d5ecdf;
-            border-radius: 13px;
-            background: #f1faf5;
-            padding: 14px;
-        }
-
-        .coupon-box strong {
-            color: var(--green);
-            display: block;
-            margin-bottom: 3px;
-        }
-
-        .coupon-box p {
-            color: #397458;
-            font-size: 11px;
-        }
-
-        .detail-table {
-            display: grid;
-            grid-template-columns:auto 1fr;
-            gap: 7px 16px;
-            margin: 10px 0;
-            font-size: 11px;
-        }
-
-        .detail-table dt {
-            color: var(--muted);
-        }
-
-        .detail-table dd {
-            margin: 0;
-            text-align: right;
-            overflow-wrap: anywhere;
-        }
-
-        .drawer-footer {
-            border-top: 1px solid #eeeef3;
-            padding: 13px 22px calc(13px + var(--sab));
-            flex-shrink: 0;
-            background: white;
-        }
-
-        .drawer-footer .primary, .drawer-footer .buy-disabled {
-            display: flex;
-            width: 100%;
-            padding: 13px;
-            font-size: 14px;
-        }
-
-        .drawer-footer p {
-            color: var(--muted);
-            font-size: 10px;
-            text-align: center;
-            margin-top: 7px;
-        }
-
-        .info-dialog {
-            border-radius: 21px;
-            width: min(calc(100% - 28px), 560px);
-            max-height: 85dvh;
-        }
-
-        .info-body {
-            padding: 20px 22px;
-            overflow: auto;
-            max-height: 65dvh;
-        }
-
-        .info-body h3 {
-            font-size: 13px;
-            margin: 14px 0 5px;
-        }
-
-        .info-body h3:first-child {
-            margin-top: 0;
-        }
-
-        .info-body p {
-            font-size: 12px;
-            color: var(--muted);
-        }
-
-        .report-text {
-            display: block;
-            width: 100%;
-            min-height: 185px;
-            resize: vertical;
-            padding: 11px;
-            border: 1px solid var(--line);
-            border-radius: 10px;
-            background: #fafafd;
-            font-size: 12px;
-        }
-
-        .report-actions {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            margin-top: 12px;
-        }
-
-        .toast {
-            position: fixed;
-            z-index: 100;
-            left: 50%;
-            bottom: calc(25px + var(--sab));
-            transform: translateX(-50%);
-            max-width: 90%;
-            padding: 10px 17px;
-            border-radius: 11px;
-            background: #202035;
-            color: white;
-            box-shadow: 0 10px 30px #0002;
-            font-size: 12px;
-        }
-
-        .boot-error {
-            margin: 35px auto;
-            padding: 20px;
-            max-width: 560px;
-            text-align: center;
-            font-size: 14px;
-            color: var(--muted);
-        }
-
-        @media (max-width: 850px) {
-            .product-grid {
-                grid-template-columns:repeat(2, minmax(0, 1fr));
-            }
-
-            .hero {
-                gap: 20px;
-                padding: 28px;
-            }
-
-            .hero h1 {
-                font-size: 31px;
-            }
-
-            .example {
-                padding: 18px;
-            }
-        }
-
-        @media (max-width: 600px) {
-            .container {
-                padding-left: 16px;
-                padding-right: 16px;
-            }
-
-            .top-row {
-                gap: 12px;
-            }
-
-            .logo strong {
-                font-size: 20px;
-            }
-
-            .logo small {
-                font-size: 8px;
-                letter-spacing: 0;
-            }
-
-            .search-icon {
-                display: none;
-            }
-
-            .search-wrap {
-                gap: 4px;
-                border-radius: 13px;
-            }
-
-            .search-wrap input {
-                padding-left: 7px;
-            }
-
-            .search-wrap .primary {
-                font-size: 12px;
-                padding: 9px 11px;
-                border-radius: 9px;
-            }
-
-            .clear-search {
-                padding: 3px 5px;
-            }
-
-            main.container {
-                padding-top: 20px;
-            }
-
-            .hero {
-                display: block;
-                padding: 25px 22px;
-                border-radius: 20px;
-            }
-
-            .hero h1 {
-                font-size: 29px;
-            }
-
-            .hero p {
-                font-size: 13px;
-            }
-
-            .example {
-                margin-top: 23px;
-            }
-
-            .hero.compact {
-                padding: 20px;
-            }
-
-            .hero.compact h1 {
-                font-size: 23px;
-            }
-
-            .results-panel {
-                padding: 16px;
-                border-radius: 17px;
-            }
-
-            .results-heading {
-                flex-wrap: wrap;
-                gap: 11px;
-            }
-
-            .results-heading h2 {
-                font-size: 18px;
-            }
-
-            .metrics {
-                padding: 10px 12px;
-            }
-
-            .metric + .metric {
-                padding-left: 12px;
-            }
-
-            .metric strong {
-                font-size: 21px;
-            }
-
-            .filters {
-                gap: 7px;
-            }
-
-            .filter-field > span {
-                display: none;
-            }
-
-            .filters select {
-                max-width: 180px;
-            }
-
-            .product-grid {
-                grid-template-columns:1fr;
-                gap: 12px;
-            }
-
-            .product-card {
-                flex-direction: row;
-                border-radius: 16px;
-            }
-
-            .product-image {
-                padding: 12px 0 12px 12px;
-                align-self: flex-start;
-                flex-shrink: 0;
-            }
-
-            .product-image img {
-                width: 110px;
-                height: 128px;
-            }
-
-            .product-image .platform-badge {
-                bottom: 19px;
-                left: 18px;
-            }
-
-            .card-body {
-                padding: 12px;
-            }
-
-            .card-title {
-                font-size: 13px;
-            }
-
-            .tags {
-                min-height: 0;
-                margin-bottom: 8px;
-            }
-
-            .shop {
-                margin-bottom: 5px;
-            }
-
-            .price-box {
-                padding: 8px;
-            }
-
-            .unit-line strong {
-                font-size: 22px;
-            }
-
-            .sale-line {
-                flex-wrap: wrap;
-                margin-top: 5px;
-                gap: 1px;
-            }
-
-            .card-actions {
-                gap: 5px;
-            }
-
-            .card-actions .secondary {
-                padding: 7px 8px;
-            }
-
-            .buy {
-                padding: 8px 5px;
-                font-size: 10px;
-            }
-
-            .ad-label {
-                margin: 6px 0;
-            }
-
-            .group-heading {
-                flex-wrap: wrap;
-                gap: 2px;
-            }
-
-            .group-heading h3 {
-                font-size: 13px;
-            }
-
-            .footer-top {
-                align-items: flex-start;
-                gap: 8px;
-                flex-direction: column;
-            }
-
-            .footer p {
-                font-size: 10px;
-            }
-
-            .skeleton-image {
-                height: 120px;
-            }
-
-            .drawer-body {
-                padding: 17px;
-            }
-
-            .drawer-footer {
-                padding-left: 17px;
-                padding-right: 17px;
-            }
-
-            .calculation {
-                padding: 16px;
-            }
-
-            .calc-row {
-                gap: 8px;
-            }
-
-            .calc-row > strong {
-                font-size: 14px;
-            }
-        }
-
-        @media (max-width: 360px) {
-            .product-image img {
-                width: 87px;
-                height: 112px;
-            }
-
-            .logo small {
-                display: none;
-            }
-
-            .card-actions {
-                flex-wrap: wrap;
-            }
-
-            .unit-line strong {
-                font-size: 20px;
-            }
-
-            .calc-row {
-                flex-wrap: wrap;
-            }
-        }
-
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after {
-                animation: none !important;
-                transition: none !important;
-                scroll-behavior: auto !important;
-            }
+        .search-wrap:focus-within {
+            background: linear-gradient(white, white) padding-box,
+            linear-gradient(135deg, #6366f1, #a855f7) border-box;
+            border-color: transparent;
         }
     </style>
 </head>
-<body>
-<noscript><p class="boot-error">请启用 JavaScript，使用搜索和规格核算功能。</p></noscript>
-<div id="boot-error" class="boot-error" hidden>页面组件暂未加载成功，请检查网络后刷新页面。</div>
-<div id="app" v-cloak>
-    <header ref="headerRef" class="header" :class="{ hidden: !showHeader }">
-        <div class="container header-inner">
-            <div class="top-row">
-                <button class="logo" @click="resetView" aria-label="智惠，返回首页">
-                    <strong>智惠</strong><small>优惠导购</small></button>
-                <form class="search-form" @submit.prevent="search">
-                    <div class="search-wrap">
-                        <svg class="search-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-                             aria-hidden="true">
-                            <path stroke-width="2" stroke-linecap="round"
-                                  d="m21 21-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z"/>
-                        </svg>
-                        <label class="sr-only" for="search-input">搜索商品</label>
-                        <input id="search-input" ref="searchInputRef" v-model="keyword" :placeholder="placeholderText"
-                               autocomplete="off" maxlength="120" @focus="showHeader = true" type="search">
-                        <button v-if="keyword" class="clear-search" type="button" aria-label="清空关键词"
-                                @click="clearKeyword">×
+<body class="text-zinc-900 pb-[env(safe-area-inset-bottom)]">
+<div id="app" class="min-h-screen flex flex-col">
+
+    <!-- ============ 顶部导航/搜索栏 ============ -->
+    <header
+        ref="headerRef"
+        class="fixed left-0 right-0 top-0 z-40 glass-panel border-b border-zinc-200/50 pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-in-out shadow-sm"
+        :class="showHeader ? 'translate-y-0' : '-translate-y-full'"
+    >
+        <div class="max-w-5xl mx-auto px-4 py-3 sm:py-4">
+            <div class="flex items-center gap-3 w-full">
+                <!-- 纯文字 Logo -->
+                <div class="cursor-pointer hidden sm:block flex-shrink-0" @click="resetView">
+                    <h1 class="text-lg font-bold leading-tight tracking-tight">智惠</h1>
+                    <p class="text-[10px] font-semibold text-brand-600 uppercase tracking-widest">Value Engine</p>
+                </div>
+
+                <!-- 搜索输入框 -->
+                <form @submit.prevent="search" class="flex-1 w-full relative">
+                    <div class="search-wrap flex items-center bg-white border-2 border-zinc-200 rounded-2xl transition-all duration-300 shadow-sm">
+                        <div class="pl-4 text-zinc-400">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                            </svg>
+                        </div>
+                        <input
+                                ref="searchInputRef"
+                                v-model="keyword"
+                                type="text"
+                                :placeholder="placeholderText"
+                                @focus="showHeader = true"
+                                class="w-full bg-transparent border-none focus:ring-0 py-3.5 px-3 text-base sm:text-sm font-medium outline-none placeholder-zinc-400"
+                        >
+                        <button
+                                v-if="keyword"
+                                type="button"
+                                @click="keyword = ''; $refs.searchInputRef.focus()"
+                                class="p-2 mr-1 text-zinc-400 hover:text-zinc-600"
+                        >
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd"
+                                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                                      clip-rule="evenodd"/>
+                            </svg>
                         </button>
-                        <button class="primary" type="submit" :disabled="loading">{{ loading ? '查找中' : '找优惠' }}
+                        <button
+                                type="submit"
+                                :disabled="loading"
+                                class="mr-1.5 px-4 py-2 bg-zinc-900 text-white rounded-xl text-sm font-semibold shadow-sm hover:bg-zinc-800 active:scale-95 transition-all disabled:opacity-50"
+                        >
+                            {{ loading ? '计算中...' : '核算单价' }}
                         </button>
                     </div>
                 </form>
             </div>
-            <div class="categories" v-if="!hasSearched || !products.length">
-                <span>常用类别</span>
-                <button v-for="term in hotKeywords" :key="term" class="chip" @click="searchTerm(term)">{{ term }}
+
+            <!-- 快捷标签 -->
+            <div class="mt-3 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1"
+                 v-if="!hasSearched || products.length === 0">
+                <span class="text-xs font-medium text-zinc-400 whitespace-nowrap pl-1">精算热门:</span>
+                <button
+                        v-for="term in hotKeywords"
+                        :key="term"
+                        @click="keyword = term; search()"
+                        class="whitespace-nowrap px-3 py-1.5 bg-white border border-zinc-200 rounded-lg text-xs font-medium text-zinc-600 hover:border-brand-500 hover:text-brand-600 transition-colors shadow-sm"
+                >
+                    {{ term }}
                 </button>
             </div>
+
+            <!-- ============ 动态维度与单位过滤栏 ============ -->
+            <div v-if="hasSearched && (availableUnits.length > 1 || availableFilters.length > 0)"
+                 class="mt-3 flex gap-3 overflow-x-auto no-scrollbar pb-1">
+
+                <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeUnitFilter"
+                            class="appearance-none bg-brand-50 border border-brand-200 text-sm font-bold text-brand-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">计量单位 (全选)</option>
+                        <option v-for="unit in availableUnits" :key="unit" :value="unit">仅看 {{ unit }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-brand-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeFilters[filter.attribute_name]"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">{{ filter.attribute_name }} (全部)</option>
+                        <option v-for="opt in filter.options" :key="opt" :value="opt">{{ opt }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <div v-if="hasActiveFilter" class="flex items-center">
+                    <button @click="clearFilters"
+                            class="text-xs font-semibold text-zinc-500 hover:text-brand-600 px-2 py-2 transition-colors whitespace-nowrap">
+                        重置筛选
+                    </button>
+                </div>
+            </div>
+
         </div>
     </header>
-    <div :style="{ height: headerHeight + 'px' }" aria-hidden="true"></div>
 
-    <main class="container" :aria-busy="loading">
-        <section class="hero" :class="{ compact: hasSearched }">
-            <div>
-                <div class="eyebrow"><span class="dot"></span>优惠导购 · 规格核算</div>
-                <h1>好物有优惠，<em>规格算明白</em></h1>
-                <p>看看商品优惠，再算每 100 克、每 100 毫升或每件的价格。小包装与大包装，按你的需要选。</p>
-                <div class="hero-steps" v-if="!hasSearched">
-                    <span class="step"><b>1</b>查找好物</span><span class="step"><b>2</b>核算规格</span><span
-                        class="step"><b>3</b>前往平台购买</span>
+    <!-- 用于防止 Fixed Header 遮挡主内容的动态占位符 -->
+    <div :style="{ height: headerHeight + 'px' }" class="flex-shrink-0 w-full transition-all duration-300"></div>
+
+    <!-- ============ 主体内容 ============ -->
+    <main class="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
+
+        <!-- 初始化/空状态 (巨幕引导) -->
+        <div v-if="!hasSearched && !loading"
+             class="flex flex-col items-center justify-center py-12 sm:py-24 text-center animate-card">
+            <div class="mb-6 relative">
+                <div class="absolute inset-0 bg-brand-500 blur-3xl opacity-20 rounded-full"></div>
+                <div class="w-20 h-20 bg-white rounded-2xl shadow-xl flex items-center justify-center relative border border-zinc-100">
+                    <span class="text-3xl">🧮</span>
                 </div>
             </div>
-            <div class="example" v-if="!hasSearched" aria-label="单位价格演算示例，非商品报价">
-                <small>不同包装，都能算到同一个单位</small>
-                <div class="equation"><span class="amount num">¥39.60</span><span>÷</span><span
-                        class="num">330mL × 24罐</span></div>
-                <div class="unit-result"><strong class="num">¥0.50</strong><span> / 100mL</span></div>
-                <small>示意演算，非在售商品报价</small>
-            </div>
-        </section>
-
-        <div class="notice demo" v-if="demoMode"><span><strong>示例预览</strong> · 所有商品、价格与优惠均为演示数据，购买功能已关闭。</span>
-            <button class="text-button" @click="exitDemo">退出示例</button>
-        </div>
-        <div class="notice" v-else>
-            <span>商品信息来自购物平台联盟接口；按展示的参考价及识别规格核算。优惠资格、运费与最终金额，请在平台结算页确认。</span>
+            <h2 class="text-3xl sm:text-4xl font-extrabold text-zinc-900 tracking-tight mb-4">
+                全网好物，<span
+                    class="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-purple-600">一键精算单价</span>
+            </h2>
+            <p class="text-zinc-500 text-base sm:text-lg max-w-md mx-auto mb-8 font-medium">
+                支持输入关键词或粘贴商品链接进行智能解析。<br class="hidden sm:block">自动提取规格换算单价，让您的每一分钱都花在刀刃上。
+            </p>
         </div>
 
-        <div v-if="loading" role="status" aria-live="polite">
-            <p class="loading-label">正在查找商品信息，核算包装规格…</p>
-            <div class="product-grid" aria-hidden="true">
-                <div class="skeleton-card" v-for="i in 6" :key="i">
-                    <div class="skeleton skeleton-image"></div>
-                    <div class="skeleton skeleton-line"></div>
-                    <div class="skeleton skeleton-line" style="width:65%"></div>
-                    <div class="skeleton" style="height:70px;margin-top:16px"></div>
+        <!-- 加载骨架屏 -->
+        <div v-if="loading" class="flex flex-col gap-4">
+            <div class="h-8 w-48 skeleton-pulse rounded-lg mb-2"></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <div v-for="i in 6" :key="i"
+                     class="bg-white rounded-2xl p-3 flex gap-4 border border-zinc-100 shadow-sm">
+                    <div class="w-28 h-28 rounded-xl skeleton-pulse flex-shrink-0"></div>
+                    <div class="flex-1 py-1 flex flex-col justify-between">
+                        <div>
+                            <div class="h-4 w-full skeleton-pulse rounded mb-2"></div>
+                            <div class="h-4 w-2/3 skeleton-pulse rounded"></div>
+                        </div>
+                        <div class="h-6 w-1/2 skeleton-pulse rounded"></div>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <section v-else-if="errorMessage" class="empty" role="alert">
-            <div class="empty-icon" aria-hidden="true">↻</div>
-            <h2>商品信息暂未获取成功</h2>
-            <p>{{ errorMessage }}</p>
-            <button class="primary" @click="search">重新查找</button>
-            <button class="secondary" @click="enterDemo">查看页面示例</button>
-        </section>
+        <!-- 搜索结果区 -->
+        <div v-if="hasSearched && products.length > 0 && !loading" class="animate-card">
 
-        <template v-else-if="hasSearched && products.length">
-            <section class="results-panel" aria-label="商品筛选与排序">
-                <div class="results-heading">
-                    <div><h2>「{{ currentKeyword }}」· {{ filteredProducts.length }} 款好物</h2>
-                        <small>{{ demoMode ? '示例数据' : '本次获取于 ' + formatTime(fetchedAt) }}
-                            <button v-if="!demoMode" class="text-button" @click="search">刷新</button>
-                        </small></div>
-                    <div class="sort-tabs" aria-label="排序方式">
-                        <button v-for="option in sortOptions" :key="option.value"
-                                :class="{ active: sortBy === option.value }" :aria-pressed="sortBy === option.value"
-                                @click="sortBy = option.value">{{ option.label }}
+            <!-- 数据洞察大盘 -->
+            <div class="mb-6 glass-panel rounded-3xl p-5 sm:p-6 shadow-sm border border-zinc-200">
+                <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-4">
+                    <div>
+                        <h3 class="text-xl font-bold text-zinc-900">
+                            找到 {{ sortedProducts.length }} 个「<span class="text-brand-600">{{ currentKeyword }}</span>」
+                        </h3>
+                        <p class="text-sm text-zinc-500 mt-1 font-medium">已按 AI 测算的单位价格为您智能排序</p>
+                    </div>
+                    <!-- 排序维度 -->
+                    <div class="flex gap-2 bg-zinc-100 p-1 rounded-xl">
+                        <button
+                                v-for="option in sortOptions"
+                                :key="option.value"
+                                @click="sortBy = option.value"
+                                class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+                                :class="sortBy === option.value ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'"
+                        >
+                            {{ option.label }}
                         </button>
                     </div>
                 </div>
-                <div class="metrics">
-                    <div class="metric"><strong class="num">{{ stats.calculable }}</strong><small>款</small>
-                        <p>可核算单位价格</p></div>
-                    <div class="metric"><strong class="num">{{ stats.coupons }}</strong><small>款</small>
-                        <p>有可查看的券信息</p></div>
-                    <div class="metric"><strong class="num">{{ stats.platforms }}</strong><small>个</small>
-                        <p>当前可选平台</p></div>
-                </div>
-                <div class="filters">
-                    <label class="filter-field"><span>平台</span><select v-model="activePlatform" aria-label="筛选平台">
-                        <option value="">全部平台</option>
-                        <option v-for="name in availablePlatforms" :key="name" :value="name">{{ name }}</option>
-                    </select></label>
-                    <label class="filter-field" v-if="availableUnits.length"><span>单位</span><select
-                            v-model="activeUnitFilter" aria-label="筛选计量口径">
-                        <option value="">全部计量口径</option>
-                        <option v-for="unit in availableUnits" :key="unit.key" :value="unit.key">按 {{ unit.label }}
-                            核算
-                        </option>
-                    </select></label>
-                    <label v-for="filter in availableFilters" :key="filter.attribute_name"
-                           class="filter-field"><span>{{ filter.attribute_name }}</span><select
-                            v-model="activeFilters[filter.attribute_name]" :aria-label="'筛选' + filter.attribute_name">
-                        <option value="">{{ filter.attribute_name }} · 全部</option>
-                        <option v-for="opt in filter.options" :key="opt" :value="opt">{{ opt }}</option>
-                    </select></label>
-                    <label class="check-filter"><input v-model="couponOnly" type="checkbox">有券信息</label>
-                    <button v-if="hasActiveFilter" class="text-button" @click="clearFilters">重置筛选</button>
-                </div>
-                <p class="sort-note">
-                    {{ sortBy === 'value' ? '按类别、单位和价格条件分组，组内单位价格升序。品牌、成分、层数等可能不同，请结合规格选择。' : '按展示的参考售价升序排列；规格、优惠资格与运费可能不同，请查看商品详情。'
-                    }} 展示范围为本次搜索结果。</p>
-            </section>
 
-            <section v-if="!filteredProducts.length" class="empty">
-                <div class="empty-icon" aria-hidden="true">⌕</div>
-                <h2>没有符合筛选条件的商品</h2>
-                <p>试试其他规格，或重置筛选。</p>
-                <button class="secondary" @click="clearFilters">重置筛选</button>
-            </section>
-            <section v-for="group in productGroups" :key="group.key" class="group">
-                <div class="group-heading"><h3>{{ group.title }}</h3><span>{{ group.items.length
-                    }} 款 · {{ group.pending ? '信息待核对' : sortBy === 'value' ? '组内单价升序' : '参考售价升序'
-                    }}</span></div>
-                <div class="product-grid">
-                    <article v-for="item in group.items" :key="item.key" class="product-card">
-                        <div class="product-image"><img :src="item.image" :alt="item.name" loading="lazy"
-                                                        referrerpolicy="no-referrer" @error="imageFallback"><span
-                                class="platform-badge" :style="{ color: item.platformColor }">{{ item.platform }}</span>
-                        </div>
-                        <div class="card-body">
-                            <h3 class="card-title">{{ item.name }}</h3>
-                            <p class="shop" v-if="item.shop">{{ item.shop }}</p>
-                            <div class="tags"><span class="tag" v-for="kw in item.keywords.slice(0,3)"
-                                                    :key="kw.attribute_name">{{ kw.attribute_value }}</span></div>
-                            <div class="price-box">
-                                <div v-if="item.unitPrice !== null" class="unit-line"><span>约</span><strong
-                                        class="num">¥{{ formatUnitPrice(item.unitPrice)
-                                    }}</strong><span>/ {{ item.unit.label }}</span></div>
-                                <div v-else class="unit-line pending">{{ item.pendingReason }}</div>
-                                <div class="sale-line"><strong
-                                        class="num">{{ item.price !== null ? '¥' + money(item.price) : '售价待更新'
-                                    }}</strong><small>{{ item.priceLabel }}</small></div>
-                            </div>
-                            <div class="coupon-tag" v-if="item.coupon.valid">{{ item.coupon.label }} · 适用条件见详情
-                            </div>
-                            <p class="ad-label">{{ demoMode ? '示例商品 · 不可购买' : '广告 · 联盟推广' }}</p>
-                            <div class="card-actions">
-                                <button class="secondary" @click="openDetail(item)">看算账</button>
-                                <a v-if="item.link && !demoMode" class="primary buy" :href="item.link" target="_blank"
-                                   rel="sponsored noopener" :aria-label="'去' + item.platform + '查看' + item.name"
-                                   @click="guardPurchase($event, item)">去{{ item.platform
-                                    }}{{ item.coupon.valid ? '看优惠' : '购买' }} ↗</a>
-                                <span v-else class="buy-disabled">{{ demoMode ? '示例不可购买' : '购买链接待更新'
-                                    }}</span>
-                            </div>
-                        </div>
-                    </article>
+                <!-- 洞察数据条 -->
+                <div class="grid grid-cols-3 gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
+                    <div>
+                        <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">大盘均价</p>
+                        <p class="text-lg font-bold text-zinc-800 num-font">
+                            ¥{{ stats.avgUnitPrice.toFixed(2) }}<span
+                                class="text-xs text-zinc-400 font-medium">/{{ stats.baseUnit }}</span>
+                        </p>
+                    </div>
+                    <div>
+                        <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">精选好价</p>
+                        <p class="text-lg font-bold text-accent-600 num-font">
+                            ¥{{ stats.minUnitPrice.toFixed(2) }}<span
+                                class="text-xs text-accent-600/70 font-medium">/{{ stats.baseUnit }}</span>
+                        </p>
+                    </div>
+                    <div>
+                        <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">最高差价</p>
+                        <p class="text-lg font-bold text-zinc-800 num-font">
+                            {{ stats.minUnitPrice > 0 ? (((stats.maxUnitPrice - stats.minUnitPrice) / stats.minUnitPrice) * 100).toFixed(0) : 0 }}%
+                        </p>
+                    </div>
                 </div>
-            </section>
-        </template>
 
-        <section v-else-if="hasSearched" class="empty">
-            <div class="empty-icon" aria-hidden="true">⌕</div>
-            <h2>暂未找到相关商品</h2>
-            <p>换一个类别词试试，比如“抽纸”或“洗衣液”。</p>
-            <button class="secondary" @click="focusSearch">换个词搜索</button>
-        </section>
-        <section v-else class="empty" style="padding-top:10px;padding-bottom:20px"><p>
-            搜索日常用品，看看优惠和包装规格。</p>
-            <button class="primary" @click="focusSearch">开始找好物</button>
-            <button class="secondary" @click="enterDemo">查看页面示例</button>
-        </section>
+                <!-- 保护性免责声明 -->
+                <div class="mt-4 text-center">
+                    <p class="text-[10px] text-zinc-400 font-medium">
+                        * 💡 价格受平台实时活动及个人优惠权益(如88VIP/Plus)影响，最终成交价请以官方结算页为准
+                    </p>
+                </div>
+            </div>
+
+            <!-- 筛选为空时的状态 -->
+            <div v-if="sortedProducts.length === 0" class="flex flex-col items-center justify-center py-16 text-center">
+                <span class="text-4xl mb-4">📭</span>
+                <h3 class="text-base font-bold text-zinc-800 mb-1">没有符合当前筛选的商品</h3>
+                <p class="text-sm text-zinc-500">请尝试清除某些过滤条件</p>
+            </div>
+
+            <!-- 商品列表 -->
+            <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-5">
+                <article
+                        v-for="(item, index) in sortedProducts"
+                        :key="item.product_id"
+                        @click="openDetail(item)"
+                        class="product-card bg-white rounded-2xl p-3 sm:p-4 flex sm:flex-col gap-3 sm:gap-4 border border-zinc-200 shadow-sm cursor-pointer relative overflow-hidden"
+                        :class="'delay-' + Math.min(index, 3)"
+                >
+                    <!-- 排名角标 -->
+                    <div v-if="sortBy === 'value' && index < 3"
+                         class="absolute top-0 right-0 w-12 h-12 overflow-hidden z-10 pointer-events-none">
+                        <div class="absolute top-1 right-[-14px] w-16 text-center rotate-45 text-[10px] font-bold py-0.5 text-white shadow-sm"
+                             :class="index === 0 ? 'bg-gradient-to-r from-amber-400 to-orange-500' : (index === 1 ? 'bg-gradient-to-r from-slate-300 to-slate-400' : 'bg-gradient-to-r from-amber-600 to-orange-700')">
+                            TOP {{ index + 1 }}
+                        </div>
+                    </div>
+
+                    <!-- 图片与平台 -->
+                    <div class="w-28 h-28 sm:w-full sm:h-48 rounded-xl bg-zinc-50 relative flex-shrink-0 overflow-hidden">
+                        <img :src="item.image_url" :alt="item.name" loading="lazy" class="w-full h-full object-cover mix-blend-multiply">
+                        <div class="absolute bottom-1.5 left-1.5">
+                                <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-white shadow-sm"
+                                      :style="{ backgroundColor: getPlatformColor(item.platform) }">
+                                    {{ getPlatformName(item.platform) }}
+                                </span>
+                        </div>
+                    </div>
+
+                    <!-- 核心信息 -->
+                    <div class="flex-1 flex flex-col justify-between min-w-0">
+                        <div>
+                            <h3 class="text-sm font-bold text-zinc-900 leading-snug line-clamp-2 mb-1.5">{{ item.name }}</h3>
+                            <div class="flex flex-wrap gap-1 mb-2">
+                                <span v-for="kw in getDecisionKeywords(item).slice(0,3)" :key="kw.attribute_name"
+                                      class="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded text-[10px] font-medium border border-zinc-200">
+                                    {{ kw.attribute_value }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- 价格核算区 -->
+                        <div class="bg-brand-50/50 rounded-lg p-2 border border-brand-100/50 mt-1">
+                            <div class="flex items-end gap-1 mb-1.5">
+                                <span class="text-[10px] text-brand-600 font-semibold mb-0.5">折算单价</span>
+                                <span class="text-lg font-bold text-brand-600 leading-none num-font">¥{{ getUnitPrice(item) }}</span>
+                                <span class="text-[10px] text-brand-600/70 font-medium mb-0.5">/{{ item.base_unit }}</span>
+                            </div>
+                            <div class="flex items-center justify-between mt-1 pt-1 border-t border-brand-100">
+                                <div class="flex items-center gap-1.5">
+                                    <span class="text-xs font-bold text-zinc-800 num-font">¥{{ item.activity_price.toFixed(2) }}</span>
+                                    <span class="text-[10px] text-zinc-400 line-through num-font" v-if="item.original_price > item.activity_price">¥{{ item.original_price }}</span>
+                                </div>
+                                <span v-if="getCompareIndicator(item)"
+                                      class="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                                      :class="getCompareIndicator(item).better ? 'bg-accent-100 text-accent-700' : 'bg-red-100 text-red-600'">
+                                    {{ getCompareIndicator(item).text }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </article>
+            </div>
+        </div>
+
+        <!-- 无结果状态 -->
+        <div v-if="hasSearched && products.length === 0 && !loading"
+             class="flex flex-col items-center justify-center py-20 animate-card">
+            <div class="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
+                <span class="text-2xl">🕵️</span>
+            </div>
+            <h3 class="text-lg font-bold text-zinc-900 mb-1">AI 没找到该商品数据</h3>
+            <p class="text-sm text-zinc-500 mb-6">换个大类词试试，或者直接粘贴商品分享链接</p>
+        </div>
     </main>
 
-    <footer class="footer">
-        <div class="container">
-            <div class="footer-top"><strong>智惠 · 让优惠更好找，让规格更好选</strong>
-                <div class="footer-links">
-                    <button class="text-button" @click="showService">服务与核算说明</button>
-                    <a v-if="feedbackUrl" :href="feedbackUrl" target="_blank" rel="noopener" class="text-button">价格 /
-                        规格反馈</a></div>
-            </div>
-            <p>
-                智惠是独立的购物导购服务。商品信息来自平台联盟接口，单位价格由本工具计算。通过推广链接购买，我们可能获得佣金。商品订单、支付、配送及售后由所选平台与商家处理。</p>
-        </div>
-    </footer>
-
+    <!-- ============ 沉浸式详情抽屉 ============ -->
     <Teleport to="body">
-        <dialog ref="detailDialogRef" class="drawer" aria-labelledby="detail-heading" @close="finishCloseDetail"
-                @click="closeOnBackdrop($event, detailDialogRef)">
-            <template v-if="selectedProduct">
-                <div class="dialog-header"><h2 id="detail-heading">商品优惠与规格算账</h2>
-                    <button class="close" aria-label="关闭详情" @click="closeDetail">×</button>
+        <div v-if="selectedProduct" class="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-50 transition-opacity" @click="closeDetail"></div>
+
+        <Transition name="drawer">
+            <div v-if="selectedProduct"
+                 class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[90vh] flex flex-col"
+                 style="padding-bottom: var(--sab);">
+
+                <div class="w-full flex justify-center pt-3 pb-2 cursor-pointer" @click="closeDetail">
+                    <div class="w-10 h-1.5 bg-zinc-200 rounded-full"></div>
                 </div>
-                <div class="drawer-body">
-                    <div class="detail-product"><img :src="selectedProduct.image" :alt="selectedProduct.name"
-                                                     referrerpolicy="no-referrer" @error="imageFallback">
-                        <div><span class="platform-badge"
-                                   :style="{ color: selectedProduct.platformColor }">{{ selectedProduct.platform
-                            }}</span>
-                            <h3>{{ selectedProduct.name }}</h3>
-                            <p class="shop" v-if="selectedProduct.shop">{{ selectedProduct.shop }}</p></div>
-                    </div>
-                    <section class="calculation" aria-label="单位价格核算">
-                        <h3>规格算账 · {{ selectedProduct.specVerified ? '接口标注规格已核验' : '依据识别规格估算'
-                            }}</h3>
-                        <div class="calc-row"><span>{{ selectedProduct.priceLabel }}</span><strong
-                                class="num">{{ selectedProduct.price !== null ? '¥' + money(selectedProduct.price) : '待更新'
-                            }}</strong></div>
-                        <div class="calc-row"><span>识别的总规格</span><strong
-                                class="num">{{ selectedProduct.totalValue !== null && selectedProduct.baseUnit ? formatQuantity(selectedProduct.totalValue) + ' ' + selectedProduct.baseUnit : '规格不完整'
-                            }}</strong></div>
-                        <div class="calc-structure" v-if="selectedProduct.structureText">
-                            {{ selectedProduct.structureText }}
+
+                <div class="flex-1 overflow-y-auto px-5 pb-24 no-scrollbar">
+                    <div class="flex gap-4 mb-6">
+                        <img :src="selectedProduct.image_url" class="w-24 h-24 rounded-2xl object-cover border border-zinc-100 shadow-sm">
+                        <div class="flex-1 pt-1">
+                            <span class="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold text-white mb-2 shadow-sm" :style="{ backgroundColor: getPlatformColor(selectedProduct.platform) }">
+                                {{ getPlatformName(selectedProduct.platform) }}
+                            </span>
+                            <h2 class="text-base font-bold text-zinc-900 leading-snug line-clamp-3">{{ selectedProduct.name }}</h2>
                         </div>
-                        <div class="calc-result" v-if="selectedProduct.unitPrice !== null"><strong
-                                class="num">¥{{ formatUnitPrice(selectedProduct.unitPrice) }}</strong><small> /
-                            {{ selectedProduct.unit.label }}</small>
-                            <p class="calc-equation">{{ selectedProduct.equation }}</p></div>
-                        <div class="calc-result" v-else><p>{{ selectedProduct.pendingReason }}</p></div>
-                        <p class="calc-note">{{ selectedProduct.shippingNote }}
-                            不计未明确的叠加优惠或赠品；请核对链接中的同一规格、件数及对应价格。</p>
-                    </section>
-                    <section class="detail-section coupon-box" v-if="selectedProduct.coupon.valid">
-                        <strong>{{ selectedProduct.coupon.label }}</strong>
-                        <p>{{ selectedProduct.coupon.conditions }}</p>
-                        <p>
-                            有效期：{{ selectedProduct.coupon.start ? formatTime(selectedProduct.coupon.start) + ' 至 ' : '截止 '
-                            }}{{ formatTime(selectedProduct.coupon.end) }}</p>
-                        <p>
-                            {{ selectedProduct.couponIncluded ? '本次核算使用接口提供的券后参考价，未重复扣券。' : '本次核算未扣除此券；实际是否可用及券后金额，请在平台确认。'
-                            }}</p></section>
-                    <section class="detail-section" v-else-if="selectedProduct.coupon.exists"><h3>优惠信息需确认</h3>
-                        <p>{{ selectedProduct.coupon.reason }} 暂不据此展示领券金额或承诺节省金额。</p></section>
-                    <section class="detail-section"><h3>规格与适用条件</h3>
-                        <div class="tags"><span class="tag" v-for="kw in selectedProduct.keywords"
-                                                :key="kw.attribute_name">{{ kw.attribute_name }}：{{ kw.attribute_value
-                            }}</span><span class="tag" v-if="selectedProduct.brand">品牌：{{ selectedProduct.brand
-                            }}</span></div>
-                        <p v-if="!selectedProduct.keywords.length">未提供更多规格参数，请在购物平台核对。</p>
-                        <p>{{ selectedProduct.conditions || '商品活动及购买资格以平台当前说明为准。' }}</p>
-                        <p v-if="!selectedProduct.specVerified">
-                            自动识别可能有误，请核对型号、口味、层数、容量与包装数量。</p></section>
-                    <section class="detail-section"><h3>信息依据</h3>
-                        <dl class="detail-table">
-                            <dt>商品信息来源</dt>
-                            <dd>{{ demoMode ? '演示数据' : selectedProduct.platform + '联盟接口' }}</dd>
-                            <dt>商品价格时间</dt>
-                            <dd>{{ selectedProduct.updatedAt ? formatTime(selectedProduct.updatedAt) : '接口未提供价格更新时间'
-                                }}
-                            </dd>
-                            <dt>本次获取时间</dt>
-                            <dd>{{ demoMode ? '示例预览' : formatTime(fetchedAt) }}</dd>
-                            <dt>单位价格依据</dt>
-                            <dd>展示价格 ÷ 识别总规格</dd>
-                            <dt>展示范围</dt>
-                            <dd>本次搜索及当前筛选结果</dd>
-                        </dl>
-                        <button class="text-button" @click="openReport(selectedProduct)">复制价格 / 规格核对信息
-                        </button>
-                    </section>
+                    </div>
+
+                    <!-- 核心区域：AI 精算报告 -->
+                    <div class="bg-zinc-900 rounded-3xl p-5 mb-6 text-white relative overflow-hidden shadow-float">
+                        <div class="absolute -right-10 -top-10 w-32 h-32 bg-brand-500 rounded-full blur-3xl opacity-40"></div>
+                        <div class="flex items-center gap-2 mb-4 relative z-10">
+                            <svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                            </svg>
+                            <span class="text-xs font-bold tracking-widest text-zinc-300">AI 精算报告</span>
+                        </div>
+                        <div class="flex flex-col gap-3 relative z-10">
+                            <div class="flex justify-between items-center bg-white/10 rounded-xl p-3 backdrop-blur-md">
+                                <span class="text-sm text-zinc-400">预估到手总价</span>
+                                <span class="text-xl font-bold num-font">¥{{ selectedProduct.activity_price.toFixed(2) }}</span>
+                            </div>
+                            <div class="flex justify-center -my-2 z-20">
+                                <div class="w-6 h-6 rounded-full bg-zinc-800 border-2 border-zinc-900 flex items-center justify-center text-zinc-400 text-sm font-bold">÷</div>
+                            </div>
+                            <div class="flex justify-between items-center bg-white/10 rounded-xl p-3 backdrop-blur-md">
+                                <span class="text-sm text-zinc-400">AI 提取实际总容量</span>
+                                <div class="text-right">
+                                    <span class="text-lg font-bold num-font">{{ getTotalValue(selectedProduct) }}</span>
+                                    <span class="text-xs text-zinc-400 ml-1">{{ selectedProduct.base_unit }}</span>
+                                    <div class="text-[10px] text-zinc-500 mt-0.5">
+                                        (<span v-for="(struct, i) in getPricingStructure(selectedProduct)" :key="i">
+                                            {{ struct.value }}{{ struct.unit }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
+                                        </span>)
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="h-px bg-white/10 my-1"></div>
+                            <div class="flex justify-between items-end">
+                                <div class="pb-1"><span class="text-xs text-brand-400 font-medium">折算真实单价</span></div>
+                                <div class="text-right">
+                                    <span class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-300 to-brand-100 num-font">¥{{ getUnitPrice(selectedProduct) }}</span>
+                                    <span class="text-sm text-zinc-400">/{{ selectedProduct.base_unit }}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 规格参数透明化 -->
+                    <div class="mb-6">
+                        <h3 class="text-sm font-bold text-zinc-900 mb-3 px-1">AI 识别规格</h3>
+                        <div class="flex flex-wrap gap-2">
+                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name" class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
+                                <span class="text-xs text-zinc-500 mr-2">{{ kw.attribute_name }}</span>
+                                <span class="text-sm font-bold text-zinc-800">{{ kw.attribute_value }}</span>
+                            </div>
+                            <div v-if="selectedProduct.brand" class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
+                                <span class="text-xs text-zinc-500 mr-2">品牌</span>
+                                <span class="text-sm font-bold text-zinc-800">{{ selectedProduct.brand }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div v-if="selectedProduct.saved_price > 0" class="bg-accent-50 rounded-2xl p-4 border border-accent-100 flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-accent-700 font-bold mb-0.5">联盟专属优惠</p>
+                            <p class="text-[10px] text-accent-600/80">结合各项优惠为您省下</p>
+                        </div>
+                        <div class="text-xl font-extrabold text-accent-600 num-font">¥{{ selectedProduct.saved_price.toFixed(2) }}</div>
+                    </div>
                 </div>
-                <div class="drawer-footer"><a v-if="selectedProduct.link && !demoMode" class="primary"
-                                              :href="selectedProduct.link" target="_blank" rel="sponsored noopener"
-                                              @click="guardPurchase($event, selectedProduct)">去
-                    {{ selectedProduct.platform }} {{ selectedProduct.coupon.valid ? '查看优惠并购买' : '查看商品并购买'
-                    }} ↗</a><span v-else class="buy-disabled">{{ demoMode ? '示例数据，购买已关闭' : '购买链接暂不可用'
-                    }}</span>
-                    <p>{{ demoMode ? '演示数据不代表实际在售商品或优惠。' : '广告 · 联盟推广；我们可能获得佣金。价格与优惠以平台结算页为准。'
-                        }}</p></div>
-            </template>
-        </dialog>
-        <dialog ref="serviceDialogRef" class="info-dialog" aria-labelledby="service-heading"
-                @click="closeOnBackdrop($event, serviceDialogRef)">
-            <div class="dialog-header"><h2 id="service-heading">服务与核算说明</h2>
-                <button class="close" aria-label="关闭说明" @click="serviceDialogRef.close()">×</button>
+
+                <div class="absolute bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-zinc-100 flex flex-col items-center" style="padding-bottom: calc(0.5rem + var(--sab));">
+                    <a :href="selectedProduct.product_url" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center w-full py-3 bg-gradient-to-r from-zinc-900 to-zinc-800 text-white rounded-2xl shadow-float hover:from-zinc-800 hover:to-zinc-700 active:scale-[0.98] transition-all relative overflow-hidden">
+                        <div class="flex items-center font-bold text-base">
+                            直达 {{ getPlatformName(selectedProduct.platform) }} 领券购买
+                            <svg class="w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+                        </div>
+                        <span class="text-[10px] text-zinc-300 font-medium mt-0.5">跳转至对应 App 完成安全交易</span>
+                    </a>
+                </div>
             </div>
-            <div class="info-body"><h3>优惠导购服务</h3>
-                <p>
-                    我们依据平台联盟提供的商品资料，帮助你查找优惠并了解包装规格。购买链接前往所选购物平台；订单、支付和售后在该平台完成。本站为独立服务，平台名称用于标识商品来源。</p>
-                <h3>单位价格怎么算</h3>
-                <p>展示价格除以识别的总规格，再换算为每 100g、每 100mL
-                    或每件等口径。重量与体积分别计算，不进行重量和体积互换；包、袋、抽、张、卷等单位也分别保留。</p>
-                <h3>排序范围</h3>
-                <p>
-                    单位价格排序只针对本次结果中的同一计量分组与价格条件。计量相同也可能有品牌、材质或品质差异，单位价格是选购参考，不能单独代表商品品质或适合程度。</p>
-                <h3>价格与优惠</h3>
-                <p>
-                    参考价可能有领券、会员、件数或活动门槛。运费、优惠资格和实际支付金额以平台结算页为准。券后价仅按接口明确提供的口径展示，不自行重复扣减优惠券。规格或条件不足时不参与单位价格排序。</p>
-                <h3>推广说明</h3>
-                <p>商品含广告 / 联盟推广链接，购买后我们可能获得佣金。页面不会把佣金金额作为单位价格或总价排序依据。</p>
-            </div>
-        </dialog>
-        <dialog ref="reportDialogRef" class="info-dialog" aria-labelledby="report-heading"
-                @click="closeOnBackdrop($event, reportDialogRef)">
-            <div class="dialog-header"><h2 id="report-heading">价格 / 规格核对信息</h2>
-                <button class="close" aria-label="关闭核对信息" @click="reportDialogRef.close()">×</button>
-            </div>
-            <div class="info-body"><label class="sr-only" for="report-text">核对信息，可复制后补充问题</label><textarea
-                    id="report-text" ref="reportTextRef" class="report-text" :value="reportText" readonly></textarea>
-                <div class="report-actions">
-                    <button class="primary" @click="copyReport">复制信息</button>
-                    <a v-if="feedbackUrl" :href="feedbackUrl" target="_blank" rel="noopener" class="text-button">前往反馈渠道
-                        ↗</a></div>
-                <p style="margin-top:9px">可补充实际规格或结算截图后提交给运营者。此处仅生成核对信息，不会自动提交。</p>
-            </div>
-        </dialog>
+        </Transition>
     </Teleport>
-    <div v-if="toastText" class="toast" role="status" aria-live="polite">{{ toastText }}</div>
+
 </div>
 
 <script>
-    /*
-     * 智惠优惠导购版：保留 /api/search 与 Vue 3 搜索、过滤、排序、详情功能。
-     *
-     * 兼容原接口：
-     * { status: "success", data: [商品...], filters: [{attribute_name, options}] }
-     * 原商品字段：product_id, platform, name, image_url, activity_price, product_url,
-     * base_unit, brand, format_info.decision_keywords,
-     * format_info.pricing_basis.{total_value, structure}。
-     * activity_price 为人民币「元」，不是分；应对应本条商品的规格和件数。
-     *
-     * 可选增强字段（缺失时降级展示，不虚构券、原价、优惠条件或节省金额）：
-     * promotion_url      后端联盟 API 生成的推广链接；优先于原 product_url。
-     * variant_id / shop_name / category_name / comparison_group。
-     * comparison_group   后端按类别、用途、材质等确定的可比组，建议提供。
-     * price_type         "activity" | "sale" | "coupon"；缺失按活动参考价展示。
-     * price_conditions   字符串或字符串数组，如「会员价；一次购买2件」。
-     * price_spec_match   false 表示价格与识别规格不匹配，禁止单位价计算。
-     * price_includes_shipping / shipping_fee（仅说明运费口径，不另行擅自加减）。
-     * updated_at         带时区 ISO 8601 或 Unix 秒/毫秒；这是数据时间，不是获取时间。
-     * format_info.pricing_basis.total_unit 可明确 total_value 的计量单位。
-     * format_info.pricing_basis.verified === true 时才标注「接口标注规格已核验」。
-     * format_info.pricing_basis.confidence 0~1；低于0.8时待核对，不参与单价排序。
-     * coupon: {
-     *   amount: 5, threshold: 29, status: "active",
-     *   start_time: "2026-10-04T00:00:00+08:00", // 可选
-     *   end_time: "2026-10-10T23:59:59+08:00",   // 必须有可靠的有效期
-     *   conditions: "指定规格；每人限领1张", promotion_url: "https://..."
-     * }
-     * price_type="coupon" 时 activity_price 已是后端确认的券后参考价。
-     * 前端从不再减 coupon.amount；券过期或资料不足时不参与单位价排序。
-     * original_price、saved_price 保持可兼容，但不直接当作「原价」或节省金额宣传。
-     *
-     * 后端继续负责联盟鉴权、合法推广取链、价格规格对应、活动条件与数据更新。
-     * 联盟密钥保留在服务端。链接原样使用，不重建或覆盖 PID / 推广参数。
-     * 示例只在用户点击「查看页面示例」或显式传入 ?demo=1 时显示，禁止购买。
-     */
-    const ZHIHUI_CONFIG = Object.freeze({
-        searchApi: '/api/search',
-        initialKeyword: '',
-        requestTimeoutMs: 15000,
-        feedbackUrl: '', // 配置运营者真实的 HTTPS 表单地址或 mailto: 联系方式；空值隐藏入口。
-        allowedPromotionDomains: {
-            '京东': ['jd.com', 'jd.cn', '3.cn'],
-            '淘宝': ['taobao.com', 'tmall.com', 'tb.cn'],
-            '天猫': ['taobao.com', 'tmall.com', 'tb.cn'],
-            '拼多多': ['pinduoduo.com', 'yangkeduo.com', 'pdd.com']
-        }
-    });
+    const { createApp, ref, computed, onMounted, onUnmounted } = Vue
 
-    // 纯函数集中处理价格与单位；缺失数据不再默认为0.01元或1件。
-    const ZhihuiMath = (() => {
-        const text = value => typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
-        const number = value => {
-            if ((typeof value !== 'number' && typeof value !== 'string') || text(value) === '') return null;
-            const result = Number(value);
-            return Number.isFinite(result) ? result : null;
-        };
-        const positive = value => {
-            const n = number(value);
-            return n !== null && n > 0 ? n : null;
-        };
-        const nonnegative = value => {
-            const n = number(value);
-            return n !== null && n >= 0 ? n : null;
-        };
-        const timestamp = value => {
-            if (typeof value === 'number' || (typeof value === 'string' && /^\d{10,13}$/.test(value))) {
-                const n = number(value);
-                if (n === null || n <= 0) return null;
-                const ms = n < 1e12 ? n * 1000 : n;
-                return Number.isFinite(new Date(ms).getTime()) ? ms : null;
+    createApp({
+        setup() {
+            // ======== 页面滚动交互状态 ========
+            const showHeader = ref(true)
+            const headerRef = ref(null)
+            const headerHeight = ref(100)
+            const lastScrollTop = ref(0)
+            let resizeObserver = null
+
+            // 处理滚动的核心逻辑
+            const handleScroll = () => {
+                const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop
+
+                // 1. 到达顶部时必须显示
+                if (currentScrollTop <= 0) {
+                    showHeader.value = true
+                    lastScrollTop.value = currentScrollTop
+                    return
+                }
+
+                // 2. 忽略 iOS 的橡皮筋过度滚动
+                if (currentScrollTop > document.documentElement.scrollHeight - window.innerHeight) {
+                    return
+                }
+
+                // 3. 判断滚动方向及阈值 (大于 10px 视为有效意图)
+                if (Math.abs(currentScrollTop - lastScrollTop.value) < 10) return
+
+                if (currentScrollTop > lastScrollTop.value && currentScrollTop > headerHeight.value) {
+                    // 向下滚动，且已经超过 Header 的高度 -> 隐藏
+                    showHeader.value = false
+                } else if (currentScrollTop < lastScrollTop.value) {
+                    // 向上滚动 -> 显示
+                    showHeader.value = true
+                }
+
+                lastScrollTop.value = currentScrollTop
             }
-            // 无时区的时间不猜测，以免因设备时区而误判券有效期。
-            if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return null;
-            const ms = Date.parse(value);
-            return Number.isFinite(ms) ? ms : null;
-        };
-        const normalizeUnit = raw => {
-            const unit = text(raw).replace(/\s+/g, '');
-            if (!unit) return null;
-            const table = {
-                'mg': ['weight', .001, '100g', 100],
-                '毫克': ['weight', .001, '100g', 100],
-                'g': ['weight', 1, '100g', 100],
-                '克': ['weight', 1, '100g', 100],
-                'kg': ['weight', 1000, '100g', 100],
-                '千克': ['weight', 1000, '100g', 100],
-                '公斤': ['weight', 1000, '100g', 100],
-                'ml': ['volume', 1, '100mL', 100],
-                '毫升': ['volume', 1, '100mL', 100],
-                'l': ['volume', 1000, '100mL', 100],
-                '升': ['volume', 1000, '100mL', 100]
-            };
-            const match = unit.match(/^(\d+(?:\.\d+)?)?(mg|kg|g|ml|l|毫克|千克|公斤|克|毫升|升)$/i);
-            if (match) {
-                const row = table[match[2].toLowerCase()];
-                const prefix = match[1] ? positive(match[1]) : 1;
-                if (prefix === null) return null;
-                return {key: row[0], factor: row[1] * prefix, label: row[2], displayAmount: row[3]};
+
+            const keyword = ref('可乐')
+            const currentKeyword = ref('')
+            const products = ref([])
+
+            const availableUnits = computed(() => {
+                const units = products.value.map(p => p.base_unit).filter(Boolean)
+                return [...new Set(units)]
+            })
+            const activeUnitFilter = ref('')
+            const availableFilters = ref([])
+            const activeFilters = ref({})
+
+            const loading = ref(false)
+            const hasSearched = ref(false)
+            const selectedProduct = ref(null)
+            const searchInputRef = ref(null)
+
+            const sortBy = ref('value')
+            const sortOptions = [
+                {label: '综合性价比', value: 'value'},
+                {label: '总价最低', value: 'price'}
+            ]
+
+            const hotKeywords = ref(['抽纸', '洗衣液', '纯牛奶', '巴旦木', '猫粮', '可乐'])
+            const placeholderIndex = ref(0)
+            const placeholders = ['输入商品或粘贴链接，AI帮你算真单价...', '买纸巾洗衣液前，先来算算每克多少钱...', '智能提取规格，一键还原真实性价比...']
+            const placeholderText = computed(() => placeholders[placeholderIndex.value % placeholders.length])
+
+            const getUnitPriceNum = (item) => {
+                const price = item.activity_price || 0.01
+                const total = item.format_info?.pricing_basis?.total_value || 1
+                return price / total
             }
-            // 件、包、袋、卷、抽、张等不互相换算；其他单位保留原口径。
-            return {key: 'unit:' + unit, factor: 1, label: unit, displayAmount: 1};
-        };
-        const unitPrice = (price, total, unit) => {
-            if (price === null || price < 0 || total === null || total <= 0 || !unit) return null;
-            const denominator = total * unit.factor;
-            if (!Number.isFinite(denominator) || denominator <= 0) return null;
-            const result = (price / denominator) * unit.displayAmount;
-            return Number.isFinite(result) ? result : null;
-        };
-        const platformName = raw => {
-            const p = text(raw).toLowerCase();
-            if (p === 'pdd' || p === 'pinduoduo' || p.includes('拼多多')) return '拼多多';
-            if (p === 'jd' || p === 'jingdong' || p.includes('京东')) return '京东';
-            if (p === 'tmall' || p.includes('天猫')) return '天猫';
-            if (p === 'tb' || p === 'taobao' || p.includes('淘宝')) return '淘宝';
-            return text(raw) || '其他平台';
-        };
-        const httpUrl = raw => {
-            const value = text(raw);
-            if (!value || /[\u0000-\u0020]/.test(value)) return '';
-            const resolved = value.startsWith('//') ? 'https:' + value : value;
-            try {
-                const url = new URL(resolved);
-                return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? resolved : '';
-            } catch {
-                return '';
+
+            const getUnitPrice = (item) => {
+                const num = getUnitPriceNum(item);
+                if (num >= 0.1) return num.toFixed(2);
+                return parseFloat(num.toPrecision(3)).toString();
             }
-        };
-        const promotionUrl = (raw, platform) => {
-            const value = httpUrl(raw);
-            if (!value) return '';
-            const host = new URL(value).hostname.toLowerCase();
-            const roots = Object.prototype.hasOwnProperty.call(ZHIHUI_CONFIG.allowedPromotionDomains, platform) ? ZHIHUI_CONFIG.allowedPromotionDomains[platform] : [];
-            return roots.some(root => host === root || host.endsWith('.' + root)) ? value : '';
-        };
-        const couponInfo = (raw, now) => {
-            const c = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
-            const invalid = {exists: !!c, valid: false, reason: '优惠金额、门槛或有效期信息不完整。'};
-            if (!c) return invalid;
-            const amount = positive(c.amount), threshold = nonnegative(c.threshold), end = timestamp(c.end_time),
-                start = timestamp(c.start_time);
-            if (amount === null || threshold === null || end === null || (c.start_time != null && start === null)) return invalid;
-            if ((start !== null && end <= start) || (start !== null && now < start)) return {
-                ...invalid,
-                reason: '优惠活动尚未开始或时间信息异常。'
-            };
-            if (now >= end) return {...invalid, reason: '此券已超过接口提供的有效期。'};
-            if (c.status !== 'active') return {...invalid, reason: '接口未确认此券当前可用。'};
-            return {
-                exists: true,
-                valid: true,
-                amount,
-                threshold,
-                start,
-                end,
-                label: threshold > 0 ? `满¥${threshold.toFixed(2)}减¥${amount.toFixed(2)}` : `券面优惠¥${amount.toFixed(2)}`,
-                conditions: text(c.conditions) || '具体适用规格、人群、领券及使用条件，以平台说明为准。',
-                promotion_url: text(c.promotion_url)
-            };
-        };
-        const keywords = raw => {
-            const input = raw?.format_info?.decision_keywords;
-            const map = new Map();
-            if (Array.isArray(input)) input.forEach(kw => {
-                const name = text(kw?.attribute_name), value = text(kw?.attribute_value);
-                if (name && value) map.set(name, {attribute_name: name, attribute_value: value});
-            });
-            return [...map.values()];
-        };
-        const conditions = raw => Array.isArray(raw) ? raw.map(text).filter(Boolean).join('；') : text(raw);
-        return {
-            text,
-            number,
-            positive,
-            nonnegative,
-            timestamp,
-            normalizeUnit,
-            unitPrice,
-            platformName,
-            httpUrl,
-            promotionUrl,
-            couponInfo,
-            keywords,
-            conditions
-        };
-    })();
 
-    window.addEventListener('DOMContentLoaded', () => {
-        if (!window.Vue) {
-            document.getElementById('boot-error').hidden = false;
-            return;
-        }
-        const {createApp, ref, computed, onMounted, onUnmounted, nextTick} = Vue;
-        createApp({
-            setup() {
-                const M = ZhihuiMath;
-                const keyword = ref(ZHIHUI_CONFIG.initialKeyword), currentKeyword = ref(''), products = ref([]),
-                    rawFilters = ref([]);
-                const loading = ref(false), hasSearched = ref(false), errorMessage = ref(''), fetchedAt = ref(null);
-                const activeUnitFilter = ref(''), activePlatform = ref(''), activeFilters = ref({}),
-                    couponOnly = ref(false), sortBy = ref('value');
-                const showHeader = ref(true), headerRef = ref(null), headerHeight = ref(108),
-                    searchInputRef = ref(null);
-                const detailDialogRef = ref(null), serviceDialogRef = ref(null), reportDialogRef = ref(null),
-                    reportTextRef = ref(null), selectedKey = ref(null);
-                const demoMode = ref(new URLSearchParams(window.location.search).get('demo') === '1'),
-                    reportText = ref(''), toastText = ref('');
-                const now = ref(Date.now()), placeholderIndex = ref(0);
-                const hotKeywords = ['抽纸', '洗衣液', '纯牛奶', '巴旦木', '猫粮', '可乐'];
-                const placeholders = ['搜好物，看看优惠与规格', '试试搜“抽纸”或“洗衣液”', '大包装、小包装，单价算明白'];
-                const placeholderText = computed(() => placeholders[placeholderIndex.value % placeholders.length]);
-                const sortOptions = [{label: '单位价格', value: 'value'}, {label: '商品总价', value: 'price'}];
-                let observer, placeholderTimer, timeTimer, toastTimer, requestController, requestVersion = 0,
-                    lastScrollTop = 0, oldBodyOverflow = '';
+            const sortedProducts = computed(() => {
+                let arr = [...products.value]
 
-                const placeholderImage = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 180"><rect width="220" height="180" rx="14" fill="#f4f3ff"/><path d="m110 44 43 24v49l-43 24-43-24V68Z" fill="#e2dfff" stroke="#aaa3e9" stroke-width="2"/><path d="m67 68 43 24 43-24m-43 24v49m-21-85 43 24" fill="none" stroke="#aaa3e9" stroke-width="2"/></svg>');
-                const money = n => Number(n).toFixed(2);
-                const formatUnitPrice = n => n === 0 ? '0.00' : n >= .1 ? n.toFixed(2) : Number(n.toPrecision(3)).toString();
-                const formatQuantity = n => new Intl.NumberFormat('zh-CN', {maximumSignificantDigits: 12}).format(n);
-                const formatTime = ms => ms ? new Intl.DateTimeFormat('zh-CN', {
-                    timeZone: 'Asia/Shanghai',
-                    year: 'numeric',
-                    month: '2-digit',
-                    day: '2-digit',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    hour12: false
-                }).format(new Date(ms)) + '（北京时间）' : '未提供';
-                const feedbackUrl = (() => {
-                    const url = M.text(ZHIHUI_CONFIG.feedbackUrl);
-                    return /^mailto:[^\s]+$/i.test(url) ? url : M.httpUrl(url);
-                })();
+                if (activeUnitFilter.value) {
+                    arr = arr.filter(p => p.base_unit === activeUnitFilter.value)
+                }
 
-                const viewOf = (raw, index, checkedAt = now.value) => {
-                    const platform = M.platformName(raw.platform), basis = raw.format_info?.pricing_basis || {};
-                    const price = M.nonnegative(raw.activity_price), totalValue = M.positive(basis.total_value),
-                        baseUnit = M.text(basis.total_unit) || M.text(raw.base_unit);
-                    const unit = M.normalizeUnit(baseUnit), coupon = M.couponInfo(raw.coupon, checkedAt),
-                        couponIncluded = raw.price_type === 'coupon';
-                    const priceLabel = couponIncluded ? (coupon.valid ? '券后参考价' : '优惠条件待确认') : raw.price_type === 'sale' ? '商品参考售价' : '活动参考价';
-                    const conditions = M.conditions(raw.price_conditions), confidence = M.number(basis.confidence);
-                    let pendingReason = '';
-                    if (price === null) pendingReason = '售价待更新，暂不核算';
-                    else if (!unit || totalValue === null) pendingReason = '规格待核对，暂不核算';
-                    else if (raw.price_spec_match === false) pendingReason = '价格与规格待核对';
-                    else if (confidence !== null && (confidence < .8 || confidence > 1)) pendingReason = '规格识别结果待核对';
-                    else if (couponIncluded && !coupon.valid) pendingReason = '优惠条件待确认，暂不核算';
-                    const result = pendingReason ? null : M.unitPrice(price, totalValue, unit);
-                    if (result === null && !pendingReason) pendingReason = '核算信息异常，请核对';
-                    const category = M.text(raw.comparison_group) || M.text(raw.category_name) || M.text(raw.category_id) || currentKeyword.value;
-                    const couponConditions = couponIncluded && coupon.valid ? `${coupon.threshold}|${coupon.conditions}` : '';
-                    const groupKey = result === null ? 'pending' : JSON.stringify([category, unit.key, priceLabel, conditions, couponConditions, raw.price_includes_shipping === true]);
-                    const shippingFee = M.nonnegative(raw.shipping_fee);
-                    const shippingNote = raw.price_includes_shipping === true ? '接口标注本次价格已含运费。' : shippingFee !== null ? `未计运费；接口提供的运费为¥${money(shippingFee)}，适用条件以结算页为准。` : '未计运费，运费以平台结算页为准。';
-                    const structureText = Array.isArray(basis.structure) ? basis.structure.map(s => {
-                        const value = M.positive(s?.value), u = M.text(s?.unit);
-                        return value !== null && u ? formatQuantity(value) + u : '';
-                    }).filter(Boolean).join(' × ') : '';
-                    const link = (coupon.valid && M.promotionUrl(coupon.promotion_url, platform)) || M.promotionUrl(raw.promotion_url, platform) || M.promotionUrl(raw.product_url, platform);
-                    return {
-                        raw,
-                        key: JSON.stringify([platform, M.text(raw.product_id), M.text(raw.variant_id), index]),
-                        platform,
-                        platformColor: ({
-                            '京东': '#c12832',
-                            '淘宝': '#c6530b',
-                            '天猫': '#c12832',
-                            '拼多多': '#c12832'
-                        })[platform] || '#62626e',
-                        name: M.text(raw.name) || '商品信息待完善',
-                        image: M.httpUrl(raw.image_url) || placeholderImage,
-                        shop: M.text(raw.shop_name),
-                        brand: M.text(raw.brand),
-                        keywords: M.keywords(raw),
-                        price,
-                        priceLabel,
-                        totalValue,
-                        baseUnit,
-                        unit,
-                        unitPrice: result,
-                        pendingReason,
-                        groupKey,
-                        category,
-                        conditions,
-                        coupon,
-                        couponIncluded,
-                        link,
-                        shippingNote,
-                        specVerified: basis.verified === true,
-                        structureText,
-                        updatedAt: M.timestamp(raw.updated_at),
-                        equation: result !== null ? `¥${money(price)} ÷ ${formatQuantity(totalValue)}${baseUnit}${unit.factor !== 1 || unit.displayAmount !== 1 ? '，换算为每' + unit.label : ''} ≈ ¥${formatUnitPrice(result)}/${unit.label}` : ''
-                    };
-                };
-                const allProducts = computed(() => products.value.map((raw, index) => viewOf(raw, index)));
-                const selectedProduct = computed(() => allProducts.value.find(p => p.key === selectedKey.value) || null);
-                const availablePlatforms = computed(() => [...new Set(allProducts.value.map(p => p.platform))]);
-                const availableUnits = computed(() => {
-                    const units = new Map();
-                    allProducts.value.forEach(p => {
-                        if (p.unit) units.set(p.unit.key, p.unit);
-                    });
-                    return [...units.values()];
-                });
-                const availableFilters = computed(() => {
-                    const map = new Map();
-                    rawFilters.value.forEach(filter => {
-                        const name = M.text(filter?.attribute_name);
-                        if (name && Array.isArray(filter.options)) map.set(name, new Set(filter.options.map(M.text).filter(Boolean)));
-                    });
-                    allProducts.value.forEach(p => p.keywords.forEach(kw => {
-                        if (!map.has(kw.attribute_name)) map.set(kw.attribute_name, new Set());
-                        map.get(kw.attribute_name).add(kw.attribute_value);
-                    }));
-                    return [...map.entries()].filter(([, values]) => values.size > 1).map(([attribute_name, values]) => ({
-                        attribute_name,
-                        options: [...values]
-                    }));
-                });
-                const filteredProducts = computed(() => allProducts.value.filter(p => {
-                    if (activePlatform.value && p.platform !== activePlatform.value) return false;
-                    if (activeUnitFilter.value && p.unit?.key !== activeUnitFilter.value) return false;
-                    if (couponOnly.value && !p.coupon.valid) return false;
-                    return Object.entries(activeFilters.value).every(([name, value]) => !value || p.keywords.some(kw => kw.attribute_name === name && kw.attribute_value === value));
-                }));
-                const compare = (a, b, key) => {
-                    const x = a[key], y = b[key];
-                    if (x === null && y === null) return 0;
-                    if (x === null) return 1;
-                    if (y === null) return -1;
-                    return x - y;
-                };
-                const productGroups = computed(() => {
-                    if (sortBy.value === 'price') return filteredProducts.value.length ? [{
-                        key: 'price',
-                        title: '当前结果 · 商品参考总价',
-                        pending: false,
-                        items: [...filteredProducts.value].sort((a, b) => compare(a, b, 'price'))
-                    }] : [];
-                    const groups = new Map();
-                    filteredProducts.value.forEach(p => {
-                        if (!groups.has(p.groupKey)) groups.set(p.groupKey, {
-                            key: p.groupKey,
-                            pending: p.unitPrice === null,
-                            title: p.unitPrice === null ? '价格 / 规格信息待核对' : `${p.category} · 每${p.unit.label} · ${p.priceLabel}${p.conditions ? ' · ' + p.conditions : ''}${p.couponIncluded && p.coupon.valid ? ' · ' + p.coupon.label + ' · ' + p.coupon.conditions : ''}${p.raw.price_includes_shipping === true ? ' · 含运费' : ' · 未计运费'}`,
-                            items: []
-                        });
-                        groups.get(p.groupKey).items.push(p);
-                    });
-                    return [...groups.values()].sort((a, b) => Number(a.pending) - Number(b.pending)).map(g => ({
-                        ...g,
-                        items: [...g.items].sort((a, b) => compare(a, b, 'unitPrice'))
-                    }));
-                });
-                const stats = computed(() => ({
-                    calculable: filteredProducts.value.filter(p => p.unitPrice !== null).length,
-                    coupons: filteredProducts.value.filter(p => p.coupon.valid).length,
-                    platforms: new Set(filteredProducts.value.map(p => p.platform)).size
-                }));
-                const hasActiveFilter = computed(() => !!activeUnitFilter.value || !!activePlatform.value || couponOnly.value || Object.values(activeFilters.value).some(Boolean));
-                const clearFilters = () => {
-                    activeUnitFilter.value = '';
-                    activePlatform.value = '';
-                    couponOnly.value = false;
-                    activeFilters.value = Object.fromEntries(availableFilters.value.map(f => [f.attribute_name, '']));
-                };
-                const toast = value => {
-                    toastText.value = value;
-                    clearTimeout(toastTimer);
-                    toastTimer = setTimeout(() => {
-                        toastText.value = '';
-                    }, 3500);
-                };
-                const focusSearch = async () => {
-                    showHeader.value = true;
-                    await nextTick();
-                    searchInputRef.value?.focus();
-                };
-                const clearKeyword = () => {
-                    keyword.value = '';
-                    focusSearch();
-                };
-                const closeOnBackdrop = (event, dialog) => {
-                    if (event.target !== dialog) return;
-                    const r = dialog.getBoundingClientRect();
-                    if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) dialog.close();
-                };
-                const finishCloseDetail = () => {
-                    if (detailDialogRef.value?.open) return;
-                    if (selectedKey.value !== null) document.body.style.overflow = oldBodyOverflow;
-                    selectedKey.value = null;
-                };
-                const closeDetail = () => {
-                    if (detailDialogRef.value?.open) detailDialogRef.value.close();
-                    finishCloseDetail();
-                };
-                const openDetail = async item => {
-                    const wasOpen = detailDialogRef.value?.open;
-                    selectedKey.value = item.key;
-                    showHeader.value = true;
-                    if (!wasOpen) {
-                        oldBodyOverflow = document.body.style.overflow;
-                        document.body.style.overflow = 'hidden';
+                for (const [attrName, selectedValue] of Object.entries(activeFilters.value)) {
+                    if (selectedValue) {
+                        arr = arr.filter(p => {
+                            const kws = p.format_info?.decision_keywords || []
+                            return kws.some(kw => kw.attribute_name === attrName && kw.attribute_value === selectedValue)
+                        })
                     }
-                    await nextTick();
-                    if (!detailDialogRef.value.open) detailDialogRef.value.showModal();
-                };
-                const showService = () => serviceDialogRef.value.showModal();
-                const guardPurchase = (event, item) => {
-                    const checkedAt = Date.now(), fresh = viewOf(item.raw, 0, checkedAt); // 点击时再核对券有效期与目标域名。
-                    if (demoMode.value || !fresh.link || fresh.link !== item.link || (item.coupon.valid && !fresh.coupon.valid)) {
-                        event.preventDefault();
-                        now.value = checkedAt;
-                        toast('商品优惠或链接有变化，请核对后再前往平台。');
-                    }
-                };
-                const imageFallback = event => {
-                    if (event.target.src !== placeholderImage) event.target.src = placeholderImage;
-                };
-                const openReport = async item => {
-                    reportText.value = `智惠商品信息核对\n商品：${item.name}\n平台：${item.platform}\n商品ID：${M.text(item.raw.product_id) || '未提供'}\n展示价格：${item.price === null ? '待更新' : '¥' + money(item.price)}（${item.priceLabel}）\n识别总规格：${item.totalValue === null ? '未提供' : formatQuantity(item.totalValue)} ${item.baseUnit}\n规格结构：${item.structureText || '未提供'}\n单位价：${item.unitPrice === null ? item.pendingReason : '¥' + formatUnitPrice(item.unitPrice) + '/' + item.unit.label}\n条件：${item.conditions || '平台说明为准'}\n数据时间：${formatTime(item.updatedAt)}\n获取时间：${demoMode.value ? '演示数据' : formatTime(fetchedAt.value)}\n请补充需要核对的内容：`;
-                    await nextTick();
-                    reportDialogRef.value.showModal();
-                };
-                const copyReport = async () => {
-                    try {
-                        if (!navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
-                        await navigator.clipboard.writeText(reportText.value);
-                        toast('核对信息已复制。');
-                    } catch {
-                        reportTextRef.value?.focus();
-                        reportTextRef.value?.select();
-                        toast('请复制已选中的核对信息。');
-                    }
-                };
+                }
 
-                const resetView = () => {
-                    ++requestVersion;
-                    requestController?.abort();
-                    closeDetail();
-                    keyword.value = '';
-                    currentKeyword.value = '';
-                    products.value = [];
-                    rawFilters.value = [];
-                    hasSearched.value = false;
-                    loading.value = false;
-                    errorMessage.value = '';
-                    fetchedAt.value = null;
-                    clearFilters();
-                    showHeader.value = true;
-                    window.scrollTo({
-                        top: 0,
-                        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
-                    });
-                };
-                const search = async () => {
-                    const term = keyword.value.trim();
-                    if (!term) {
-                        focusSearch();
-                        return;
-                    }
-                    if (demoMode.value) {
-                        loadDemo(term);
-                        return;
-                    }
-                    const version = ++requestVersion;
-                    requestController?.abort();
-                    const controller = new AbortController();
-                    requestController = controller;
-                    closeDetail();
-                    products.value = [];
-                    rawFilters.value = [];
-                    clearFilters();
-                    errorMessage.value = '';
-                    fetchedAt.value = null;
-                    currentKeyword.value = term;
-                    loading.value = true;
-                    hasSearched.value = true;
-                    showHeader.value = true;
-                    searchInputRef.value?.blur();
-                    let timedOut = false;
-                    const timeout = setTimeout(() => {
-                        timedOut = true;
-                        controller.abort();
-                    }, ZHIHUI_CONFIG.requestTimeoutMs);
-                    try {
-                        if (window.location.protocol === 'file:') throw new Error('local-file');
-                        const url = new URL(ZHIHUI_CONFIG.searchApi, window.location.href);
-                        url.searchParams.set('keyword', term);
-                        const response = await fetch(url.href, {
-                            signal: controller.signal,
-                            headers: {Accept: 'application/json'},
-                            cache: 'no-store'
-                        });
-                        if (!response.ok) throw new Error('http');
-                        const res = await response.json();
-                        if (version !== requestVersion) return;
-                        if (res?.status !== 'success' || !Array.isArray(res.data)) throw new Error('payload');
-                        products.value = res.data.filter(p => p && typeof p === 'object' && !Array.isArray(p));
-                        rawFilters.value = Array.isArray(res.filters) ? res.filters : [];
-                        now.value = Date.now();
-                        fetchedAt.value = now.value;
-                        clearFilters();
-                    } catch (error) {
-                        if (version !== requestVersion) return;
-                        if (error.name === 'AbortError' && !timedOut) return;
-                        errorMessage.value = timedOut ? '查找超时，请稍后重试。' : error.message === 'local-file' ? '真实搜索需要在已接入商品数据的网页中使用。也可以先查看页面示例。' : '暂时无法获取商品信息，请稍后重新查找。';
-                    } finally {
-                        clearTimeout(timeout);
-                        if (version === requestVersion) loading.value = false;
-                    }
-                };
-                const searchTerm = term => {
-                    keyword.value = term;
-                    search();
-                };
-                const demoProducts = () => {
-                    const demoNow = Date.now(), end = new Date(demoNow + 86400000).toISOString();
-                    const make = (id, platform, name, price, total, unit, category, attrs, extra = {}) => ({
-                        product_id: id,
-                        platform,
-                        name,
-                        activity_price: price,
-                        base_unit: unit,
-                        category_name: category,
-                        shop_name: '演示商家',
-                        format_info: {
-                            decision_keywords: Object.entries(attrs).map(([attribute_name, attribute_value]) => ({
-                                attribute_name,
-                                attribute_value
-                            })), pricing_basis: {total_value: total, structure: []}
-                        }, ...extra
-                    });
-                    return [
-                        make('demo-1', 'jd', '日常苏打饮料 无糖口味 330mL×24罐', 39.6, 7920, 'mL', '碳酸饮料', {
-                            '口味': '无糖',
-                            '包装': '整箱'
-                        }),
-                        make('demo-2', 'pdd', '日常苏打饮料 原味 2L×6瓶', 66, 12, 'L', '碳酸饮料', {
-                            '口味': '原味',
-                            '包装': '整箱'
-                        }),
-                        make('demo-3', 'tmall', '日常苏打饮料 无糖口味 500mL×12瓶', 29.9, 6000, 'mL', '碳酸饮料', {
-                            '口味': '无糖',
-                            '包装': '整箱'
-                        }, {
-                            price_type: 'coupon',
-                            coupon: {
-                                amount: 5,
-                                threshold: 29,
-                                status: 'active',
-                                end_time: end,
-                                conditions: '演示条件：指定规格，每人限领1张'
-                            }
-                        }),
-                        make('demo-4', 'tb', '每日坚果 原味 25g×20袋', 39, 500, 'g', '坚果', {
-                            '口味': '原味',
-                            '包装': '小袋组合'
-                        }),
-                        make('demo-5', 'jd', '每日坚果 原味 1kg装', 72, 1, 'kg', '坚果', {
-                            '口味': '原味',
-                            '包装': '大袋'
-                        }),
-                        make('demo-6', 'pdd', '日常抽纸 组合装（示例：规格未完整提供）', 19.9, null, '抽', '纸品', {'包装': '组合装'})
-                    ];
-                };
-                const loadDemo = term => {
-                    ++requestVersion;
-                    requestController?.abort();
-                    closeDetail();
-                    products.value = demoProducts();
-                    rawFilters.value = [];
-                    currentKeyword.value = term || '日常好物';
-                    hasSearched.value = true;
-                    errorMessage.value = '';
-                    loading.value = false;
-                    fetchedAt.value = null;
-                    now.value = Date.now();
-                    clearFilters();
-                };
-                const enterDemo = () => {
-                    demoMode.value = true;
-                    keyword.value = '日常好物';
-                    loadDemo('日常好物');
-                };
-                const exitDemo = () => {
-                    demoMode.value = false;
-                    resetView();
-                };
-                const handleScroll = () => {
-                    const top = Math.max(0, window.scrollY),
-                        max = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-                    if (top === 0 || selectedKey.value || document.activeElement === searchInputRef.value) {
-                        showHeader.value = true;
-                        lastScrollTop = top;
-                        return;
-                    }
-                    if (top > max || Math.abs(top - lastScrollTop) < 10) return;
-                    showHeader.value = top < lastScrollTop || top < headerHeight.value;
-                    lastScrollTop = top;
-                };
-                const measureHeader = () => {
-                    if (headerRef.value) headerHeight.value = headerRef.value.offsetHeight;
-                };
-                onMounted(() => {
-                    measureHeader();
-                    if (window.ResizeObserver) {
-                        observer = new ResizeObserver(measureHeader);
-                        observer.observe(headerRef.value);
-                    }
-                    window.addEventListener('scroll', handleScroll, {passive: true});
-                    window.addEventListener('resize', measureHeader, {passive: true});
-                    placeholderTimer = setInterval(() => placeholderIndex.value++, 3500);
-                    timeTimer = setInterval(() => {
-                        now.value = Date.now();
-                    }, 10000);
-                    if (demoMode.value) enterDemo(); else if (keyword.value) search();
-                });
-                onUnmounted(() => {
-                    ++requestVersion;
-                    requestController?.abort();
-                    clearInterval(placeholderTimer);
-                    clearInterval(timeTimer);
-                    clearTimeout(toastTimer);
-                    observer?.disconnect();
-                    window.removeEventListener('scroll', handleScroll);
-                    window.removeEventListener('resize', measureHeader);
-                    document.body.style.overflow = oldBodyOverflow;
-                });
+                if (sortBy.value === 'value') {
+                    return arr.sort((a, b) => getUnitPriceNum(a) - getUnitPriceNum(b))
+                } else {
+                    return arr.sort((a, b) => a.activity_price - b.activity_price)
+                }
+            })
+
+            const hasActiveFilter = computed(() => {
+                return activeUnitFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
+            })
+
+            const clearFilters = () => {
+                activeUnitFilter.value = ''
+                for (const key in activeFilters.value) {
+                    activeFilters.value[key] = ''
+                }
+            }
+
+            const stats = computed(() => {
+                if (sortedProducts.value.length === 0) return {
+                    avgUnitPrice: 0, minUnitPrice: 0, maxUnitPrice: 0, baseUnit: '件'
+                }
+
+                const unitCounts = {}
+                sortedProducts.value.forEach(p => {
+                    const u = p.base_unit || '件'
+                    unitCounts[u] = (unitCounts[u] || 0) + 1
+                })
+                const dominantUnit = Object.keys(unitCounts).reduce((a, b) => unitCounts[a] > unitCounts[b] ? a : b)
+
+                const validProducts = sortedProducts.value.filter(p => (p.base_unit || '件') === dominantUnit)
+                const unitPrices = validProducts.map(p => getUnitPriceNum(p)).sort((a, b) => a - b)
+
+                const mid = Math.floor(unitPrices.length / 2)
+                const medianPrice = unitPrices.length % 2 !== 0 ? unitPrices[mid] : (unitPrices[mid - 1] + unitPrices[mid]) / 2
+
                 return {
-                    keyword,
-                    currentKeyword,
-                    products,
-                    loading,
-                    hasSearched,
-                    errorMessage,
-                    fetchedAt,
-                    activeUnitFilter,
-                    activePlatform,
-                    activeFilters,
-                    couponOnly,
-                    sortBy,
-                    showHeader,
-                    headerRef,
-                    headerHeight,
-                    searchInputRef,
-                    detailDialogRef,
-                    serviceDialogRef,
-                    reportDialogRef,
-                    reportTextRef,
-                    selectedProduct,
-                    demoMode,
-                    reportText,
-                    toastText,
-                    hotKeywords,
-                    placeholderText,
-                    sortOptions,
-                    feedbackUrl,
-                    availablePlatforms,
-                    availableUnits,
-                    availableFilters,
-                    filteredProducts,
-                    productGroups,
-                    stats,
-                    hasActiveFilter,
-                    money,
-                    formatUnitPrice,
-                    formatQuantity,
-                    formatTime,
-                    clearFilters,
-                    focusSearch,
-                    clearKeyword,
-                    closeOnBackdrop,
-                    finishCloseDetail,
-                    closeDetail,
-                    openDetail,
-                    showService,
-                    guardPurchase,
-                    imageFallback,
-                    openReport,
-                    copyReport,
-                    resetView,
-                    search,
-                    searchTerm,
-                    enterDemo,
-                    exitDemo
-                };
+                    minUnitPrice: unitPrices[0],
+                    maxUnitPrice: unitPrices[unitPrices.length - 1],
+                    avgUnitPrice: medianPrice,
+                    baseUnit: dominantUnit
+                }
+            })
+
+            const getDecisionKeywords = (item) => item.format_info?.decision_keywords || []
+            const getPricingStructure = (item) => item.format_info?.pricing_basis?.structure || []
+            const getTotalValue = (item) => item.format_info?.pricing_basis?.total_value || 1
+
+            const getPlatformName = (platform) => {
+                const p = platform?.toLowerCase() || ''
+                if (p.includes('pdd') || p.includes('拼多多')) return '拼多多官方'
+                if (p.includes('jd') || p.includes('京东')) return '京东官方'
+                if (p.includes('tb') || p.includes('淘宝') || p.includes('tmall') || p.includes('天猫')) return '淘宝官方'
+                return platform || '官方商城'
             }
-        }).mount('#app');
-    });
+
+            const getPlatformColor = (platform) => {
+                const name = getPlatformName(platform)
+                if (name.includes('拼多多')) return '#ef4444'
+                if (name.includes('京东')) return '#dc2626'
+                if (name.includes('淘宝')) return '#f97316'
+                return '#18181b'
+            }
+
+            const getCompareIndicator = (item) => {
+                const uPrice = getUnitPriceNum(item)
+                const avg = stats.value.avgUnitPrice
+                if (!avg) return null
+                if (uPrice < avg * 0.9) return {better: true, text: `比均价低 ${Math.round((1 - uPrice / avg) * 100)}%`}
+                if (uPrice > avg * 1.1) return {better: false, text: `比均价高 ${Math.round((uPrice / avg - 1) * 100)}%`}
+                return null
+            }
+
+            const search = async () => {
+                if (!keyword.value.trim()) return
+                const term = keyword.value.trim()
+                currentKeyword.value = term
+                loading.value = true
+                hasSearched.value = true
+                searchInputRef.value?.blur()
+                showHeader.value = true
+
+                try {
+                    const response = await fetch(`/api/search?keyword=${encodeURIComponent(term)}`)
+                    const res = await response.json()
+                    if (res.status === 'success') {
+                        products.value = res.data
+                        availableFilters.value = res.filters || []
+                        const initialFilters = {}
+                        availableFilters.value.forEach(f => initialFilters[f.attribute_name] = '')
+                        activeFilters.value = initialFilters
+                    } else {
+                        products.value = []
+                        availableFilters.value = []
+                    }
+                } catch (e) {
+                    console.error('API Error', e)
+                } finally {
+                    loading.value = false
+                }
+            }
+
+            const resetView = () => {
+                keyword.value = ''
+                hasSearched.value = false
+                products.value = []
+                availableFilters.value = []
+                activeFilters.value = {}
+                activeUnitFilter.value = ''
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+            }
+
+            const openDetail = (item) => {
+                selectedProduct.value = item
+                document.body.style.overflow = 'hidden'
+            }
+            const closeDetail = () => {
+                selectedProduct.value = null
+                document.body.style.overflow = ''
+            }
+
+            onMounted(() => {
+                setInterval(() => placeholderIndex.value++, 3000)
+                if (keyword.value) search()
+
+                // ======== 挂载滚动监听和 Header 尺寸监听 ========
+                if (headerRef.value) {
+                    headerHeight.value = headerRef.value.offsetHeight
+                    // 监听 Header 内部高度变化 (下拉选项呈现后重置高度，解决内容遮挡)
+                    resizeObserver = new ResizeObserver((entries) => {
+                        for (let entry of entries) {
+                            headerHeight.value = entry.target.offsetHeight
+                        }
+                    })
+                    resizeObserver.observe(headerRef.value)
+                }
+                window.addEventListener('scroll', handleScroll, { passive: true })
+            })
+
+            onUnmounted(() => {
+                window.removeEventListener('scroll', handleScroll)
+                if (resizeObserver && headerRef.value) {
+                    resizeObserver.unobserve(headerRef.value)
+                }
+            })
+
+            return {
+                showHeader, headerRef, headerHeight,
+                keyword, currentKeyword, products, loading, hasSearched,
+                selectedProduct, searchInputRef, sortBy, sortOptions, hotKeywords,
+                placeholderText, sortedProducts, stats,
+                availableUnits, activeUnitFilter, availableFilters, activeFilters, hasActiveFilter, clearFilters,
+                search, resetView, openDetail, closeDetail,
+                getUnitPrice, getDecisionKeywords, getPricingStructure, getTotalValue,
+                getPlatformName, getPlatformColor, getCompareIndicator
+            }
+        }
+    }).mount('#app')
 </script>
 </body>
 </html>
