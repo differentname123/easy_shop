@@ -3,7 +3,7 @@
 # [数据流转/交互] 每轮查询候选、读取一次提示词 → 每批最多十件且 ID 不冲突 → 配置数量的线程调用模型
 #                 （最多三次）→ string_to_object 解析 → 单品校验 → 带候选和名称条件局部写回。
 # [输出数据] format_* 字段、原子失败次数及 success/failed/skipped 统计；每轮结束等待一小时。
-
+import threading
 import json
 import math
 import time
@@ -312,72 +312,7 @@ def run_format_round(product_manager):
     return counts
 
 
-def _task_worker_loop(task_name, round_func):
-    """
-    通用的后台进程守护循环（从原 main_controller 抽取）。
-    复用健康连接，每小时（根据 ROUND_INTERVAL_SECONDS）执行一轮；
-    子进程维护自己独立的数据库连接对象，避免多进程内存冲突。
-    """
-    db_instance = product_manager = None
-    try:
-        while True:
-            try:
-                if product_manager is None:
-                    if db_instance is not None:
-                        db_instance.close()
-                        db_instance = None
-                    db_instance = gen_db_object()
-                    db_instance.ping()
-                    product_manager = ProductManager(db_instance)
 
-                # 执行具体的一轮业务逻辑
-                round_func(product_manager)
-
-            except Exception as exc:
-                product_manager = None
-                logger.exception("❌ [%s调度/异常] 本轮终止，下轮重新连接 | 间隔: [%d 秒] | 原因: [%s] "
-                                 "| 排查: [数据库、候选查询与线程池或网络请求]",
-                                 task_name, ROUND_INTERVAL_SECONDS, " ".join(str(exc).split())[:400])
-
-            logger.info("[%s调度/等待] 本轮结束 | 等待: [%d 秒]", task_name, ROUND_INTERVAL_SECONDS)
-            time.sleep(ROUND_INTERVAL_SECONDS)
-
-    except KeyboardInterrupt:
-        # 子进程屏蔽 KeyboardInterrupt，由主进程统一截获并打印退出日志
-        pass
-    finally:
-        if db_instance is not None:
-            db_instance.close()
-
-
-def main_controller():
-    """主入口：利用多进程并行启动 [商品结构化格式化] 与 [推广链接转链] 两个任务"""
-
-    # 1. 创建两个独立的进程，分别指向不同的业务方法
-    format_process = multiprocessing.Process(
-        target=_task_worker_loop, args=("格式化", run_format_round), name="FormatWorkerProcess"
-    )
-    promotion_process = multiprocessing.Process(
-        target=_task_worker_loop, args=("转链", run_promotion_round), name="PromotionWorkerProcess"
-    )
-
-    # 2. 设为守护进程（随主程序一起退出）
-    format_process.daemon = True
-    promotion_process.daemon = True
-
-    # 3. 启动进程
-    format_process.start()
-    logger.info("[系统/启动] 已启动 格式化 进程 (PID: %d)", format_process.pid)
-
-    promotion_process.start()
-    logger.info("[系统/启动] 已启动 转链 进程 (PID: %d)", promotion_process.pid)
-
-    # 4. 主进程保持存活并监控
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("[系统/退出] 收到中断，正在停止所有后台并行任务...")
 
 def pending_promotion_query():
     """新采集商品尚无 promotion_* 相关推广链接字段，或转链失败但未达到尝试上限。"""
@@ -534,6 +469,84 @@ def get_recent_successful_formats(hours=24, limit=0):
     return grouped_data_info
 
 
+def _task_worker_loop(task_name, round_func):
+    """
+    通用的后台任务守护循环。
+    复用健康连接，每小时执行一轮；
+    每个线程维护自己独立的数据库连接对象，避免多线程下的网络读写冲突。
+    """
+    db_instance = product_manager = None
+    try:
+        while True:
+            try:
+                if product_manager is None:
+                    if db_instance is not None:
+                        db_instance.close()
+                        db_instance = None
+                    db_instance = gen_db_object()
+                    db_instance.ping()
+                    product_manager = ProductManager(db_instance)
+
+                # 执行具体的一轮业务逻辑
+                round_func(product_manager)
+
+            except Exception as exc:
+                product_manager = None
+                logger.exception("❌ [%s调度/异常] 本轮终止，下轮重新连接 | 间隔: [%d 秒] | 原因: [%s] "
+                                 "| 排查: [数据库、候选查询与线程池或网络请求]",
+                                 task_name, ROUND_INTERVAL_SECONDS, " ".join(str(exc).split())[:400])
+
+            logger.info("[%s调度/等待] 本轮结束 | 等待: [%d 秒]", task_name, ROUND_INTERVAL_SECONDS)
+            time.sleep(ROUND_INTERVAL_SECONDS)
+
+    # 移除了原本用于多进程的 KeyboardInterrupt 屏蔽，多线程下由主线程统一处理
+    finally:
+        if db_instance is not None:
+            db_instance.close()
+
+
+def format_task():
+    """将商品格式化任务包装为无参函数，便于任务列表管理"""
+    _task_worker_loop("格式化", run_format_round)
+
+
+def promotion_task():
+    """将商品转链任务包装为无参函数，便于任务列表管理"""
+    _task_worker_loop("转链", run_promotion_round)
+
+
+def _run_task(task):
+    """为后台入口的未处理异常补充上下文并重抛；保留线程退出、不自动重启的行为。"""
+    try:
+        task()
+    except Exception:
+        logger.exception(
+            "[任务/退出] 后台任务异常结束 | 任务: [%s] | 结果: [当前线程停止] "
+            "| 排查: [检查对应链路的数据、文件权限及外部服务]",
+            task.__name__,
+        )
+        raise
+
+
 if __name__ == "__main__":
-    # get_recent_successful_formats()
-    main_controller()
+    # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
+    tasks = (
+        format_task,
+        promotion_task
+    )
+
+    threads = []
+    for task in tasks:
+        thread = threading.Thread(target=_run_task, args=(task,), name=task.__name__)
+        thread.daemon = True  # 设置为守护线程，这样主线程因中断退出时，所有任务也会立即中止
+        thread.start()
+        threads.append(thread)
+        logger.info("[系统/启动] 已启动 %s 线程 (TID: %d)", task.__name__, thread.ident)
+
+    try:
+        # 使用带 timeout 的 join 轮询，避免完全阻塞主线程，使得 Ctrl+C 中断信号能够被正常捕获
+        for thread in threads:
+            while thread.is_alive():
+                thread.join(1.0)
+    except KeyboardInterrupt:
+        logger.info("[系统/退出] 收到中断信号，正在停止所有后台并行任务...")
