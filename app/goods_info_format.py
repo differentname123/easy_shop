@@ -330,7 +330,7 @@ def run_promotion_round(product_manager):
     pdd_client_secret = get_config("pdd_client_secret")
     pdd_pid = get_config("pdd_pid")
     pdd_custom_parameters = get_config("pdd_custom_parameters")
-
+    pdd_custom_parameters = None
     """一次查询待转链商品候选，批量并行处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
     started = time.monotonic()
 
@@ -581,7 +581,7 @@ if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = (
         format_task,
-        promotion_task
+        # promotion_task
     )
 
     threads = []
