@@ -326,10 +326,9 @@ def pending_promotion_query():
 
 
 def run_promotion_round(product_manager):
-    pdd_client_id = get_config("pdd_client_id")
-    pdd_client_secret = get_config("pdd_client_secret")
-    pdd_pid = get_config("pdd_pid")
-    pdd_custom_parameters = get_config("pdd_custom_parameters")
+    pdd_client_id = get_config("nana_pdd_client_id")
+    pdd_client_secret = get_config("nana_pdd_client_secret")
+    pdd_pid = get_config("nana_pdd_pid")
     pdd_custom_parameters = None
     """一次查询待转链商品候选，批量并行处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
     started = time.monotonic()
@@ -371,7 +370,6 @@ def run_promotion_round(product_manager):
                 pid=pdd_pid,
                 original_url=product_url,
                 goods_id=product_id,
-                uid=pdd_custom_parameters  # 绑定返利用户
             )
 
             # 判断顶层状态与转链信息(convert_info)状态
@@ -579,10 +577,10 @@ def _run_task(task):
 
 if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
-    tasks = (
+    tasks = [
         format_task,
-        # promotion_task
-    )
+        promotion_task
+    ]
 
     threads = []
     for task in tasks:

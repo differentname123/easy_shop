@@ -16,6 +16,7 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
+from app.pdd_utils import search_pdd_goods_by_keyword
 from common.playwright_utils import launch_persistent_context
 from common.common_utils import get_config
 from common.mongo_db.mongo_base import gen_db_object
@@ -42,7 +43,7 @@ STATUS_REASONS = {
     "ERROR": "页面加载或交互异常",
     "LOGGED_OUT": "账号掉登录",  # 【新增】状态枚举
 }
-
+import threading  # 请确保在文件顶部添加此导入
 
 class StorageError(RuntimeError):
     """商品写入或回执处理失败必须终止采集，不能误当成页面问题换号。"""
@@ -175,6 +176,110 @@ class AccountPool:
             wait_seconds = GLOBAL_CONFIG["wait_no_account_seconds"]
             logger.info("[调度/等待] 暂无可用账号 | 任务: [%s] | 再次检查: [%d 秒后]", task_name, wait_seconds)
             time.sleep(wait_seconds)
+
+
+# ==========================================
+# 新增：API 数据清洗模块
+# ==========================================
+def normalize_api_goods(item, default_category):
+    """
+    清洗 API 返回的商品数据，将其转为与数据库已有格式 (ProductManager.update 所需) 保持一致。
+    价格字段（原价、拼团价、优惠券）除以 100 转为元。
+    """
+    goods_id = item.get("goods_id")
+    if type(goods_id) not in (str, int) or not str(goods_id).strip():
+        return None
+
+    record = {
+        "platform": GLOBAL_CONFIG["platform"],
+        "product_id": str(goods_id).strip(),
+        # 如果 API 没有返回 category_name，则用搜索关键词保底
+        "category": item.get("category_name") or default_category,
+        "_source_api": "api_search"  # 新增来源标记
+    }
+
+    # 基础字段映射 (从 API 字段 -> 数据库字段)
+    for source, target in (
+            ("goods_name", "name"),
+            ("brand_name", "brand"),
+            ("sales_tip", "sales_tip"),
+            ("goods_image_url", "image_url"),
+    ):
+        if source in item:
+            record[target] = item[source]
+
+    # 价格字段映射 (分 -> 元)
+    for source, target in (
+            ("min_normal_price", "original_price"),
+            ("min_group_price", "activity_price"),
+            ("coupon_discount", "saved_price"),
+    ):
+        if source in item:
+            record[target] = (item[source] or 0) / 100
+
+    return record
+
+
+# ==========================================
+# 新增：API 并行任务模块
+# ==========================================
+def api_search_task():
+    """后台任务：通过 API 搜索指定关键词商品并入库，每轮等待 24 小时"""
+    keywords = ["可乐", "零食", "牛奶"]
+    pdd_client_id = get_config("nana_pdd_client_id")
+    pdd_client_secret = get_config("nana_pdd_client_secret")
+    pdd_pid = get_config("nana_pdd_pid")
+
+    while True:
+        logger.info("[API任务/轮次开始] 开始执行 API 数据拉取...")
+        try:
+            # 每次拉取建立独立的数据库连接（由于等待时间长达24h，保持长连接易引发断联报错）
+            with closing(gen_db_object()) as db_instance:
+                db_instance.ping()
+                product_manager = ProductManager(db_instance)
+
+                for keyword in keywords:
+                    logger.info("[API任务/搜索] 正在拉取关键词: [%s]", keyword)
+                    try:
+                        result = search_pdd_goods_by_keyword(
+                            client_id=pdd_client_id,
+                            client_secret=pdd_client_secret,
+                            pid=pdd_pid,
+                            search_key=keyword,
+                            limit_count=0  # 可根据需求调整拉取数量
+                        )
+
+                        if not result or result.get("status") != "success":
+                            logger.warning("[API任务/失败] 搜索未成功 | 关键词: [%s] | 响应: [%s]", keyword, result)
+                            continue
+
+                        records = []
+                        now = datetime.now(timezone.utc)
+                        for item in result.get("data", []):
+                            record = normalize_api_goods(item, keyword)
+                            if record is not None:
+                                record["updated_at"] = now
+                                records.append(record)
+
+                        if records:
+                            counts = product_manager.update(records)
+                            logger.info("[API任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
+                                        keyword, len(records), counts.get("new", 0), counts.get("update", 0))
+                        else:
+                            logger.info("[API任务/空数据] 关键词: [%s] | 未解析到有效商品", keyword)
+
+                    except Exception as exc:
+                        logger.error("[API任务/异常] 搜索或入库异常 | 关键词: [%s] | 错误: [%s]", keyword, exc)
+
+                    # 避免并发打满，每个关键词查询之间短暂停顿
+                    time.sleep(5)
+
+        except Exception as exc:
+            logger.error("[API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
+
+        logger.info("[API任务/轮次结束] 本轮 API 拉取完成，休眠 24 小时...")
+        time.sleep(24 * 3600)
+
 
 def normalize_goods(item, tab_name):
     """item 核心键为 goods_id，价格来源为 origin_price/activity_price/group_order_price_reduce（分）。
@@ -592,5 +697,60 @@ def main_controller():
         raise
 
 
+# ==========================================
+# 修改：重构原有的 main_controller -> playwright_task
+# ==========================================
+def playwright_task():
+    """后台任务：读取现有目录配置并启动 UI 抓取采集 (原 main_controller)"""
+    accounts = get_config("pdd_browser_data_list")
+    if not accounts:
+        logger.error("❌ [系统/启动失败] 未配置采集账号 | 配置项: [pdd_browser_data_list] | 排查: [浏览器目录列表]")
+        return
+    with AccountPool(accounts, GLOBAL_CONFIG["account_status_file"]) as account_pool, closing(gen_db_object()) as db_instance:
+        db_instance.ping()
+        product_manager = ProductManager(db_instance)
+        logger.info("[系统/就绪] 商品数据库与本地账号池已就绪 | 配置账号: [%d] | 账号文件: [%s]",
+                    len(account_pool.accounts), account_pool.path)
+        run_collection_rounds(account_pool, product_manager)
+
+
+# ==========================================
+# 修改：新增线程调度与守护逻辑
+# ==========================================
+def _run_task(task):
+    """为后台入口的未处理异常补充上下文并重抛；保留线程退出、不自动重启的行为。"""
+    try:
+        task()
+    except Exception:
+        logger.exception(
+            "[任务/退出] 后台任务异常结束 | 任务: [%s] | 结果: [当前线程停止] "
+            "| 排查: [检查对应链路的数据、文件权限及外部服务]",
+            task.__name__,
+        )
+        raise
+
 if __name__ == "__main__":
-    main_controller()
+    # 配置基础日志 (将其提取到最外层，共享给所有线程)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
+
+    # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
+    tasks = [
+        # playwright_task,
+        api_search_task
+    ]
+
+    threads = []
+    for task in tasks:
+        thread = threading.Thread(target=_run_task, args=(task,), name=task.__name__)
+        thread.daemon = True  # 设置为守护线程，这样主线程因中断退出时，所有任务也会立即中止
+        thread.start()
+        threads.append(thread)
+        logger.info("[系统/启动] 已启动 %s 线程 (TID: %d)", task.__name__, thread.ident)
+
+    try:
+        # 使用带 timeout 的 join 轮询，避免完全阻塞主线程，使得 Ctrl+C 中断信号能够被正常捕获
+        for thread in threads:
+            while thread.is_alive():
+                thread.join(1.0)
+    except KeyboardInterrupt:
+        logger.info("[系统/退出] 收到中断信号，正在停止所有后台并行任务...")
