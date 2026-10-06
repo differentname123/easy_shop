@@ -17,10 +17,12 @@ from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 
 from app.pdd_utils import search_pdd_goods_by_keyword, get_pdd_recommend_goods
-from common.playwright_utils import launch_persistent_context
+from common.playwright_utils import launch_persistent_context, search_goods_and_intercept
 from common.common_utils import get_config
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
+
+USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
 logger = logging.getLogger("pdd_scraper")
 
@@ -222,12 +224,121 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
 
     return record
 
+
+# ==========================================
+# 新增：UI 拦截数据清洗模块 (驼峰命名解析)
+# ==========================================
+def normalize_intercept_goods(item, default_category):
+    """
+    清洗 search_goods_and_intercept 返回的驼峰命名商品数据。
+    将其转为与数据库已有格式 (ProductManager.update 所需) 保持一致。
+    价格字段除以 100 转为元。
+    """
+    goods_id = item.get("goodsId")
+    if type(goods_id) not in (str, int) or not str(goods_id).strip():
+        return None
+
+    record = {
+        "platform": GLOBAL_CONFIG["platform"],
+        "product_id": str(goods_id).strip(),
+        "category": item.get("categoryName") or default_category,
+        "_source_api": "web_intercept"  # 标识数据来源为 UI 拦截
+    }
+
+    # 基础字段映射 (从驼峰字段 -> 数据库字段)
+    record["name"] = item.get("goodsName", "")
+    record["brand"] = item.get("mallName", "")  # 取店铺名作为 brand 占位
+    record["sales_tip"] = str(item.get("salesTip", ""))
+    record["image_url"] = item.get("goodsImageUrl") or item.get("goodsThumbnailUrl", "")
+
+    # 价格字段映射 (分 -> 元)
+    record["original_price"] = (item.get("goodsMarkPrice") or 0) / 100
+    record["activity_price"] = (item.get("minGroupPrice") or 0) / 100
+    record["saved_price"] = (item.get("couponDiscount") or 0) / 100
+
+    return record
+
+
+# ==========================================
+# 新增：UI 拦截搜索任务模块
+# ==========================================
+def web_search_intercept_task():
+    """后台任务：利用 Playwright 拦截指定关键词的商品流数据，每轮等待 24 小时"""
+    # 这里定义你需要用 UI 搜索拦截的关键词
+    search_keywords = ["可乐", "零食", "牛奶"]
+
+    while True:
+        logger.info("[UI拦截任务/轮次开始] 开始执行 UI 搜索数据拦截...")
+        try:
+            # 调用拦截工具获取数据
+            intercept_result = search_goods_and_intercept(
+                search_key_list=search_keywords,
+                user_data_dir=USER_DATA_DIR,
+                debug=False
+            )
+
+            if intercept_result:
+                # 建立独立的数据库长连接
+                with closing(gen_db_object()) as db_instance:
+                    db_instance.ping()
+                    product_manager = ProductManager(db_instance)
+                    now = datetime.now(timezone.utc)
+
+                    for keyword, item_list in intercept_result.items():
+                        if not item_list:
+                            logger.info("[UI拦截任务/空数据] 关键词: [%s] | 未拦截到商品", keyword)
+                            continue
+
+                        records = []
+                        for item in item_list:
+                            record = normalize_intercept_goods(item, keyword)
+                            if record is not None:
+                                record["updated_at"] = now
+                                records.append(record)
+
+                        if records:
+                            counts = product_manager.update(records)
+                            logger.info("[UI拦截任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
+                                        keyword, len(records), counts.get("new", 0), counts.get("update", 0))
+            else:
+                logger.warning("[UI拦截任务/失败] 拦截工具未返回有效数据")
+
+        except Exception as exc:
+            logger.error("[UI拦截任务/异常] 执行拦截或落库时发生错误 | 错误: [%s]", exc)
+
+        logger.info("[UI拦截任务/轮次结束] 本轮 UI 拦截拉取完成，休眠 24 小时...")
+        time.sleep(24 * 3600)
+
+
 # ==========================================
 # 新增：API 并行任务模块
 # ==========================================
 def api_search_task():
     """后台任务：通过 API 搜索指定关键词商品并入库，每轮等待 24 小时"""
-    keywords = ["可乐", "零食", "牛奶"]
+    keywords = [
+    # 基础水饮与酒水 (20个)
+    "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
+    "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
+    
+    # 休闲零食 (20个)
+    "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋", 
+    "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
+    
+    # 饱腹代餐与速食 (10个)
+    "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
+    
+    # 厨房粮油与生鲜调味 (20个)
+    "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
+    "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
+    
+    # 家庭日用与清洁 (15个)
+    "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液", 
+    "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
+    
+    # 个人护理与日化 (15个)
+    "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
+    "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
+]
     pdd_client_id = get_config("myself_pdd_client_id")
     pdd_client_secret = get_config("myself_pdd_client_secret")
     pdd_pid = get_config("myself_pdd_pid")
@@ -837,6 +948,7 @@ def api_recommend_task():
 
 
 if __name__ == "__main__":
+
     # 配置基础日志 (将其提取到最外层，共享给所有线程)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
 
@@ -844,7 +956,8 @@ if __name__ == "__main__":
     tasks = [
         playwright_task,
         # api_search_task,
-        # api_recommend_task  # 【新增】：商品推荐 API 任务挂载运行
+        # api_recommend_task,         # 商品推荐 API 任务
+        web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
     ]
 
     threads = []
