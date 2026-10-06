@@ -333,9 +333,25 @@ def run_promotion_round(product_manager):
     """一次查询待转链商品候选，批量并行处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
     started = time.monotonic()
 
+    # ================= 核心修改点 =================
+    # 动态构建包含 _source_api 约束的查询条件。
+    # 为了防止与原 pending_promotion_query 里的 "$or" 发生键冲突，采用 "$and" 嵌套的方式。
+    def get_strict_promotion_query():
+        query = pending_promotion_query()
+        original_or = query.pop("$or", [])
+        # 强制要求 _source_api 为 "group" 或字段本身不存在
+        query["$and"] = [
+            {"$or": original_or},
+            {"$or": [{"_source_api": "group"}, {"_source_api": {"$exists": False}}]}
+        ]
+        return query
+
+    strict_query_condition = get_strict_promotion_query()
+    # ==============================================
+
     # 根据要求，拉取 product_url 及必要的基础字段
     products = product_manager.query(
-        pending_promotion_query(),
+        strict_query_condition,
         projection={"_id": 1, "platform": 1, "product_id": 1, "product_url": 1}
     )
     counts = dict.fromkeys(COUNT_KEYS, 0)
@@ -396,9 +412,9 @@ def run_promotion_round(product_manager):
                 # 兼容获取错误信息
                 error = item_result.get("msg") or item_result.get("error_msg", "未知转链错误")
 
-        # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束）
-        condition = pending_promotion_query()
-        condition.update({"_id": product["_id"]})
+        # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束以及更严谨的规则校验）
+        condition = get_strict_promotion_query()
+        condition["_id"] = product["_id"]
 
         # 构造需要写入 DB 的数据
         db_update_data = {
@@ -474,7 +490,6 @@ def run_promotion_round(product_manager):
         detail, ", ".join(map(str, skipped_ids)) or "无")
 
     return counts
-
 
 def get_recent_successful_formats(hours=24, limit=0):
     """查询近期成功记录，按 category 分组返回。"""
@@ -579,7 +594,7 @@ if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
         format_task,
-        promotion_task
+        # promotion_task
     ]
 
     threads = []

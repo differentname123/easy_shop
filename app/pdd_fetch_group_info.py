@@ -735,8 +735,8 @@ if __name__ == "__main__":
 
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
-        # playwright_task,
-        api_search_task
+        playwright_task,
+        # api_search_task
     ]
 
     threads = []
