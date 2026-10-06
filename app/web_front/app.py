@@ -223,16 +223,18 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
 
 # 1. 搜索 API 接口
+# 修改 1. 搜索 API 接口
 @app.get("/api/search")
 def api_search(keyword: str = "方便面", hours: int = 72):
+    # 【新增这一行】：此时 keyword 已经是解码后的中文 "可乐"
+    logger.info(f"收到用户搜索请求，搜索词：[{keyword}]，时间范围：{hours}小时")
+
     search_data = search_product(keyword, min_match_score=10, hours=hours)
-    # 将商品列表 results 和 动态过滤项 filters 一起返回给前端
     return {
         "status": "success",
         "data": search_data["results"],
         "filters": search_data["filters"]
     }
-
 
 # 2. 网页路由配置
 @app.get("/", response_class=HTMLResponse)
