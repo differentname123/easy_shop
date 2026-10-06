@@ -392,11 +392,136 @@ def generate_pdd_authority_url(client_id, client_secret, pid, uid=None):
         return {"status": "error", "error_msg": f"生成备案链接失败: {str(e)}"}
 
 
+def get_pdd_recommend_goods(client_id, client_secret, channel_type=5, limit_count=0,
+                            cat_id=None, goods_sign_list=None, activity_tags=None, goods_img_type=None, uid=None):
+    """
+    自动翻页获取多多进宝商品推荐列表 (API: pdd.ddk.goods.recommend.get)
+
+    :param limit_count: 限制获取的数量。0 表示一直翻页直到没有数据，大于0表示达到该数量即停止。
+    :param channel_type: 进宝频道推广商品: 1-今日销量榜, 3-相似推荐, 4-猜你喜欢, 5-实时热销榜(默认), 6-实时收益榜
+    :param cat_id: 猜你喜欢场景的商品类目ID
+    :param goods_sign_list: 商品goodsSign列表，相似商品推荐场景(channel_type=3)时必传
+    :param activity_tags: 活动商品标记数组，例：[4,7] (4-秒杀，7-百亿补贴)
+    :return: 包含统一格式化后商品列表的字典
+    """
+    custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':')) if uid else None
+
+    all_formatted_goods = []
+    current_offset = 0
+    # 推荐接口单次请求的数据量。适度拉大可以减少网络交互次数
+    batch_limit = 50
+    list_id = None
+
+    while True:
+        business_params = {
+            "channel_type": channel_type,
+            "limit": batch_limit,
+            "offset": current_offset,
+            "cat_id": cat_id,
+            "goods_sign_list": goods_sign_list,
+            "activity_tags": activity_tags,
+            "goods_img_type": goods_img_type,
+            "custom_parameters": custom_params_str
+        }
+
+        # 翻页时带上前一页返回的 list_id 以保证上下文不重复
+        if current_offset > 0 and list_id:
+            business_params["list_id"] = list_id
+
+        try:
+            res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.recommend.get", business_params)
+        except Exception as e:
+            if current_offset == 0:
+                return {"error": f"商品推荐接口调用崩溃: {str(e)}"}
+            else:
+                logger.warning(f"推荐翻页中断(已获取{len(all_formatted_goods)}条): {str(e)}")
+                break
+
+        resp_data = res.get("goods_basic_detail_response", {})
+        goods_list = resp_data.get("list", [])
+
+        # 提取并保存第一页返回的 list_id
+        if current_offset == 0:
+            list_id = resp_data.get("list_id")
+
+        # 数据拉空，跳出循环
+        if not goods_list:
+            break
+
+        # 清洗数据
+        for goods in goods_list:
+            formatted_item = format_unified_response(goods, source_type=f"recommend_api_ch{channel_type}")
+            if formatted_item:
+                all_formatted_goods.append(formatted_item)
+
+        # 数量超限检测
+        if limit_count > 0 and len(all_formatted_goods) >= limit_count:
+            all_formatted_goods = all_formatted_goods[:limit_count]
+            break
+
+        # 累加偏移量，准备拉取下一页
+        current_offset += batch_limit
+        time.sleep(0.2)  # 防封控短时休眠
+
+    return {
+        "status": "success",
+        "msg": f"成功获取 {len(all_formatted_goods)} 条推荐商品",
+        "data": all_formatted_goods
+    }
+
+
 if __name__ == "__main__":
     # 配置信息读取
     pdd_client_id = get_config("nana_pdd_client_id")
     pdd_client_secret = get_config("nana_pdd_client_secret")
     pdd_pid = get_config("nana_pdd_pid")
+
+    # ==================================================================================================
+    # 🚀 商品推荐 API 测试
+    # ==================================================================================================
+    logger.info("======== 🚀 开始测试多多进宝商品推荐 (实时热销榜) ========")
+
+    # 测试参数：获取实时热销榜 (channel_type=5) 的前 5 个商品
+    test_channel = 5
+    limit_count = 5
+
+    recommend_result = get_pdd_recommend_goods(
+        client_id=pdd_client_id,
+        client_secret=pdd_client_secret,
+        channel_type=test_channel,
+        limit_count=limit_count,
+    )
+
+    if "error" in recommend_result:
+        logger.error(f"❌ 推荐测试失败: {recommend_result['error']}")
+    else:
+        rec_goods_list = recommend_result.get("data", [])
+        total_count = recommend_result.get("total", 0)
+        returned_list_id = recommend_result.get("list_id", "")
+        returned_search_id = recommend_result.get("search_id", "")
+
+        logger.info(f"✅ 推荐测试成功: 成功获取 {len(rec_goods_list)} 条商品 (该榜单总量约: {total_count})。")
+        logger.info(f"   [翻页凭证] list_id: {returned_list_id} | search_id: {returned_search_id}")
+
+        for idx, item in enumerate(rec_goods_list, start=1):
+            # 获取统一清洗后的关键字段
+            goods_name = item.get("goods_name", "未知商品")
+            price_yuan = item.get("min_group_price", 0) / 100.0  # 拼多多价格单位是分，转为元
+            commission_yuan = item.get("estimated_commission", 0) / 100.0  # 佣金单位是分，转为元
+            sales_tip = item.get("sales_tip", "0")
+            has_coupon = "是" if item.get("has_coupon") else "否"
+            coupon_amount = item.get("coupon_discount", 0) / 100.0
+
+            # 为了控制台输出整洁，商品名称截断到最长25个字符
+            display_name = goods_name if len(goods_name) <= 25 else goods_name[:25] + "..."
+
+            logger.info(
+                f"  [{idx:02d}] {display_name} \n"
+                f"       ├─ 拼团价: {price_yuan:.2f}元 | 预估佣金: {commission_yuan:.2f}元\n"
+                f"       └─ 销量: {sales_tip} | 有券: {has_coupon} (券面额: {coupon_amount:.2f}元)"
+            )
+
+    logger.info("================ 推荐测试结束 ================")
 
     # # ==================================================================================================
     # # 🚨🚨🚨 【血泪教训：极其重要的 PDD 风控参数与授权说明】 🚨🚨🚨

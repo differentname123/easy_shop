@@ -16,7 +16,7 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
-from app.pdd_utils import search_pdd_goods_by_keyword
+from app.pdd_utils import search_pdd_goods_by_keyword, get_pdd_recommend_goods
 from common.playwright_utils import launch_persistent_context
 from common.common_utils import get_config
 from common.mongo_db.mongo_base import gen_db_object
@@ -181,7 +181,10 @@ class AccountPool:
 # ==========================================
 # 新增：API 数据清洗模块
 # ==========================================
-def normalize_api_goods(item, default_category):
+# ==========================================
+# 修改：API 数据清洗模块 (新增 source_api 参数)
+# ==========================================
+def normalize_api_goods(item, default_category, source_api="api_search"):
     """
     清洗 API 返回的商品数据，将其转为与数据库已有格式 (ProductManager.update 所需) 保持一致。
     价格字段（原价、拼团价、优惠券）除以 100 转为元。
@@ -193,9 +196,9 @@ def normalize_api_goods(item, default_category):
     record = {
         "platform": GLOBAL_CONFIG["platform"],
         "product_id": str(goods_id).strip(),
-        # 如果 API 没有返回 category_name，则用搜索关键词保底
+        # 如果 API 没有返回 category_name，则用搜索关键词或外部定义分类保底
         "category": item.get("category_name") or default_category,
-        "_source_api": "api_search"  # 新增来源标记
+        "_source_api": source_api  # 【核心修改】：支持动态指定来源，如 api_recommend
     }
 
     # 基础字段映射 (从 API 字段 -> 数据库字段)
@@ -218,7 +221,6 @@ def normalize_api_goods(item, default_category):
             record[target] = (item[source] or 0) / 100
 
     return record
-
 
 # ==========================================
 # 新增：API 并行任务模块
@@ -729,6 +731,101 @@ def _run_task(task):
         )
         raise
 
+
+# ==========================================
+# 新增：API 推荐全盘横扫任务模块
+# ==========================================
+def api_recommend_task():
+    """后台任务：通过 API 推荐接口遍历各大榜单和类目获取商品，拉取一页即刻入库"""
+    pdd_client_id = get_config("nana_pdd_client_id")
+    pdd_client_secret = get_config("nana_pdd_client_secret")
+
+    # 定义要遍历的频道 (1:今日热销, 5:实时热销, 6:实时收益, 4:猜你喜欢)
+    target_channels = [1, 5, 6, 4]
+
+    # 频道 4 (猜你喜欢) 的细分类目 ID 列表
+    cat_id_list = [
+        20100, 20200, 20300, 20400, 20500, 20600, 20700, 20800, 20900,
+        21000, 21100, 21200, 21300, 21400, 21500, 21600, 21700, 21800
+    ]
+    batch_limit = 50
+
+    while True:
+        logger.info("[推荐API任务/轮次开始] 开始执行推荐商品数据横扫拉取...")
+        try:
+            with closing(gen_db_object()) as db_instance:
+                db_instance.ping()
+                product_manager = ProductManager(db_instance)
+
+                for channel in target_channels:
+                    # 如果是频道4，则遍历类目；如果是其他榜单，无需传类目 (传 [None])
+                    current_cat_list = cat_id_list if channel == 4 else [None]
+
+                    for cid in current_cat_list:
+                        # 组合出分类名称作为默认 Category 落库
+                        category_name = f"推荐榜单_ch{channel}" + (f"_cat{cid}" if cid else "")
+                        logger.info("[推荐API任务/拉取] 正在拉取: [%s]", category_name)
+
+                        current_offset = 0
+                        current_list_id = None
+                        total_saved = 0
+
+                        while True:
+                            res = get_pdd_recommend_goods(
+                                client_id=pdd_client_id,
+                                client_secret=pdd_client_secret,
+                                channel_type=channel,
+                                limit=batch_limit,
+                                offset=current_offset,
+                                cat_id=cid,
+                                list_id=current_list_id
+                            )
+
+                            if res.get("error"):
+                                logger.warning("[推荐API任务/中断] 接口返回错误: %s (已保存 %d 条)", res["error"],
+                                               total_saved)
+                                break
+
+                            raw_items = res.get("data", [])
+                            if not raw_items:
+                                logger.info("[推荐API任务/底线] [%s] 数据已拉干，当前共保存 %d 条", category_name,
+                                            total_saved)
+                                break
+
+                            # 提取翻页锚点
+                            if current_offset == 0:
+                                current_list_id = res.get("list_id")
+
+                            # 【核心步骤】：拉一页立刻洗一页，打上专属来源标签
+                            records = []
+                            now = datetime.now(timezone.utc)
+                            for item in raw_items:
+                                record = normalize_api_goods(item, default_category=category_name,
+                                                             source_api="api_recommend")
+                                if record is not None:
+                                    record["updated_at"] = now
+                                    records.append(record)
+
+                            # 【核心步骤】：洗完立刻落库
+                            if records:
+                                counts = product_manager.update(records)
+                                total_saved += len(records)
+                                logger.info(
+                                    "[推荐API任务/入库] [%s] 偏移:[%d] | 本批新增/更新: [%d/%d] | 累计入库: [%d]",
+                                    category_name, current_offset, counts.get("new", 0), counts.get("update", 0),
+                                    total_saved)
+
+                            current_offset += batch_limit
+                            time.sleep(0.5)  # 分页微休眠防风控
+
+                        time.sleep(2)  # 切换榜单/类目时的安全休眠
+
+        except Exception as exc:
+            logger.error("[推荐API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
+
+        logger.info("[推荐API任务/轮次结束] 本轮推荐横扫完成，休眠 12 小时...")
+        time.sleep(12 * 3600)
+
 if __name__ == "__main__":
     # 配置基础日志 (将其提取到最外层，共享给所有线程)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")
@@ -736,7 +833,7 @@ if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
         playwright_task,
-        # api_search_task
+        api_search_task
     ]
 
     threads = []
