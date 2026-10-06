@@ -83,27 +83,35 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         sort=[("updated_at", -1)], limit=limit,
     )
 
-    # 提取前端展示和计算所需的字段 (增加了更多字段用于增强展示)
-    products = [{
-        "name": product.get("name"),
-        "product_id": product.get("product_id"),
-        "platform": product.get("platform"),
-        "image_url": product.get("image_url"),
-        # 修改：优先使用 promotion_url，没有才使用 product_url
-        "product_url": product.get("promotion_url") or product.get("product_url"),
-        # 新增：判断是否有佣金 (存在 promotion_url 即为有佣金)
-        "has_commission": bool(product.get("promotion_url")),
-        "original_price": product.get("original_price"),
-        "saved_price": product.get("saved_price"),
-        "sales_tip": product.get("sales_tip"),
-        "brand": product.get("brand"),
-        "category": product.get("category"),
-        "format_info": product.get("format_info"),
-        "activity_price": product.get("activity_price", 999999),
-        "updated_at": product.get("updated_at"),
-        # 新增：来源字段，如果不存在则默认赋值为 "group"
-        "_source_api": product.get("_source_api") or "group"
-    } for product in raw_products]
+    # 提取前端展示和计算所需的字段 (增加了过滤 product_url 为空的数据)
+    products = []
+    for product in raw_products:
+        # 优先使用 promotion_url，没有才使用 product_url
+        product_url = product.get("promotion_url") or product.get("product_url")
+
+        # 新增：如果 product_url 为空的数据就不要返回了
+        if not product_url:
+            continue
+
+        products.append({
+            "name": product.get("name"),
+            "product_id": product.get("product_id"),
+            "platform": product.get("platform"),
+            "image_url": product.get("image_url"),
+            "product_url": product_url,
+            # 新增：判断是否有佣金 (存在 promotion_url 即为有佣金)
+            "has_commission": bool(product.get("promotion_url")),
+            "original_price": product.get("original_price"),
+            "saved_price": product.get("saved_price"),
+            "sales_tip": product.get("sales_tip"),
+            "brand": product.get("brand"),
+            "category": product.get("category"),
+            "format_info": product.get("format_info"),
+            "activity_price": product.get("activity_price", 999999),
+            "updated_at": product.get("updated_at"),
+            # 新增：来源字段，如果不存在则默认赋值为 "group"
+            "_source_api": product.get("_source_api") or "group"
+        })
 
     # 计算匹配分数
     for simple_product in products:
@@ -222,7 +230,6 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         "results": final_results,
         "filters": top_filters
     }
-
 
 # 1. 搜索 API 接口
 # 修改 1. 搜索 API 接口
