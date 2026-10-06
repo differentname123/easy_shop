@@ -19,7 +19,7 @@ import hashlib
 import requests
 from common.common_utils import get_config, setup_logger
 
-logger = setup_logger(app_name="pdd_utils")
+logger = setup_logger(app_name="nana_pdd_utils")
 
 
 def call_pdd_api(client_id, client_secret, api_type, business_params):
@@ -358,10 +358,10 @@ def search_pdd_goods_by_keyword(client_id, client_secret, pid, search_key, limit
 
 if __name__ == "__main__":
     # 配置信息读取
-    pdd_client_id = get_config("pdd_client_id")
-    pdd_client_secret = get_config("pdd_client_secret")
-    pdd_pid = get_config("pdd_pid")
-    pdd_custom_parameters = get_config("pdd_custom_parameters")
+    pdd_client_id = get_config("nana_pdd_client_id")
+    pdd_client_secret = get_config("nana_pdd_client_secret")
+    pdd_pid = get_config("nana_pdd_pid")
+    pdd_custom_parameters = get_config("nana_pdd_custom_parameters")
 
     test_keyword = "可乐"
     test_limit = 5
