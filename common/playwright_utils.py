@@ -183,6 +183,74 @@ def save_forensics(page, tag: str, save_dir: str = "forensics_logs", extra_info:
     return base_path
 
 
+def search_goods_and_intercept(search_key: str, user_data_dir: str) -> dict:
+    """
+    [业务/查询] 访问多多进宝单品推广页，输入关键字搜索并拦截底层 goodsList 数据接口。
+
+    :param search_key: 搜索关键字 (例如: "可乐")
+    :param user_data_dir: 浏览器本地持久化缓存目录
+    :return: 拦截并解析后的 JSON 数据字典；若失败则返回 None
+    """
+    target_url = "https://jinbao.pinduoduo.com/promotion/single-promotion"
+    api_target = "/network/api/common/goodsList"
+
+    logger.info(f"\n{'=' * 60}\n[业务/查询] 开始执行搜索并拦截 | 关键字: <{search_key}>\n{'=' * 60}")
+
+    with sync_playwright() as p:
+        context = None
+        try:
+            # 复用基础工具箱：启动带有登录凭证的持久化浏览器上下文
+            args = ['--disable-blink-features=AutomationControlled', '--start-maximized', '--window-position=0,0']
+            context = launch_persistent_context(p, user_data_dir=user_data_dir, args=args, headless=False)
+
+            page = context.pages[0] if context.pages else context.new_page()
+            page.bring_to_front()
+
+            logger.info(f"[业务/查询] 正在加载页面: {target_url}")
+            page.goto(target_url, wait_until="domcontentloaded")
+
+            # 依据提供的 DOM 结构定位输入框与搜索按钮
+            search_input = page.locator('.search-bar-input input[placeholder="请输入商品名称或短链"]')
+            search_btn = page.locator('.search-bar-btn', has_text="搜索")
+
+            # 等待输入框出现，清空并填入搜索词
+            search_input.wait_for(state="visible", timeout=15000)
+            search_input.clear()
+            search_input.fill(search_key)
+            logger.info(f"[业务/查询] 已填入搜索关键字: {search_key}")
+
+            # 开启拦截等待：要求 URL 包含目标路径，且必须是 POST 请求
+            logger.info(f"[业务/查询] 触发搜索，正在监听并拦截目标接口: {api_target} ...")
+            with page.expect_response(
+                    lambda response: api_target in response.url and response.request.method == "POST",
+                    timeout=20000
+            ) as response_info:
+                # 复用基础工具箱：执行鲁棒性极高的点击操作
+                robust_click(search_btn)
+
+            # 获取拦截到的响应对象
+            response = response_info.value
+            logger.info(f"[业务/查询] ✅ 成功拦截底层请求 | 状态码: {response.status}")
+
+            # 解析并返回 JSON，支持直接提取目标字段
+            json_data = response.json()
+            return json_data
+
+        except Exception as e:
+            logger.error(f"[业务/查询] 搜索或拦截过程发生异常: {e}")
+            if context and context.pages:
+                # 复用基础工具箱：异常时保存当前屏幕快照和DOM，用于案发现场排查
+                save_forensics(context.pages[0], f"search_intercept_fail_{search_key}")
+            return None
+
+        finally:
+            if context:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            logger.info("[业务/查询] 🚀 浏览器资源已释放，查询任务结束。\n")
+
 # ==============================================================================
 #                                   使用示例
 # ==============================================================================
@@ -190,6 +258,15 @@ if __name__ == "__main__":
     # 配置测试环境目录与目标网址
     TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
+
+    USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
+
+    # 执行搜索并拦截
+    result = search_goods_and_intercept(search_key="零食", user_data_dir=USER_DATA_DIR)
+
+    if result and result.get("success"):
+        goods_list = result["result"]["goodsList"]
+        print(f"成功获取到 {len(goods_list)} 条商品数据！")
 
 
     # # 场景一：初始化/更新环境凭证
