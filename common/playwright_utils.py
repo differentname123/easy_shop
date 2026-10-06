@@ -183,65 +183,125 @@ def save_forensics(page, tag: str, save_dir: str = "forensics_logs", extra_info:
     return base_path
 
 
-def search_goods_and_intercept(search_key: str, user_data_dir: str) -> dict:
-    """
-    [业务/查询] 访问多多进宝单品推广页，输入关键字搜索并拦截底层 goodsList 数据接口。
+import traceback  # 需要在文件顶部导入此模块，用于详尽打印错误栈
 
-    :param search_key: 搜索关键字 (例如: "可乐")
+import traceback
+
+import traceback
+
+
+def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug: bool = False) -> dict:
+    """
+    [业务/查询] 访问多多进宝单品推广页，支持同一窗口下连续查询多个关键字，并精准拦截底层的 goodsList 数据。
+
+    :param search_key_list: 搜索关键字列表 (例如: ["可乐", "雪碧"])
     :param user_data_dir: 浏览器本地持久化缓存目录
-    :return: 拦截并解析后的 JSON 数据字典；若失败则返回 None
+    :param debug: 调试模式。True则显示浏览器界面，False则静默后台运行
+    :return: 包含所有查询结果的字典，直接返回商品列表。格式如: { "可乐": [{商品1}, {商品2}], "雪碧": [] }
     """
     target_url = "https://jinbao.pinduoduo.com/promotion/single-promotion"
     api_target = "/network/api/common/goodsList"
 
-    logger.info(f"\n{'=' * 60}\n[业务/查询] 开始执行搜索并拦截 | 关键字: <{search_key}>\n{'=' * 60}")
+    logger.info(
+        f"\n{'=' * 60}\n[业务/查询] 开始批量搜索并精准拦截 | 关键字数: {len(search_key_list)} | 调试模式: {debug}\n{'=' * 60}")
+
+    final_results = {}
+
+    if not search_key_list:
+        logger.warning("[业务/查询] 搜索关键字列表为空，直接返回。")
+        return final_results
 
     with sync_playwright() as p:
         context = None
         try:
-            # 复用基础工具箱：启动带有登录凭证的持久化浏览器上下文
-            args = ['--disable-blink-features=AutomationControlled', '--start-maximized', '--window-position=0,0']
-            context = launch_persistent_context(p, user_data_dir=user_data_dir, args=args, headless=False)
+            # 动态控制 headless 模式
+            headless_mode = not debug
+            args = ['--disable-blink-features=AutomationControlled', '--start-maximized']
+            if debug:
+                args.append('--window-position=0,0')
+
+            # 启动浏览器上下文
+            context = launch_persistent_context(
+                p,
+                user_data_dir=user_data_dir,
+                args=args,
+                headless=headless_mode
+            )
 
             page = context.pages[0] if context.pages else context.new_page()
-            page.bring_to_front()
+            if debug:
+                page.bring_to_front()
 
-            logger.info(f"[业务/查询] 正在加载页面: {target_url}")
+            logger.info(f"[业务/查询] 正在加载基础页面: {target_url}")
             page.goto(target_url, wait_until="domcontentloaded")
 
-            # 依据提供的 DOM 结构定位输入框与搜索按钮
+            # 定位输入框与搜索按钮
             search_input = page.locator('.search-bar-input input[placeholder="请输入商品名称或短链"]')
             search_btn = page.locator('.search-bar-btn', has_text="搜索")
 
-            # 等待输入框出现，清空并填入搜索词
-            search_input.wait_for(state="visible", timeout=15000)
-            search_input.clear()
-            search_input.fill(search_key)
-            logger.info(f"[业务/查询] 已填入搜索关键字: {search_key}")
+            # 等待输入框出现，确保页面加载完成
+            search_input.wait_for(state="visible", timeout=20000)
 
-            # 开启拦截等待：要求 URL 包含目标路径，且必须是 POST 请求
-            logger.info(f"[业务/查询] 触发搜索，正在监听并拦截目标接口: {api_target} ...")
-            with page.expect_response(
-                    lambda response: api_target in response.url and response.request.method == "POST",
-                    timeout=20000
-            ) as response_info:
-                # 复用基础工具箱：执行鲁棒性极高的点击操作
-                robust_click(search_btn)
+            # ================= 核心：循环执行并发查询 =================
+            for search_key in search_key_list:
+                logger.info(f"--- 开始处理关键字: <{search_key}> ---")
+                try:
+                    # 每次搜索前确保输入框清空并填入新词
+                    search_input.clear()
+                    search_input.fill(search_key)
+                    logger.info(f"[业务/查询] 已填入: {search_key}")
 
-            # 获取拦截到的响应对象
-            response = response_info.value
-            logger.info(f"[业务/查询] ✅ 成功拦截底层请求 | 状态码: {response.status}")
+                    # 定义严格的请求匹配规则：必须是目标API + POST请求 + 请求体中的 keyword 等于当前查询词
+                    def is_target_request(response, current_key=search_key):
+                        if api_target not in response.url or response.request.method != "POST":
+                            return False
+                        try:
+                            # 获取并解析 POST 载荷 JSON
+                            payload = response.request.post_data_json
+                            if payload and payload.get("keyword") == current_key:
+                                return True
+                        except Exception:
+                            pass
+                        return False
 
-            # 解析并返回 JSON，支持直接提取目标字段
-            json_data = response.json()
-            return json_data
+                    logger.info(f"[业务/查询] 触发搜索，正在进行深度拦截验证 payload keyword == '{search_key}' ...")
 
-        except Exception as e:
-            logger.error(f"[业务/查询] 搜索或拦截过程发生异常: {e}")
+                    # 开启拦截等待，使用严格筛选条件
+                    with page.expect_response(is_target_request, timeout=20000) as response_info:
+                        robust_click(search_btn)
+
+                    # 获取精确拦截到的响应
+                    response = response_info.value
+                    logger.info(f"[业务/查询] ✅ 成功精准拦截请求 | 关键字: <{search_key}> | 状态码: {response.status}")
+
+                    # 提取 JSON 数据并直接剥离多余层级，仅获取 goodsList 列表
+                    json_data = response.json()
+                    goods_list = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data, dict) else []
+
+                    # 直接赋值列表给当前关键字
+                    final_results[search_key] = goods_list
+
+                    # 给页面一个短暂喘息时间，防止请求过快触发风控
+                    page.wait_for_timeout(1500)
+
+                except Exception as inner_e:
+                    error_trace = traceback.format_exc()
+                    logger.error(f"[业务/查询] ❌ 关键字 <{search_key}> 执行或拦截失败，异常详情:\n{error_trace}")
+
+                    # 发生错误时，直接赋值为空列表，保证外部遍历时数据结构的一致性
+                    final_results[search_key] = []
+
+                    # 保存案发现场以便排查
+                    save_forensics(page, f"search_intercept_fail_{search_key}")
+
+                    # 失败后稍作等待再继续
+                    page.wait_for_timeout(2000)
+
+        except Exception as global_e:
+            global_trace = traceback.format_exc()
+            logger.error(f"[业务/查询] 🚨 发生全局致命错误，流程中断:\n{global_trace}")
             if context and context.pages:
-                # 复用基础工具箱：异常时保存当前屏幕快照和DOM，用于案发现场排查
-                save_forensics(context.pages[0], f"search_intercept_fail_{search_key}")
-            return None
+                save_forensics(context.pages[0], "search_intercept_fatal_error")
 
         finally:
             if context:
@@ -249,7 +309,10 @@ def search_goods_and_intercept(search_key: str, user_data_dir: str) -> dict:
                     context.close()
                 except Exception:
                     pass
-            logger.info("[业务/查询] 🚀 浏览器资源已释放，查询任务结束。\n")
+            logger.info(f"[业务/查询] 🚀 浏览器资源已释放，共完成 {len(final_results)} 个关键字查询任务。\n")
+
+    return final_results
+
 
 # ==============================================================================
 #                                   使用示例
@@ -262,7 +325,7 @@ if __name__ == "__main__":
     USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
     # 执行搜索并拦截
-    result = search_goods_and_intercept(search_key="零食", user_data_dir=USER_DATA_DIR)
+    result = search_goods_and_intercept(search_key_list=["可乐", "零食"], user_data_dir=USER_DATA_DIR, debug=True)
 
     if result and result.get("success"):
         goods_list = result["result"]["goodsList"]
