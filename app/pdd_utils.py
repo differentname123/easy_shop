@@ -274,12 +274,138 @@ def verify_and_convert_pdd_goods(client_id, client_secret, pid, original_url, go
     }
 
 
+def search_pdd_goods_by_keyword(client_id, client_secret, pid, search_key, limit_count=0, uid=None):
+    """
+    根据指定关键词搜索多多进宝商品列表，支持数量限制与自动翻页获取。
+
+    :param search_key: 搜索关键词 (对应API的 keyword)
+    :param limit_count: 限制获取的数量。0 表示一直翻页直到没有数据，大于0表示达到该数量即停止。
+    :param uid: 自定义参数，用于转链追踪
+    :return: 包含格式化商品信息的列表，或包含 error 信息的字典
+    """
+    if not search_key:
+        return {"error": "搜索关键词不能为空"}
+
+    custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':')) if uid else None
+
+    all_formatted_goods = []
+    current_page = 1
+    # 官方默认是100，这里我们每次请求100条以最大化单次请求效率，减少API交互次数
+    page_size = 100
+    list_id = None
+
+    while True:
+        business_params = {
+            "keyword": search_key,
+            "pid": pid,
+            "page": current_page,
+            "page_size": page_size,
+            "with_coupon": True  # 默认只查有券商品，可根据实际业务修改为 False
+        }
+
+        if custom_params_str:
+            business_params["custom_parameters"] = custom_params_str
+
+        # 根据官方文档，请求商品分页数>1时，list_id 必填
+        if current_page > 1 and list_id:
+            business_params["list_id"] = list_id
+
+        try:
+            search_res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.search", business_params)
+        except Exception as e:
+            # 如果是第一页报错，直接上抛错误；如果是翻页过程报错，保留已获取的数据并中断
+            if current_page == 1:
+                return {"error": f"关键词搜索崩溃: {str(e)}"}
+            else:
+                logger.warning(f"搜索翻页中断(已获取{len(all_formatted_goods)}条): {str(e)}")
+                break
+
+        resp_data = search_res.get("goods_search_response", {})
+        goods_list = resp_data.get("goods_list", [])
+
+        # 提取并保存第一页返回的 list_id，用于后续翻页锁定上下文
+        if current_page == 1:
+            list_id = resp_data.get("list_id")
+
+        # 若当前页没有数据了，说明已经遍历完所有商品，退出循环
+        if not goods_list:
+            break
+
+        # 数据清洗并加入总集合
+        for goods in goods_list:
+            formatted_item = format_unified_response(goods, source_type="keyword_search")
+            if formatted_item:
+                all_formatted_goods.append(formatted_item)
+
+        # 数量超限检测 (limit_count 为 0 时不限制)
+        if limit_count > 0 and len(all_formatted_goods) >= limit_count:
+            # 切片截取到精确限制的数量
+            all_formatted_goods = all_formatted_goods[:limit_count]
+            break
+
+        current_page += 1
+
+        # 增加微小的睡眠防止翻页过快触发 API 频控 (70031: 调用过于频繁)
+        time.sleep(0.2)
+
+    return {
+        "status": "success",
+        "msg": f"成功搜索到 {len(all_formatted_goods)} 条商品",
+        "data": all_formatted_goods
+    }
+
+
+
 if __name__ == "__main__":
     # 配置信息读取
     pdd_client_id = get_config("pdd_client_id")
     pdd_client_secret = get_config("pdd_client_secret")
     pdd_pid = get_config("pdd_pid")
     pdd_custom_parameters = get_config("pdd_custom_parameters")
+
+    test_keyword = "可乐"
+    test_limit = 5
+    logger.info(f"======== 🚀 开始测试关键词搜索 | 关键词: [{test_keyword}] | 限制获取: [{test_limit}条] ========")
+
+    search_result = search_pdd_goods_by_keyword(
+        client_id=pdd_client_id,
+        client_secret=pdd_client_secret,
+        pid=pdd_pid,
+        search_key=test_keyword,
+        limit_count=test_limit,
+        uid=pdd_custom_parameters
+    )
+
+    if "error" in search_result:
+        logger.error(f"❌ 搜索测试失败: {search_result['error']}")
+    else:
+        goods_list = search_result.get("data", [])
+        logger.info(f"✅ 搜索测试成功: 共获取到 {len(goods_list)} 条有效商品。详情如下：")
+
+        for idx, item in enumerate(goods_list, start=1):
+            # 获取统一清洗后的关键字段
+            goods_name = item.get("goods_name", "未知商品")
+            price_yuan = item.get("min_group_price", 0) / 100.0  # 拼多多价格单位是分，转为元
+            commission_yuan = item.get("estimated_commission", 0) / 100.0  # 佣金单位是分，转为元
+            sales_tip = item.get("sales_tip", "0")
+            has_coupon = "是" if item.get("has_coupon") else "否"
+            coupon_amount = item.get("coupon_discount", 0) / 100.0
+
+            # 为了控制台输出整洁，商品名称截断到最长25个字符
+            display_name = goods_name if len(goods_name) <= 25 else goods_name[:25] + "..."
+
+            logger.info(
+                f"  [{idx:02d}] {display_name} \n"
+                f"       ├─ 拼团价: {price_yuan:.2f}元 | 预估佣金: {commission_yuan:.2f}元\n"
+                f"       └─ 销量: {sales_tip} | 有券: {has_coupon} (券面额: {coupon_amount:.2f}元)"
+            )
+
+    logger.info("================ 搜索测试结束 ================")
+
+
+
+
+
 
     original_target_url = "https://mobile.pinduoduo.com/goods.html?goods_id=627575562243"
 
