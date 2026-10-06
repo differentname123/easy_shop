@@ -272,7 +272,6 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug:
 
                     # 获取精确拦截到的响应
                     response = response_info.value
-                    logger.info(f"[业务/查询] ✅ 成功精准拦截请求 | 关键字: <{search_key}> | 状态码: {response.status}")
 
                     # 提取 JSON 数据并直接剥离多余层级，仅获取 goodsList 列表
                     json_data = response.json()
@@ -280,6 +279,7 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug:
 
                     # 直接赋值列表给当前关键字
                     final_results[search_key] = goods_list
+                    logger.info(f"[业务/查询] ✅ 成功精准拦截请求 | 关键字: <{search_key}> | 状态码: {response.status} 商品数量: {len(goods_list)} 进度: {len(final_results)}/{len(search_key_list)}")
 
                     # 给页面一个短暂喘息时间，防止请求过快触发风控
                     page.wait_for_timeout(1500)
