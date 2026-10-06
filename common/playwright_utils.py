@@ -10,10 +10,10 @@ import shutil
 import time
 import json
 import logging
+import traceback
 from playwright.sync_api import sync_playwright
 
 USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
-
 
 # 初始化基础日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] %(message)s')
@@ -183,13 +183,6 @@ def save_forensics(page, tag: str, save_dir: str = "forensics_logs", extra_info:
     return base_path
 
 
-import traceback  # 需要在文件顶部导入此模块，用于详尽打印错误栈
-
-import traceback
-
-import traceback
-
-
 def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_count: int = 500,
                                debug: bool = False) -> dict:
     """
@@ -200,7 +193,7 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
     :param user_data_dir: 浏览器本地持久化缓存目录
     :param limit_count: 单个关键词需要的最小商品数量。0表示一直拉取直到最后一页。
     :param debug: 调试模式。True则显示浏览器界面，False则静默后台运行
-    :return: 包含所有查询结果的字典。
+    :return: 包含所有查询结果的字典，格式如 {"关键字": {"goodsList": [...], "excelUrl": "..."}}
     """
     target_url = "https://jinbao.pinduoduo.com/promotion/single-promotion"
     api_target = "/network/api/common/goodsList"
@@ -238,6 +231,56 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
             logger.info(f"[业务/查询] 正在加载基础页面: {target_url}")
             page.goto(target_url, wait_until="domcontentloaded")
 
+            # ================= 辅助内部函数：高内聚处理页面UI操作 =================
+            def do_batch_select_all():
+                """尝试点击[本页全选]复选框"""
+                try:
+                    # 避免类名混淆，依靠父容器的语义化 class 和子元素 label 来安全定位
+                    select_all_label = page.locator('.single-promotion-batch-part label').first
+                    if select_all_label.is_visible():
+                        robust_click(select_all_label)
+                        page.wait_for_timeout(300)  # 给前端Vue响应状态的时间
+                except Exception as e:
+                    logger.warning(f"[业务/勾选] '本页全选' 操作未能成功: {e}")
+
+            def do_export_and_intercept_url() -> str:
+                """尝试点击[导出Excel]、处理弹窗并拦截接口获取真实下载链接"""
+                extracted_url = ""
+                try:
+                    export_btn = page.locator('.single-promotion-batch-part button:has-text("导出Excel")').first
+                    if not export_btn.is_visible():
+                        logger.warning("[业务/导出] 未发现 '导出Excel' 按钮，可能是未成功勾选任何商品。")
+                        return ""
+
+                    robust_click(export_btn)
+
+                    # 定位并等待弹窗中的“确定”按钮出现 (依据 data-testid 定位弹窗容器，规避动态哈希class)
+                    modal_confirm_btn = page.locator(
+                        'div[data-testid="beast-core-modal-inner"] button:has-text("确定")').first
+                    modal_confirm_btn.wait_for(state="visible", timeout=3000)
+
+                    # 定义目标拦截请求
+                    def is_excel_request(response):
+                        return "/network/api/promotion/generateExcelBygoodsIdList" in response.url and response.request.method == "POST"
+
+                    logger.info("[业务/导出] 已触发导出确认，等待服务器生成 Excel...")
+                    with page.expect_response(is_excel_request, timeout=20000) as response_info:
+                        robust_click(modal_confirm_btn)
+
+                    res_json = response_info.value.json()
+                    if res_json.get("success"):
+                        extracted_url = res_json.get("result", {}).get("excelUrl", "")
+                        logger.info(f"[业务/导出] ✅ 成功获取 Excel 下载链接: {extracted_url}")
+                    else:
+                        logger.error(f"[业务/导出] ❌ 服务端返回失败信息: {res_json.get('errorMsg')}")
+
+                except Exception as e:
+                    logger.error(f"[业务/导出] ❌ 执行导出 Excel 过程发生异常: {e}")
+
+                return extracted_url
+
+            # ====================================================================
+
             # 定位输入框与搜索按钮
             search_input = page.locator('.search-bar-input input[placeholder="请输入商品名称或短链"]')
             search_btn = page.locator('.search-bar-btn', has_text="搜索")
@@ -258,13 +301,12 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                     search_input.fill(search_key)
                     logger.info(f"[业务/查询] 已填入: {search_key}")
 
-                    # 定义严格的请求匹配规则：必须是目标API + POST请求 + 请求体中的 keyword 等于当前查询词
+                    # 定义严格的请求匹配规则
                     def is_target_request(response):
                         if api_target not in response.url or response.request.method != "POST":
                             return False
                         try:
                             payload = response.request.post_data_json
-                            # 此处利用闭包捕获外部的 search_key
                             if payload and payload.get("keyword") == search_key:
                                 return True
                         except Exception:
@@ -286,7 +328,14 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 
                     logger.info(
                         f"[业务/查询] 首屏获取完成 | 新增数量: {len(current_goods)} | 累计数量: {len(all_goods_for_current_key)}")
-                    page.wait_for_timeout(1500)
+                    page.wait_for_timeout(1000)
+
+                    # --- 【新增流程】首屏开启“批量管理”并全选当前页 ---
+                    batch_manage_btn = page.locator('button:has-text("批量管理")').first
+                    if batch_manage_btn.is_visible():
+                        robust_click(batch_manage_btn)
+                        page.wait_for_timeout(500)  # 等待UI变为复选框形态
+                    do_batch_select_all()
 
                     # ========== 自动翻页逻辑 ==========
                     page_num = 1
@@ -331,25 +380,32 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                             logger.info(
                                 f"[业务/查询] 第 {page_num} 页获取完成 | 新增数量: {len(current_goods)} | 累计数量: {len(all_goods_for_current_key)}")
 
+                            # --- 【新增流程】新的一页加载完毕后，继续点击全选 ---
+                            page.wait_for_timeout(500)
+                            do_batch_select_all()
+
                             # 翻页防风控缓冲
-                            page.wait_for_timeout(1500)
+                            page.wait_for_timeout(1000)
 
                         except Exception as e:
                             logger.warning(f"[业务/查询] 翻页过程中发生超时或异常，停止当前关键词翻页。异常信息: {e}")
 
-                            # 【核心修改点 1】：翻页时检测是否命中风控弹窗
+                            # 翻页时检测是否命中风控弹窗
                             try:
                                 if page.locator('text="安全验证"').first.is_visible() or page.locator(
                                         'text="完成拼多多官方验证"').first.is_visible():
                                     logger.error(
                                         f"[业务/拦截] 🚨 翻页触发安全验证风控！提前终止全局爬取，直接返回现有数据。")
+                                    # 此时遇到风控，可能无法进行UI导出操作，直接返回已有数据。
                                     if limit_count > 0:
                                         all_goods_for_current_key = all_goods_for_current_key[:limit_count]
-                                    final_results[search_key] = all_goods_for_current_key
+                                    final_results[search_key] = {
+                                        "goodsList": all_goods_for_current_key,
+                                        "excelUrl": ""
+                                    }
                                     return final_results
                             except Exception:
                                 pass
-
                             break
                     # ==================================
 
@@ -357,7 +413,16 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                     if limit_count > 0:
                         all_goods_for_current_key = all_goods_for_current_key[:limit_count]
 
-                    final_results[search_key] = all_goods_for_current_key
+                    # --- 【新增流程】无论是因为满额还是翻到底，都在收尾阶段触发 Excel 导出 ---
+                    logger.info(f"[业务/收尾] 正在为关键词 <{search_key}> 导出所选商品的 Excel...")
+                    current_excel_url = do_export_and_intercept_url()
+
+                    # 组装混合数据返回结构
+                    final_results[search_key] = {
+                        "goodsList": all_goods_for_current_key,
+                        "excelUrl": current_excel_url
+                    }
+
                     logger.info(
                         f"[业务/查询] ✅ 关键字 <{search_key}> 处理完毕 | 最终采收数量: {len(all_goods_for_current_key)} | 总体进度: {len(final_results)}/{len(search_key_list)}")
 
@@ -367,11 +432,11 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 
                     # 发生错误时，尽量保留已爬取的数据
                     if search_key not in final_results:
-                        final_results[search_key] = []
+                        final_results[search_key] = {"goodsList": [], "excelUrl": ""}
 
                     save_forensics(page, f"search_intercept_fail_{search_key}")
 
-                    # 【核心修改点 2】：首次搜索时检测是否命中风控弹窗
+                    # 首次搜索时检测是否命中风控弹窗
                     try:
                         if page.locator('text="安全验证"').first.is_visible() or page.locator(
                                 'text="完成拼多多官方验证"').first.is_visible():
@@ -398,39 +463,34 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 
     return final_results
 
+
 # ==============================================================================
 #                                   使用示例
 # ==============================================================================
 if __name__ == "__main__":
     # 配置测试环境目录与目标网址
-    TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
-
     USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
     # 执行搜索并拦截
-    result = search_goods_and_intercept(search_key_list=["方便面"], user_data_dir=USER_DATA_DIR, debug=True, limit_count=1000)
+    result = search_goods_and_intercept(search_key_list=["方便面"], user_data_dir=USER_DATA_DIR, debug=True,
+                                        limit_count=100)
 
-    # 提取 不重复的goodsId 列表
-    for key, goods in result.items():
+    # 提取并解析数据（注意适应新的数据结构）
+    for key, data_dict in result.items():
+        goods = data_dict.get("goodsList", [])
+        excel_url = data_dict.get("excelUrl", "")
+
         unique_goods_ids = {item["goodsId"] for item in goods if "goodsId" in item}
-        # 找到 'goodsId' 为 965181129595 的商品
         target_goods = next((item for item in goods if item.get("goodsId") == 965181129595), None)
 
         print(f"关键字: {key} | 不重复商品ID数量: {len(unique_goods_ids)}")
+        if excel_url:
+            print(f"🔥 获取到导出的 Excel 表格直链: {excel_url}")
+        else:
+            print("⚠️ 未能获取到 Excel 链接。")
 
-    if result and result.get("success"):
-        goods_list = result["result"]["goodsList"]
-        print(f"成功获取到 {len(goods_list)} 条商品数据！")
-
-
-    # # 场景一：初始化/更新环境凭证
-    # login_and_save_session(
-    #     user_data_dir=TEST_USER_DATA_DIR,
-    #     login_url=TEST_URL
-    # )
-
-    # 场景二：携带环境自由操作
+    # 场景二：携带环境自由操作 (按需打开)
     open_browser_for_manual_use(
         user_data_dir=USER_DATA_DIR,
         home_url=TEST_URL
