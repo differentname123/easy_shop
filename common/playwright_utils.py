@@ -194,7 +194,7 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                                debug: bool = False) -> dict:
     """
     [业务/查询] 访问多多进宝单品推广页，支持同一窗口下连续查询多个关键字，并精准拦截底层的 goodsList 数据。
-    支持自动翻页直到满足指定数量或到达最后一页。
+    支持自动翻页直到满足指定数量或到达最后一页。如遇风控安全验证拦截，则立即终止并返回已抓取数据。
 
     :param search_key_list: 搜索关键字列表 (例如: ["可乐", "雪碧"])
     :param user_data_dir: 浏览器本地持久化缓存目录
@@ -336,6 +336,20 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 
                         except Exception as e:
                             logger.warning(f"[业务/查询] 翻页过程中发生超时或异常，停止当前关键词翻页。异常信息: {e}")
+
+                            # 【核心修改点 1】：翻页时检测是否命中风控弹窗
+                            try:
+                                if page.locator('text="安全验证"').first.is_visible() or page.locator(
+                                        'text="完成拼多多官方验证"').first.is_visible():
+                                    logger.error(
+                                        f"[业务/拦截] 🚨 翻页触发安全验证风控！提前终止全局爬取，直接返回现有数据。")
+                                    if limit_count > 0:
+                                        all_goods_for_current_key = all_goods_for_current_key[:limit_count]
+                                    final_results[search_key] = all_goods_for_current_key
+                                    return final_results
+                            except Exception:
+                                pass
+
                             break
                     # ==================================
 
@@ -356,6 +370,16 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                         final_results[search_key] = []
 
                     save_forensics(page, f"search_intercept_fail_{search_key}")
+
+                    # 【核心修改点 2】：首次搜索时检测是否命中风控弹窗
+                    try:
+                        if page.locator('text="安全验证"').first.is_visible() or page.locator(
+                                'text="完成拼多多官方验证"').first.is_visible():
+                            logger.error(f"[业务/拦截] 🚨 搜索首屏即触发安全验证风控！放弃后续关键字，直接返回当前数据。")
+                            return final_results
+                    except Exception:
+                        pass
+
                     page.wait_for_timeout(2000)
 
         except Exception as global_e:
