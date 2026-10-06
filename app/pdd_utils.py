@@ -287,11 +287,7 @@ def verify_and_convert_pdd_goods(client_id, client_secret, pid, original_url, go
 def search_pdd_goods_by_keyword(client_id, client_secret, pid, search_key, limit_count=0, uid=None):
     """
     根据指定关键词搜索多多进宝商品列表，支持数量限制与自动翻页获取。
-
-    :param search_key: 搜索关键词 (对应API的 keyword)
-    :param limit_count: 限制获取的数量。0 表示一直翻页直到没有数据，大于0表示达到该数量即停止。
-    :param uid: 自定义参数，用于转链追踪
-    :return: 包含格式化商品信息的列表，或包含 error 信息的字典
+    [优化]: 加入全链路容错机制，只要已获取到数据，遇错不抛弃。
     """
     if not search_key:
         return {"error": "搜索关键词不能为空"}
@@ -300,70 +296,150 @@ def search_pdd_goods_by_keyword(client_id, client_secret, pid, search_key, limit
 
     all_formatted_goods = []
     current_page = 1
-    # 官方默认是100，这里我们每次请求100条以最大化单次请求效率，减少API交互次数
     page_size = 100
     list_id = None
 
     while True:
-        business_params = {
-            "keyword": search_key,
-            "pid": pid,
-            "page": current_page,
-            "page_size": page_size,
-            "with_coupon": True  # 默认只查有券商品，可根据实际业务修改为 False
-        }
-
-        if custom_params_str:
-            business_params["custom_parameters"] = custom_params_str
-
-        # 根据官方文档，请求商品分页数>1时，list_id 必填
-        if current_page > 1 and list_id:
-            business_params["list_id"] = list_id
-
         try:
+            business_params = {
+                "keyword": search_key,
+                "pid": pid,
+                "page": current_page,
+                "page_size": page_size,
+                "with_coupon": True  # 默认只查有券商品，可根据实际业务修改为 False
+            }
+
+            if custom_params_str:
+                business_params["custom_parameters"] = custom_params_str
+
+            # 根据官方文档，请求商品分页数>1时，list_id 必填
+            if current_page > 1 and list_id:
+                business_params["list_id"] = list_id
+
+            # 请求接口
             search_res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.search", business_params)
-        except Exception as e:
-            # 如果是第一页报错，直接上抛错误；如果是翻页过程报错，保留已获取的数据并中断
+
+            resp_data = search_res.get("goods_search_response", {})
+            goods_list = resp_data.get("goods_list", [])
+
+            # 提取并保存第一页返回的 list_id，用于后续翻页锁定上下文
             if current_page == 1:
-                return {"error": f"关键词搜索崩溃: {str(e)}"}
-            else:
-                logger.warning(f"搜索翻页中断(已获取{len(all_formatted_goods)}条): {str(e)}")
+                list_id = resp_data.get("list_id")
+
+            # 若当前页没有数据了，说明已经遍历完所有商品，退出循环
+            if not goods_list:
                 break
 
-        resp_data = search_res.get("goods_search_response", {})
-        goods_list = resp_data.get("goods_list", [])
+            # 数据清洗并加入总集合
+            for goods in goods_list:
+                formatted_item = format_unified_response(goods, source_type="keyword_search")
+                if formatted_item:
+                    all_formatted_goods.append(formatted_item)
 
-        # 提取并保存第一页返回的 list_id，用于后续翻页锁定上下文
-        if current_page == 1:
-            list_id = resp_data.get("list_id")
+            # 数量超限检测 (limit_count 为 0 时不限制)
+            if limit_count > 0 and len(all_formatted_goods) >= limit_count:
+                # 切片截取到精确限制的数量
+                all_formatted_goods = all_formatted_goods[:limit_count]
+                break
 
-        # 若当前页没有数据了，说明已经遍历完所有商品，退出循环
-        if not goods_list:
-            break
+            current_page += 1
 
-        # 数据清洗并加入总集合
-        for goods in goods_list:
-            formatted_item = format_unified_response(goods, source_type="keyword_search")
-            if formatted_item:
-                all_formatted_goods.append(formatted_item)
+            # 增加微小的睡眠防止翻页过快触发 API 频控 (70031: 调用过于频繁)
+            time.sleep(0.2)
 
-        # 数量超限检测 (limit_count 为 0 时不限制)
-        if limit_count > 0 and len(all_formatted_goods) >= limit_count:
-            # 切片截取到精确限制的数量
-            all_formatted_goods = all_formatted_goods[:limit_count]
-            break
-
-        current_page += 1
-
-        # 增加微小的睡眠防止翻页过快触发 API 频控 (70031: 调用过于频繁)
-        time.sleep(0.2)
+        except Exception as e:
+            # 捕获整个循环体内的异常（不仅是网络，还包括JSON解析、清洗过程的意外崩溃）
+            if len(all_formatted_goods) > 0:
+                logger.warning(
+                    f"搜索过程异常中断，但已成功获取 {len(all_formatted_goods)} 条数据，执行容错返回。异常: {str(e)}")
+                break  # 手里有数据，强行终止循环，向下走正常返回流程
+            else:
+                # 如果一条数据都没拿到就崩了，只能返回错误
+                return {"error": f"关键词搜索崩溃(无可用数据返回): {str(e)}"}
 
     return {
         "status": "success",
-        "msg": f"成功搜索到 {len(all_formatted_goods)} 条商品",
+        "msg": f"搜索执行完毕，共获取到 {len(all_formatted_goods)} 条商品",
         "data": all_formatted_goods
     }
 
+
+def get_pdd_recommend_goods(client_id, client_secret, pid=None, channel_type=5, limit_count=0,
+                            cat_id=None, goods_sign_list=None, activity_tags=None, goods_img_type=None, uid=None):
+    """
+    自动翻页获取多多进宝商品推荐列表 (API: pdd.ddk.goods.recommend.get)
+    [优化]: 加入全链路容错机制，防止由于单页异常导致前功尽弃。
+    """
+    custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':')) if uid else None
+
+    all_formatted_goods = []
+    current_offset = 0
+    # 推荐接口单次请求的数据量。适度拉大可以减少网络交互次数
+    batch_limit = 50
+    list_id = None
+
+    while True:
+        try:
+            business_params = {
+                "channel_type": channel_type,
+                "limit": batch_limit,
+                "offset": current_offset,
+                "cat_id": cat_id,
+                "goods_sign_list": goods_sign_list,
+                "activity_tags": activity_tags,
+                "goods_img_type": goods_img_type,
+                "custom_parameters": custom_params_str
+            }
+            if pid:
+                business_params["pid"] = pid
+
+            # 翻页时带上前一页返回的 list_id 以保证上下文不重复
+            if current_offset > 0 and list_id:
+                business_params["list_id"] = list_id
+
+            # 请求接口
+            res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.recommend.get", business_params)
+
+            resp_data = res.get("goods_basic_detail_response", {})
+            goods_list = resp_data.get("list", [])
+
+            # 提取并保存第一页返回的 list_id
+            if current_offset == 0:
+                list_id = resp_data.get("list_id")
+
+            # 数据拉空，跳出循环
+            if not goods_list:
+                break
+
+            # 清洗数据
+            for goods in goods_list:
+                formatted_item = format_unified_response(goods, source_type=f"recommend_api_ch{channel_type}")
+                if formatted_item:
+                    all_formatted_goods.append(formatted_item)
+
+            # 数量超限检测
+            if limit_count > 0 and len(all_formatted_goods) >= limit_count:
+                all_formatted_goods = all_formatted_goods[:limit_count]
+                break
+
+            # 累加偏移量，准备拉取下一页
+            current_offset += batch_limit
+            time.sleep(0.2)  # 防封控短时休眠
+
+        except Exception as e:
+            # 同样扩大容错范围，覆盖从调接口到处理数据的完整逻辑
+            if len(all_formatted_goods) > 0:
+                logger.warning(
+                    f"商品推荐获取异常中断，将保留已获取的 {len(all_formatted_goods)} 条数据返回。异常: {str(e)}")
+                break  # 手里有数据，强行终止循环，返回成功状态
+            else:
+                return {"error": f"商品推荐接口调用崩溃(无可用数据返回): {str(e)}"}
+
+    return {
+        "status": "success",
+        "msg": f"推荐商品获取完毕，共获取 {len(all_formatted_goods)} 条商品",
+        "data": all_formatted_goods
+    }
 
 def generate_pdd_authority_url(client_id, client_secret, pid, uid=None):
     """
@@ -391,84 +467,6 @@ def generate_pdd_authority_url(client_id, client_secret, pid, uid=None):
     except Exception as e:
         return {"status": "error", "error_msg": f"生成备案链接失败: {str(e)}"}
 
-
-def get_pdd_recommend_goods(client_id, client_secret , pid=None, channel_type=5, limit_count=0,
-                            cat_id=None, goods_sign_list=None, activity_tags=None, goods_img_type=None, uid=None):
-    """
-    自动翻页获取多多进宝商品推荐列表 (API: pdd.ddk.goods.recommend.get)
-
-    :param limit_count: 限制获取的数量。0 表示一直翻页直到没有数据，大于0表示达到该数量即停止。
-    :param channel_type: 进宝频道推广商品: 1-今日销量榜, 3-相似推荐, 4-猜你喜欢, 5-实时热销榜(默认), 6-实时收益榜
-    :param cat_id: 猜你喜欢场景的商品类目ID
-    :param goods_sign_list: 商品goodsSign列表，相似商品推荐场景(channel_type=3)时必传
-    :param activity_tags: 活动商品标记数组，例：[4,7] (4-秒杀，7-百亿补贴)
-    :return: 包含统一格式化后商品列表的字典
-    """
-    custom_params_str = json.dumps({"uid": str(uid)}, separators=(',', ':')) if uid else None
-
-    all_formatted_goods = []
-    current_offset = 0
-    # 推荐接口单次请求的数据量。适度拉大可以减少网络交互次数
-    batch_limit = 50
-    list_id = None
-
-    while True:
-        business_params = {
-            "channel_type": channel_type,
-            "limit": batch_limit,
-            "offset": current_offset,
-            "cat_id": cat_id,
-            "goods_sign_list": goods_sign_list,
-            "activity_tags": activity_tags,
-            "goods_img_type": goods_img_type,
-            "custom_parameters": custom_params_str
-        }
-        if pid:
-            business_params["pid"] = pid
-        # 翻页时带上前一页返回的 list_id 以保证上下文不重复
-        if current_offset > 0 and list_id:
-            business_params["list_id"] = list_id
-
-        try:
-            res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.recommend.get", business_params)
-        except Exception as e:
-            if current_offset == 0:
-                return {"error": f"商品推荐接口调用崩溃: {str(e)}"}
-            else:
-                logger.warning(f"推荐翻页中断(已获取{len(all_formatted_goods)}条): {str(e)}")
-                break
-
-        resp_data = res.get("goods_basic_detail_response", {})
-        goods_list = resp_data.get("list", [])
-
-        # 提取并保存第一页返回的 list_id
-        if current_offset == 0:
-            list_id = resp_data.get("list_id")
-
-        # 数据拉空，跳出循环
-        if not goods_list:
-            break
-
-        # 清洗数据
-        for goods in goods_list:
-            formatted_item = format_unified_response(goods, source_type=f"recommend_api_ch{channel_type}")
-            if formatted_item:
-                all_formatted_goods.append(formatted_item)
-
-        # 数量超限检测
-        if limit_count > 0 and len(all_formatted_goods) >= limit_count:
-            all_formatted_goods = all_formatted_goods[:limit_count]
-            break
-
-        # 累加偏移量，准备拉取下一页
-        current_offset += batch_limit
-        time.sleep(0.2)  # 防封控短时休眠
-
-    return {
-        "status": "success",
-        "msg": f"成功获取 {len(all_formatted_goods)} 条推荐商品",
-        "data": all_formatted_goods
-    }
 
 
 if __name__ == "__main__":
