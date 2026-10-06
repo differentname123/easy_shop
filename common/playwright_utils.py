@@ -190,20 +190,23 @@ import traceback
 import traceback
 
 
-def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug: bool = False) -> dict:
+def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_count: int = 1000,
+                               debug: bool = False) -> dict:
     """
     [业务/查询] 访问多多进宝单品推广页，支持同一窗口下连续查询多个关键字，并精准拦截底层的 goodsList 数据。
+    支持自动翻页直到满足指定数量或到达最后一页。
 
     :param search_key_list: 搜索关键字列表 (例如: ["可乐", "雪碧"])
     :param user_data_dir: 浏览器本地持久化缓存目录
+    :param limit_count: 单个关键词需要的最小商品数量。0表示一直拉取直到最后一页。
     :param debug: 调试模式。True则显示浏览器界面，False则静默后台运行
-    :return: 包含所有查询结果的字典，直接返回商品列表。格式如: { "可乐": [{商品1}, {商品2}], "雪碧": [] }
+    :return: 包含所有查询结果的字典。
     """
     target_url = "https://jinbao.pinduoduo.com/promotion/single-promotion"
     api_target = "/network/api/common/goodsList"
 
     logger.info(
-        f"\n{'=' * 60}\n[业务/查询] 开始批量搜索并精准拦截 | 关键字数: {len(search_key_list)} | 调试模式: {debug}\n{'=' * 60}")
+        f"\n{'=' * 60}\n[业务/查询] 开始批量搜索 | 关键字数: {len(search_key_list)} | 目标数量: {'不限' if limit_count == 0 else limit_count} | 调试模式: {debug}\n{'=' * 60}")
 
     final_results = {}
 
@@ -238,6 +241,8 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug:
             # 定位输入框与搜索按钮
             search_input = page.locator('.search-bar-input input[placeholder="请输入商品名称或短链"]')
             search_btn = page.locator('.search-bar-btn', has_text="搜索")
+            # 定位下一页按钮
+            next_btn_locator = page.locator('li[data-testid="beast-core-pagination-next"]')
 
             # 等待输入框出现，确保页面加载完成
             search_input.wait_for(state="visible", timeout=20000)
@@ -246,55 +251,111 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug:
             for search_key in search_key_list:
                 logger.info(f"--- 开始处理关键字: <{search_key}> ---")
                 try:
+                    all_goods_for_current_key = []
+
                     # 每次搜索前确保输入框清空并填入新词
                     search_input.clear()
                     search_input.fill(search_key)
                     logger.info(f"[业务/查询] 已填入: {search_key}")
 
                     # 定义严格的请求匹配规则：必须是目标API + POST请求 + 请求体中的 keyword 等于当前查询词
-                    def is_target_request(response, current_key=search_key):
+                    def is_target_request(response):
                         if api_target not in response.url or response.request.method != "POST":
                             return False
                         try:
-                            # 获取并解析 POST 载荷 JSON
                             payload = response.request.post_data_json
-                            if payload and payload.get("keyword") == current_key:
+                            # 此处利用闭包捕获外部的 search_key
+                            if payload and payload.get("keyword") == search_key:
                                 return True
                         except Exception:
                             pass
                         return False
 
-                    logger.info(f"[业务/查询] 触发搜索，正在进行深度拦截验证 payload keyword == '{search_key}' ...")
+                    logger.info(f"[业务/查询] 触发首屏搜索，正在进行深度拦截验证...")
 
-                    # 开启拦截等待，使用严格筛选条件
+                    # 开启拦截等待首屏数据
                     with page.expect_response(is_target_request, timeout=20000) as response_info:
                         robust_click(search_btn)
 
-                    # 获取精确拦截到的响应
+                    # 提取 JSON 数据获取首屏商品
                     response = response_info.value
-
-                    # 提取 JSON 数据并直接剥离多余层级，仅获取 goodsList 列表
                     json_data = response.json()
-                    goods_list = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data, dict) else []
+                    current_goods = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data,
+                                                                                                   dict) else []
+                    all_goods_for_current_key.extend(current_goods)
 
-                    # 直接赋值列表给当前关键字
-                    final_results[search_key] = goods_list
-                    logger.info(f"[业务/查询] ✅ 成功精准拦截请求 | 关键字: <{search_key}> | 状态码: {response.status} 商品数量: {len(goods_list)} 进度: {len(final_results)}/{len(search_key_list)}")
-
-                    # 给页面一个短暂喘息时间，防止请求过快触发风控
+                    logger.info(
+                        f"[业务/查询] 首屏获取完成 | 新增数量: {len(current_goods)} | 累计数量: {len(all_goods_for_current_key)}")
                     page.wait_for_timeout(1500)
+
+                    # ========== 自动翻页逻辑 ==========
+                    page_num = 1
+                    while True:
+                        # 退出条件 1: 达到指定数量 (且不为0)
+                        if limit_count > 0 and len(all_goods_for_current_key) >= limit_count:
+                            logger.info(f"[业务/查询] 已满足目标数量限制 ({limit_count})，停止翻页。")
+                            break
+
+                        # 将页面滚动到底部，确保分页组件进入视图并加载完毕
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(500)
+
+                        if not next_btn_locator.is_visible():
+                            logger.info("[业务/查询] 未在页面上找到下一页按钮，可能数据仅有一页，停止翻页。")
+                            break
+
+                        # 退出条件 2: 下一页按钮存在 "PGT_disabled" 样式（最后一页）
+                        btn_class = next_btn_locator.get_attribute("class") or ""
+                        if "PGT_disabled" in btn_class:
+                            logger.info("[业务/查询] 下一页按钮已置灰（到达最后一页），停止翻页。")
+                            break
+
+                        page_num += 1
+                        logger.info(f"[业务/查询] 正在翻页，请求第 {page_num} 页数据...")
+
+                        try:
+                            # 点击下一页并拦截请求
+                            with page.expect_response(is_target_request, timeout=20000) as response_info:
+                                robust_click(next_btn_locator)
+
+                            response = response_info.value
+                            json_data = response.json()
+                            current_goods = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data,
+                                                                                                           dict) else []
+
+                            if not current_goods:
+                                logger.info("[业务/查询] 本页返回商品为空，停止翻页。")
+                                break
+
+                            all_goods_for_current_key.extend(current_goods)
+                            logger.info(
+                                f"[业务/查询] 第 {page_num} 页获取完成 | 新增数量: {len(current_goods)} | 累计数量: {len(all_goods_for_current_key)}")
+
+                            # 翻页防风控缓冲
+                            page.wait_for_timeout(1500)
+
+                        except Exception as e:
+                            logger.warning(f"[业务/查询] 翻页过程中发生超时或异常，停止当前关键词翻页。异常信息: {e}")
+                            break
+                    # ==================================
+
+                    # 最终处理：如果设定了 limit_count，截断多余的数据
+                    if limit_count > 0:
+                        all_goods_for_current_key = all_goods_for_current_key[:limit_count]
+
+                    final_results[search_key] = all_goods_for_current_key
+                    logger.info(
+                        f"[业务/查询] ✅ 关键字 <{search_key}> 处理完毕 | 最终采收数量: {len(all_goods_for_current_key)} | 总体进度: {len(final_results)}/{len(search_key_list)}")
 
                 except Exception as inner_e:
                     error_trace = traceback.format_exc()
                     logger.error(f"[业务/查询] ❌ 关键字 <{search_key}> 执行或拦截失败，异常详情:\n{error_trace}")
 
-                    # 发生错误时，直接赋值为空列表，保证外部遍历时数据结构的一致性
-                    final_results[search_key] = []
+                    # 发生错误时，尽量保留已爬取的数据
+                    if search_key not in final_results:
+                        final_results[search_key] = []
 
-                    # 保存案发现场以便排查
                     save_forensics(page, f"search_intercept_fail_{search_key}")
-
-                    # 失败后稍作等待再继续
                     page.wait_for_timeout(2000)
 
         except Exception as global_e:
@@ -313,7 +374,6 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, debug:
 
     return final_results
 
-
 # ==============================================================================
 #                                   使用示例
 # ==============================================================================
@@ -325,7 +385,12 @@ if __name__ == "__main__":
     USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
     # 执行搜索并拦截
-    result = search_goods_and_intercept(search_key_list=["可乐", "零食"], user_data_dir=USER_DATA_DIR, debug=True)
+    result = search_goods_and_intercept(search_key_list=["可乐", "零食"], user_data_dir=USER_DATA_DIR, debug=True, limit_count=200)
+
+    # 提取 不重复的goodsId 列表
+    for key, goods in result.items():
+        unique_goods_ids = {item["goodsId"] for item in goods if "goodsId" in item}
+        print(f"关键字: {key} | 不重复商品ID数量: {len(unique_goods_ids)}")
 
     if result and result.get("success"):
         goods_list = result["result"]["goodsList"]
