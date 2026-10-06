@@ -228,9 +228,9 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
 def api_search_task():
     """后台任务：通过 API 搜索指定关键词商品并入库，每轮等待 24 小时"""
     keywords = ["可乐", "零食", "牛奶"]
-    pdd_client_id = get_config("nana_pdd_client_id")
-    pdd_client_secret = get_config("nana_pdd_client_secret")
-    pdd_pid = get_config("nana_pdd_pid")
+    pdd_client_id = get_config("myself_pdd_client_id")
+    pdd_client_secret = get_config("myself_pdd_client_secret")
+    pdd_pid = get_config("myself_pdd_pid")
 
     while True:
         logger.info("[API任务/轮次开始] 开始执行 API 数据拉取...")
@@ -744,9 +744,9 @@ def api_recommend_task():
     """
     from app.pdd_utils import get_pdd_recommend_goods  # 确保导入你的函数
 
-    pdd_client_id = get_config("nana_pdd_client_id")
-    pdd_client_secret = get_config("nana_pdd_client_secret")
-    pdd_pid = get_config("nana_pdd_pid")
+    pdd_client_id = get_config("myself_pdd_client_id")
+    pdd_client_secret = get_config("myself_pdd_client_secret")
+    pdd_pid = get_config("myself_pdd_pid")
 
 
     # 定义要遍历的频道 (1:今日热销, 5:实时热销, 6:实时收益, 4:猜你喜欢)

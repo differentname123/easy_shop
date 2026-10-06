@@ -473,9 +473,9 @@ def get_pdd_recommend_goods(client_id, client_secret , pid=None, channel_type=5,
 
 if __name__ == "__main__":
     # 配置信息读取
-    pdd_client_id = get_config("nana_pdd_client_id")
-    pdd_client_secret = get_config("nana_pdd_client_secret")
-    pdd_pid = get_config("nana_pdd_pid")
+    pdd_client_id = get_config("myself_pdd_client_id")
+    pdd_client_secret = get_config("myself_pdd_client_secret")
+    pdd_pid = get_config("myself_pdd_pid")
 
     # ==================================================================================================
     # 🚀 商品推荐 API 测试
