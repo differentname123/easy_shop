@@ -257,6 +257,22 @@
                     </div>
                 </div>
 
+                <!-- 新增：来源筛选 -->
+                <div class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeSourceFilter"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">来源 (全部)</option>
+                        <option v-for="source in availableSources" :key="source" :value="source">{{ source }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
                 <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
                     <select
                             v-model="activeFilters[filter.attribute_name]"
@@ -621,6 +637,15 @@
             })
             const activeUnitFilter = ref('')
             const activeCommissionFilter = ref('yes') // 新增佣金筛选状态
+
+            // --- 新增：来源筛选状态 ---
+            const availableSources = computed(() => {
+                const sources = products.value.map(p => p._source_api).filter(Boolean)
+                return [...new Set(sources)]
+            })
+            const activeSourceFilter = ref('')
+            // ------------------------
+
             const availableFilters = ref([])
             const activeFilters = ref({})
 
@@ -666,6 +691,11 @@
                     arr = arr.filter(p => !p.has_commission)
                 }
 
+                // 新增来源过滤逻辑
+                if (activeSourceFilter.value) {
+                    arr = arr.filter(p => p._source_api === activeSourceFilter.value)
+                }
+
                 for (const [attrName, selectedValue] of Object.entries(activeFilters.value)) {
                     if (selectedValue) {
                         arr = arr.filter(p => {
@@ -683,12 +713,14 @@
             })
 
             const hasActiveFilter = computed(() => {
-                return activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
+                // 增加了 activeSourceFilter 判定
+                return activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || activeSourceFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
             })
 
             const clearFilters = () => {
                 activeUnitFilter.value = ''
-                activeCommissionFilter.value = 'yes' // 新增佣金清理
+                activeCommissionFilter.value = 'yes'
+                activeSourceFilter.value = '' // 新增来源清理
                 for (const key in activeFilters.value) {
                     activeFilters.value[key] = ''
                 }
@@ -785,7 +817,8 @@
                 availableFilters.value = []
                 activeFilters.value = {}
                 activeUnitFilter.value = ''
-                activeCommissionFilter.value = 'yes' // 新增佣金重置
+                activeCommissionFilter.value = 'yes'
+                activeSourceFilter.value = '' // 新增来源重置
                 window.scrollTo({ top: 0, behavior: 'smooth' })
             }
 
@@ -828,7 +861,9 @@
                 keyword, currentKeyword, products, loading, hasSearched,
                 selectedProduct, searchInputRef, sortBy, sortOptions, hotKeywords,
                 placeholderText, sortedProducts, stats,
-                availableUnits, activeUnitFilter, activeCommissionFilter, availableFilters, activeFilters, hasActiveFilter, clearFilters,
+                availableUnits, activeUnitFilter, activeCommissionFilter,
+                availableSources, activeSourceFilter, // 暴露给模板
+                availableFilters, activeFilters, hasActiveFilter, clearFilters,
                 search, resetView, openDetail, closeDetail,
                 getUnitPrice, getDecisionKeywords, getPricingStructure, getTotalValue,
                 getPlatformName, getPlatformColor, getCompareIndicator

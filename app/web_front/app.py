@@ -100,7 +100,9 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         "category": product.get("category"),
         "format_info": product.get("format_info"),
         "activity_price": product.get("activity_price", 999999),
-        "updated_at": product.get("updated_at")
+        "updated_at": product.get("updated_at"),
+        # 新增：来源字段，如果不存在则默认赋值为 "group"
+        "_source_api": product.get("_source_api") or "group"
     } for product in raw_products]
 
     # 计算匹配分数
