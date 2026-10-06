@@ -11,6 +11,14 @@ import time
 import json
 import logging
 import traceback
+import io
+import requests
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
 from playwright.sync_api import sync_playwright
 
 USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
@@ -181,6 +189,69 @@ def save_forensics(page, tag: str, save_dir: str = "forensics_logs", extra_info:
 
     logger.warning(f"[故障排查] 故障现场已落盘 | 文件前缀: <{base_path}>")
     return base_path
+
+
+def download_and_merge_excel(excel_url: str, goods_list: list) -> list:
+    """
+    [数据/融合] 在内存中下载导出的 Excel 表格，将所有列数据拼接到原本的 JSON 商品列表中。
+    按 '商品ID' 与 'goodsId' 匹配。
+    """
+    if not excel_url or not goods_list:
+        return goods_list
+
+    if pd is None:
+        logger.error("[数据/融合] ⚠️ 缺少 pandas 依赖，无法解析 Excel。请运行: pip install pandas requests xlrd lxml")
+        return goods_list
+
+    logger.info(f"[数据/融合] 正在后台下载 Excel 并进行数据融合...")
+    try:
+        # 1. 下载文件，直接存入内存不落盘
+        resp = requests.get(excel_url, timeout=30)
+        resp.raise_for_status()
+        file_bytes = io.BytesIO(resp.content)
+
+        # 2. 解析 Excel
+        try:
+            # 尝试用标准 xlrd 读取 (针对原生的 .xls)
+            df = pd.read_excel(file_bytes, engine="xlrd")
+        except Exception as e1:
+            # 兼容处理：部分平台导出的 .xls 本质是 HTML 表格
+            logger.debug(f"[数据/融合] 标准读取失败({e1})，尝试以 HTML 结构重解析...")
+            file_bytes.seek(0)
+            dfs = pd.read_html(file_bytes, encoding='utf-8')
+            df = dfs[0] if dfs else pd.DataFrame()
+
+        if df.empty:
+            logger.warning("[数据/融合] ⚠️ 解析到的 Excel 提取数据为空。")
+            return goods_list
+
+        if '商品ID' not in df.columns:
+            logger.warning(f"[数据/融合] ⚠️ Excel 表头中未发现 '商品ID'，放弃融合。现有列: {df.columns.tolist()}")
+            return goods_list
+
+        # 3. 将 DataFrame 转换为方便查询的字典字典，键为转为字符型的 商品ID
+        df['商品ID'] = df['商品ID'].astype(str)
+        # 过滤掉 NaN 的空值，保持数据清爽
+        excel_records = {
+            str(row['商品ID']): {k: v for k, v in row.items() if pd.notna(v)}
+            for row in df.to_dict(orient="records")
+        }
+
+        # 4. 全量字段融合
+        merged_count = 0
+        for goods in goods_list:
+            g_id = str(goods.get("goodsId", ""))
+            if g_id in excel_records:
+                # 将 Excel 中的列(如短链接、佣金比例等) 无缝 update 到 JSON 字典里
+                goods.update(excel_records[g_id])
+                merged_count += 1
+
+        logger.info(f"[数据/融合] ✅ Excel 字段无缝融合完毕！成功匹配条数: {merged_count}/{len(goods_list)}")
+
+    except Exception as e:
+        logger.error(f"[数据/融合] ❌ 下载或融合过程发生异常: {e}")
+
+    return goods_list
 
 
 def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_count: int = 500,
@@ -417,6 +488,9 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                     logger.info(f"[业务/收尾] 正在为关键词 <{search_key}> 导出所选商品的 Excel...")
                     current_excel_url = do_export_and_intercept_url()
 
+                    # --- 【新增流程】下载 Excel 并融合数据 ---
+                    all_goods_for_current_key = download_and_merge_excel(current_excel_url, all_goods_for_current_key)
+
                     # 组装混合数据返回结构
                     final_results[search_key] = {
                         "goodsList": all_goods_for_current_key,
@@ -476,19 +550,22 @@ if __name__ == "__main__":
     result = search_goods_and_intercept(search_key_list=["方便面"], user_data_dir=USER_DATA_DIR, debug=True,
                                         limit_count=100)
 
-    # 提取并解析数据（注意适应新的数据结构）
+    # 提取并解析数据
     for key, data_dict in result.items():
         goods = data_dict.get("goodsList", [])
         excel_url = data_dict.get("excelUrl", "")
 
         unique_goods_ids = {item["goodsId"] for item in goods if "goodsId" in item}
-        target_goods = next((item for item in goods if item.get("goodsId") == 965181129595), None)
 
         print(f"关键字: {key} | 不重复商品ID数量: {len(unique_goods_ids)}")
         if excel_url:
             print(f"🔥 获取到导出的 Excel 表格直链: {excel_url}")
-        else:
-            print("⚠️ 未能获取到 Excel 链接。")
+
+        # 演示一下融合后的结果，随便取一条包含【短链接】的商品数据打印
+        if goods:
+            sample_goods = goods[0]
+            print(f"👉 融合示例 - 商品名称: {sample_goods.get('goodsName', sample_goods.get('商品名称'))}")
+            print(f"👉 融合示例 - 短链接: {sample_goods.get('短链接', '无')}")
 
     # 场景二：携带环境自由操作 (按需打开)
     open_browser_for_manual_use(
