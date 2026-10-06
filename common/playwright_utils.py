@@ -12,6 +12,9 @@ import json
 import logging
 from playwright.sync_api import sync_playwright
 
+USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
+
+
 # 初始化基础日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] %(message)s')
 logger = logging.getLogger("playwright_utils")
@@ -185,8 +188,9 @@ def save_forensics(page, tag: str, save_dir: str = "forensics_logs", extra_info:
 # ==============================================================================
 if __name__ == "__main__":
     # 配置测试环境目录与目标网址
-    TEST_USER_DATA_DIR = os.path.join(r'W:\project\python_project\easy_shop\temp_data\browser_data', "pdd_browser_data")
     TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
+    TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
+
 
     # # 场景一：初始化/更新环境凭证
     # login_and_save_session(
@@ -196,6 +200,6 @@ if __name__ == "__main__":
 
     # 场景二：携带环境自由操作
     open_browser_for_manual_use(
-        user_data_dir=TEST_USER_DATA_DIR,
+        user_data_dir=USER_DATA_DIR,
         home_url=TEST_URL
     )
