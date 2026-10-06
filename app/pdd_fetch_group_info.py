@@ -735,10 +735,19 @@ def _run_task(task):
 # ==========================================
 # 新增：API 推荐全盘横扫任务模块
 # ==========================================
+# ==========================================
+# 新增：API 推荐全盘横扫任务模块
+# ==========================================
 def api_recommend_task():
-    """后台任务：通过 API 推荐接口遍历各大榜单和类目获取商品，拉取一页即刻入库"""
+    """后台任务：利用封装好的自动翻页引擎 get_pdd_recommend_goods 横扫推荐榜单。
+    每遍历完一个频道/分类，立刻清洗落库，防止因中途网络异常或封禁导致全局数据丢失。
+    """
+    from app.pdd_utils import get_pdd_recommend_goods  # 确保导入你的函数
+
     pdd_client_id = get_config("nana_pdd_client_id")
     pdd_client_secret = get_config("nana_pdd_client_secret")
+    pdd_pid = get_config("nana_pdd_pid")
+
 
     # 定义要遍历的频道 (1:今日热销, 5:实时热销, 6:实时收益, 4:猜你喜欢)
     target_channels = [1, 5, 6, 4]
@@ -748,10 +757,9 @@ def api_recommend_task():
         20100, 20200, 20300, 20400, 20500, 20600, 20700, 20800, 20900,
         21000, 21100, 21200, 21300, 21400, 21500, 21600, 21700, 21800
     ]
-    batch_limit = 50
 
     while True:
-        logger.info("[推荐API任务/轮次开始] 开始执行推荐商品数据横扫拉取...")
+        logger.info("[推荐API任务/轮次开始] 开始执行推荐商品数据全盘拉取...")
         try:
             with closing(gen_db_object()) as db_instance:
                 db_instance.ping()
@@ -764,67 +772,69 @@ def api_recommend_task():
                     for cid in current_cat_list:
                         # 组合出分类名称作为默认 Category 落库
                         category_name = f"推荐榜单_ch{channel}" + (f"_cat{cid}" if cid else "")
-                        logger.info("[推荐API任务/拉取] 正在拉取: [%s]", category_name)
+                        logger.info("[推荐API任务/拉取] 正在调用底层引擎拉取大类: [%s] ...", category_name)
 
-                        current_offset = 0
-                        current_list_id = None
-                        total_saved = 0
+                        # 调用你的自翻页实现，limit_count=0 代表拉干为止
+                        res = get_pdd_recommend_goods(
+                            client_id=pdd_client_id,
+                            client_secret=pdd_client_secret,
+                            pid=pdd_pid,
+                            channel_type=channel,
+                            limit_count=0,
+                            cat_id=cid
+                        )
 
-                        while True:
-                            res = get_pdd_recommend_goods(
-                                client_id=pdd_client_id,
-                                client_secret=pdd_client_secret,
-                                channel_type=channel,
-                                limit=batch_limit,
-                                offset=current_offset,
-                                cat_id=cid,
-                                list_id=current_list_id
-                            )
+                        if res.get("error"):
+                            logger.warning("[推荐API任务/容错] 接口返回异常(本分类跳过): %s", res["error"])
+                            continue
 
-                            if res.get("error"):
-                                logger.warning("[推荐API任务/中断] 接口返回错误: %s (已保存 %d 条)", res["error"],
-                                               total_saved)
-                                break
+                        raw_items = res.get("data", [])
+                        if not raw_items:
+                            logger.info("[推荐API任务/空数据] [%s] 该分类/榜单暂无推荐数据", category_name)
+                            continue
 
-                            raw_items = res.get("data", [])
-                            if not raw_items:
-                                logger.info("[推荐API任务/底线] [%s] 数据已拉干，当前共保存 %d 条", category_name,
-                                            total_saved)
-                                break
+                        # 【核心转换】：你的函数吐出的是 format_unified_response 的大一统数据
+                        # 我们需要将其适配进 ProductManager 的 MongoDB 字段规范
+                        records = []
+                        now = datetime.now(timezone.utc)
+                        for item in raw_items:
+                            goods_id = item.get("goods_id")
+                            if not goods_id:
+                                continue
 
-                            # 提取翻页锚点
-                            if current_offset == 0:
-                                current_list_id = res.get("list_id")
+                            record = {
+                                "platform": GLOBAL_CONFIG["platform"],
+                                "product_id": str(goods_id).strip(),
+                                "category": item.get("category_name") or category_name,
+                                "_source_api": "api_recommend",  # 【要求实现】来源强行覆盖为 api_recommend
+                                "name": item.get("goods_name", ""),
+                                "brand": item.get("brand_name", ""),
+                                "sales_tip": str(item.get("sales_tip", "")),
+                                "image_url": item.get("goods_image_url") or item.get("goods_thumbnail_url", ""),
+                                # 大一统数据价格单位是分，入库前除以 100 转为元
+                                "original_price": item.get("min_normal_price", 0) / 100,
+                                "activity_price": item.get("min_group_price", 0) / 100,
+                                "saved_price": item.get("coupon_discount", 0) / 100,
+                                "updated_at": now
+                            }
+                            records.append(record)
 
-                            # 【核心步骤】：拉一页立刻洗一页，打上专属来源标签
-                            records = []
-                            now = datetime.now(timezone.utc)
-                            for item in raw_items:
-                                record = normalize_api_goods(item, default_category=category_name,
-                                                             source_api="api_recommend")
-                                if record is not None:
-                                    record["updated_at"] = now
-                                    records.append(record)
+                        # 【核心安全设计】：每次调完 get_pdd_recommend_goods 立刻落库，即使后续其他分类崩溃，本分类也已保存
+                        if records:
+                            counts = product_manager.update(records)
+                            logger.info("[推荐API任务/落库] [%s] 采集结束 | 新增/更新: [%d/%d] | 标志: [api_recommend]",
+                                        category_name, counts.get("new", 0), counts.get("update", 0))
 
-                            # 【核心步骤】：洗完立刻落库
-                            if records:
-                                counts = product_manager.update(records)
-                                total_saved += len(records)
-                                logger.info(
-                                    "[推荐API任务/入库] [%s] 偏移:[%d] | 本批新增/更新: [%d/%d] | 累计入库: [%d]",
-                                    category_name, current_offset, counts.get("new", 0), counts.get("update", 0),
-                                    total_saved)
-
-                            current_offset += batch_limit
-                            time.sleep(0.5)  # 分页微休眠防风控
-
-                        time.sleep(2)  # 切换榜单/类目时的安全休眠
+                        # 防护机制：不同的大类之间请求休眠 3 秒，防止被判机器人封禁IP
+                        time.sleep(3)
 
         except Exception as exc:
             logger.error("[推荐API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
 
-        logger.info("[推荐API任务/轮次结束] 本轮推荐横扫完成，休眠 12 小时...")
+        logger.info("[推荐API任务/轮次结束] 本轮推荐横扫完成，休眠 12 小时等待下一次全盘拉取...")
         time.sleep(12 * 3600)
+
+
 
 if __name__ == "__main__":
     # 配置基础日志 (将其提取到最外层，共享给所有线程)
@@ -832,8 +842,9 @@ if __name__ == "__main__":
 
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
-        playwright_task,
-        api_search_task
+        # playwright_task,
+        # api_search_task,
+        api_recommend_task  # 【新增】：商品推荐 API 任务挂载运行
     ]
 
     threads = []

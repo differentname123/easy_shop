@@ -392,7 +392,7 @@ def generate_pdd_authority_url(client_id, client_secret, pid, uid=None):
         return {"status": "error", "error_msg": f"生成备案链接失败: {str(e)}"}
 
 
-def get_pdd_recommend_goods(client_id, client_secret, channel_type=5, limit_count=0,
+def get_pdd_recommend_goods(client_id, client_secret , pid=None, channel_type=5, limit_count=0,
                             cat_id=None, goods_sign_list=None, activity_tags=None, goods_img_type=None, uid=None):
     """
     自动翻页获取多多进宝商品推荐列表 (API: pdd.ddk.goods.recommend.get)
@@ -423,7 +423,8 @@ def get_pdd_recommend_goods(client_id, client_secret, channel_type=5, limit_coun
             "goods_img_type": goods_img_type,
             "custom_parameters": custom_params_str
         }
-
+        if pid:
+            business_params["pid"] = pid
         # 翻页时带上前一页返回的 list_id 以保证上下文不重复
         if current_offset > 0 and list_id:
             business_params["list_id"] = list_id
@@ -488,6 +489,7 @@ if __name__ == "__main__":
     recommend_result = get_pdd_recommend_goods(
         client_id=pdd_client_id,
         client_secret=pdd_client_secret,
+        pid=pdd_pid,
         channel_type=test_channel,
         limit_count=limit_count,
     )
