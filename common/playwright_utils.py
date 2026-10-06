@@ -190,7 +190,7 @@ import traceback
 import traceback
 
 
-def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_count: int = 1000,
+def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_count: int = 500,
                                debug: bool = False) -> dict:
     """
     [业务/查询] 访问多多进宝单品推广页，支持同一窗口下连续查询多个关键字，并精准拦截底层的 goodsList 数据。
@@ -409,11 +409,14 @@ if __name__ == "__main__":
     USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
     # 执行搜索并拦截
-    result = search_goods_and_intercept(search_key_list=["可乐", "零食"], user_data_dir=USER_DATA_DIR, debug=True, limit_count=200)
+    result = search_goods_and_intercept(search_key_list=["方便面"], user_data_dir=USER_DATA_DIR, debug=True, limit_count=1000)
 
     # 提取 不重复的goodsId 列表
     for key, goods in result.items():
         unique_goods_ids = {item["goodsId"] for item in goods if "goodsId" in item}
+        # 找到 'goodsId' 为 965181129595 的商品
+        target_goods = next((item for item in goods if item.get("goodsId") == 965181129595), None)
+
         print(f"关键字: {key} | 不重复商品ID数量: {len(unique_goods_ids)}")
 
     if result and result.get("success"):
