@@ -832,7 +832,7 @@ def api_recommend_task():
             logger.error("[推荐API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
 
         logger.info("[推荐API任务/轮次结束] 本轮推荐横扫完成，休眠 12 小时等待下一次全盘拉取...")
-        time.sleep(12 * 3600)
+        time.sleep(24 * 3600)
 
 
 
@@ -842,9 +842,9 @@ if __name__ == "__main__":
 
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
-        # playwright_task,
+        playwright_task,
         # api_search_task,
-        api_recommend_task  # 【新增】：商品推荐 API 任务挂载运行
+        # api_recommend_task  # 【新增】：商品推荐 API 任务挂载运行
     ]
 
     threads = []
