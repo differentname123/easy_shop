@@ -117,24 +117,23 @@ class PddAutomation:
             w = rect.right - rect.left
             h = rect.bottom - rect.top
 
+            try:
+                print("  [🔙 返回] 尝试点击返回图标...")
+                auto.Click(rect.left + 20, rect.top + 60)
+                print("  [⏱️ 等待] 等待 0.5s 后再次检测首页...")
+            except:
+                pass
+
+
+
+
             # 精确裁剪小程序最下面的 1/6 区域进行 OCR 识别"首页"
             region_bottom = (rect.left, rect.bottom - h // 6, w, h // 6)
             if self.wait_for_ocr_text("首页", timeout=0.5, region=region_bottom):
                 print("  [✅ 确认首页] 当前处于首页，准备执行下一步。")
                 return True
 
-            # 没有找到首页，尝试点击返回图标
-            try:
-                self.activate_window()  # 点击返回操作前强制置顶
-                # 依据 Inspect 特征识别返回图标
-                back_icon = self.window.ImageControl(ClassName="icon", searchDepth=4)
-                if back_icon.Exists(0.1, 0):
-                    back_icon.Click()
-                else:
-                    # 盲点兜底（左上角返回区域大致位置）
-                    auto.Click(rect.left + 20, rect.top + 60)
-            except:
-                pass
+
 
             time.sleep(0.5)
 
@@ -282,7 +281,7 @@ def batch_runner(goods_id_list):
     filtered_list = []
     for gid in goods_id_list:
         info = state.get(gid, {})
-        if info.get("success", False) or info.get("attempts", 0) >= 3:
+        if info.get("success", False) or info.get("attempts", 0) >= 30:
             continue
         filtered_list.append(gid)
 
