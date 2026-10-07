@@ -13,13 +13,18 @@ import logging
 import traceback
 import io
 import requests
+import cv2
+import base64
+import random
+import numpy as np
+from datetime import datetime
 
 try:
     import pandas as pd
 except ImportError:
     pd = None
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
@@ -254,6 +259,194 @@ def download_and_merge_excel(excel_url: str, goods_list: list) -> list:
     return goods_list
 
 
+# ==============================================================================
+#                      新增核心：OpenCV滑块识别与防风控突破模块
+# ==============================================================================
+
+def generate_drag_tracks(distance: float) -> list:
+    """模拟人类滑动滑块的物理轨迹（缓动函数）"""
+    track = []
+    current = 0
+    mid = distance * 4 / 5
+    t = 0.2
+    v = 0
+
+    while current < distance:
+        if current < mid:
+            a = random.randint(2, 5)  # 加速
+        else:
+            a = -random.randint(3, 5)  # 减速
+
+        v0 = v
+        v = v0 + a * t
+        move = v0 * t + 1 / 2 * a * t * t
+        current += move
+        track.append(round(move))
+
+    offset = sum(track) - distance
+    if offset > 0:
+        track.extend([-1] * int(offset))
+    elif offset < 0:
+        track.extend([1] * int(abs(offset)))
+
+    # 模拟人手微调：滑过头一点点再拉回来
+    track.extend([random.randint(1, 2), -random.randint(1, 2), 0])
+    return track
+
+
+def calculate_slider_distance_cv2(bg_bytes: bytes, item_bytes: bytes, debug_path: str = None) -> float:
+    """使用 OpenCV 屏蔽透明背景干扰，根据形状轮廓精准匹配缺口。"""
+    # 1. 解析背景图为灰度图
+    bg_np = np.frombuffer(bg_bytes, np.uint8)
+    bg_img = cv2.imdecode(bg_np, cv2.IMREAD_COLOR)
+    bg_gray = cv2.cvtColor(bg_img, cv2.COLOR_BGR2GRAY)
+
+    # 2. 解析滑块图 (保留 Alpha 透明通道 IMREAD_UNCHANGED)
+    item_np = np.frombuffer(item_bytes, np.uint8)
+    item_img = cv2.imdecode(item_np, cv2.IMREAD_UNCHANGED)
+
+    # 3. 切除透明边框，提取真实的拼图模块
+    if item_img.shape[2] == 4:
+        alpha_channel = item_img[:, :, 3]
+        y_coords, x_coords = np.where(alpha_channel > 0)
+        if len(x_coords) == 0:
+            raise ValueError("提取失败: 滑块图片是全透明的")
+
+        x_min, x_max = np.min(x_coords), np.max(x_coords)
+        y_min, y_max = np.min(y_coords), np.max(y_coords)
+        cropped_item = item_img[y_min:y_max + 1, x_min:x_max + 1]
+    else:
+        cropped_item = item_img
+        x_min = 0
+
+    cropped_item_gray = cv2.cvtColor(cropped_item[:, :, :3], cv2.COLOR_BGR2GRAY)
+
+    # 4. Canny 边缘检测 (提取线稿轮廓，无视背景颜色干扰)
+    bg_edge = cv2.Canny(bg_gray, 100, 200)
+    item_edge = cv2.Canny(cropped_item_gray, 100, 200)
+
+    # 5. 模板匹配
+    res = cv2.matchTemplate(bg_edge, item_edge, cv2.TM_CCOEFF_NORMED)
+    _, _, _, max_loc = cv2.minMaxLoc(res)
+
+    target_x = max_loc[0]
+    target_y = max_loc[1]
+
+    # 实际需要滑动的距离 = 背景缺口X坐标 - 滑块在小图中的初始X坐标
+    actual_distance = target_x - x_min
+
+    # 6. 保存调试图
+    if debug_path:
+        debug_img = bg_img.copy()
+        h, w = cropped_item_gray.shape
+        cv2.rectangle(debug_img, (target_x, target_y), (target_x + w, target_y + h), (0, 0, 255), 2)
+        cv2.putText(debug_img, f"TargetX: {target_x} | Offset: {x_min} | Move: {actual_distance}",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+        cv2.imwrite(debug_path, debug_img)
+
+    return actual_distance, bg_img.shape[1]
+
+
+def handle_pdd_captcha(page) -> bool:
+    """
+    [核心模块] 内置处理当前页面的拼多多安全验证（点击+滑块）。
+    执行完毕后如果安全通过，返回 True，否则返回 False。
+    """
+    try:
+        # 使用较短的超时时间检测“安全验证”首层按钮
+        verify_btn = page.locator('button:has-text("安全验证")').first
+        if verify_btn.is_visible(timeout=3000):
+            logger.info("[风控/验证] 发现【安全验证】首层按钮，准备点击...")
+            robust_click(verify_btn)
+            page.wait_for_timeout(1500)
+    except Exception:
+        pass
+
+    try:
+        # 检测滑块主图是否弹出
+        slider_bg_img = page.locator('.slider-img-bg').first
+        if not slider_bg_img.is_visible(timeout=2000):
+            return True  # 没弹出滑块，说明页面本身处于安全状态
+    except Exception:
+        return True
+
+    logger.info("[风控/验证] 发现滑块验证弹窗，开始执行自动化破解...")
+    debug_dir = "debug_captcha"
+    os.makedirs(debug_dir, exist_ok=True)
+
+    for attempt in range(1, 6):
+        try:
+            if not slider_bg_img.is_visible():
+                logger.info("[风控/验证] ✅ 滑块验证已消失！")
+                return True
+
+            logger.info(f"\n[风控/验证] === 第 {attempt} 次处理滑块 ===")
+            page.wait_for_timeout(1500)
+            bg_src = slider_bg_img.get_attribute('src')
+            item_src = page.locator('.slider-item').first.get_attribute('src')
+
+            if not bg_src or "base64," not in bg_src:
+                page.wait_for_timeout(1000)
+                continue
+
+            bg_bytes = base64.b64decode(bg_src.split("base64,")[1])
+            item_bytes = base64.b64decode(item_src.split("base64,")[1])
+
+            # OpenCV 精准识别计算
+            timestamp = datetime.now().strftime("%H%M%S")
+            debug_path = os.path.join(debug_dir, f"{timestamp}_attempt_{attempt}_cv2_match.png")
+            raw_move_distance, natural_width = calculate_slider_distance_cv2(bg_bytes, item_bytes, debug_path)
+
+            # 计算网页缩放比例与实际滑动距离
+            box = slider_bg_img.bounding_box()
+            display_width = box['width']
+            scale_ratio = display_width / natural_width
+            final_drag_distance = raw_move_distance * scale_ratio
+
+            logger.info(
+                f"[风控/数据] OpenCV计算需滑行: {raw_move_distance}px | 网页缩放后拖动: {final_drag_distance:.2f}px")
+
+            # 模拟拖拽滑块
+            slider_btn = page.locator('#slide-button').first
+            btn_box = slider_btn.bounding_box()
+            start_x = btn_box['x'] + btn_box['width'] / 2
+            start_y = btn_box['y'] + btn_box['height'] / 2
+
+            tracks = generate_drag_tracks(final_drag_distance)
+
+            page.mouse.move(start_x, start_y)
+            page.mouse.down()
+
+            current_x, current_y = start_x, start_y
+            for step in tracks:
+                current_x += step
+                current_y += random.uniform(-1.0, 1.0)
+                page.mouse.move(current_x, current_y)
+                time.sleep(random.uniform(0.01, 0.02))
+
+            page.mouse.up()
+            logger.info("[风控/验证] 拖拽完毕，等待验证结果...")
+            page.wait_for_timeout(2500)  # 等待接口响应和UI刷新
+
+            # 判定：如果滑块成功消失，代表验证通过
+            if not slider_bg_img.is_visible():
+                logger.info("[风控/验证] ✅ 验证通过，滑块已消失！")
+                return True
+            else:
+                logger.warning("[风控/验证] 验证未通过，准备重试...")
+
+        except Exception as e:
+            logger.error(f"[风控/验证] 拖拽异常: {e}")
+            page.mouse.up()
+            page.wait_for_timeout(2000)
+
+    logger.error("[风控/验证] ❌ 达到最大重试次数，未能通过安全验证。")
+    return False
+
+
+# ==============================================================================
+
+
 def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_count: int = 500,
                                debug: bool = False) -> dict:
     """
@@ -301,6 +494,12 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 
             logger.info(f"[业务/查询] 正在加载基础页面: {target_url}")
             page.goto(target_url, wait_until="domcontentloaded")
+
+            # ================= [新增] 页面加载完成，立刻检测并清除开局的风控 =================
+            page.wait_for_timeout(2000)
+            handle_pdd_captcha(page)
+
+            # ==============================================================================
 
             # ================= 辅助内部函数：高内聚处理页面UI操作 =================
             def do_batch_select_all():
@@ -465,8 +664,15 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                             try:
                                 if page.locator('text="安全验证"').first.is_visible() or page.locator(
                                         'text="完成拼多多官方验证"').first.is_visible():
+                                    logger.warning("[业务/拦截] 🚨 翻页触发安全验证风控！尝试自动破解...")
+
+                                    # ======= [新增] 半路自动过风控 =======
+                                    if handle_pdd_captcha(page):
+                                        continue  # 如果成功突破滑块，则继续循环获取该页数据
+                                    # ======================================
+
                                     logger.error(
-                                        f"[业务/拦截] 🚨 翻页触发安全验证风控！提前终止全局爬取，直接返回现有数据。")
+                                        f"[业务/拦截] 🚨 自动破解失败！提前终止全局爬取，直接返回现有数据。")
                                     # 此时遇到风控，可能无法进行UI导出操作，直接返回已有数据。
                                     if limit_count > 0:
                                         all_goods_for_current_key = all_goods_for_current_key[:limit_count]
@@ -514,7 +720,14 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
                     try:
                         if page.locator('text="安全验证"').first.is_visible() or page.locator(
                                 'text="完成拼多多官方验证"').first.is_visible():
-                            logger.error(f"[业务/拦截] 🚨 搜索首屏即触发安全验证风控！放弃后续关键字，直接返回当前数据。")
+                            logger.warning(f"[业务/拦截] 🚨 搜索首屏即触发安全验证风控！尝试自动破解...")
+
+                            # ======= [新增] 首屏自动过风控 =======
+                            if handle_pdd_captcha(page):
+                                continue  # 如果破解成功，跳过当前由于异常捕获被中断的词，去执行下一个关键词
+                            # ======================================
+
+                            logger.error(f"[业务/拦截] 🚨 自动破解失败！放弃后续关键字，直接返回当前数据。")
                             return final_results
                     except Exception:
                         pass
@@ -543,6 +756,7 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 # ==============================================================================
 if __name__ == "__main__":
 
+
     # # 打开拼多多网页版
     # USER_DATA_DIR = r"W:\\project\\python_project\\easy_shop\\temp_data\\browser_data\\pdd_browser_data"
     # TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
@@ -554,20 +768,17 @@ if __name__ == "__main__":
     # )
 
 
-
     # 配置测试环境目录与目标网址
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
     USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
 
-    # 场景二：携带环境自由操作 (按需打开) 多多进宝
-    open_browser_for_manual_use(
-        user_data_dir=USER_DATA_DIR,
-        home_url=TEST_URL
-    )
 
-
-
+    # # 场景二：携带环境自由操作 (按需打开) 多多进宝
+    # open_browser_for_manual_use(
+    #     user_data_dir=USER_DATA_DIR,
+    #     home_url=TEST_URL
+    # )
 
 
     # 执行搜索并拦截
@@ -585,9 +796,7 @@ if __name__ == "__main__":
         if excel_url:
             print(f"🔥 获取到导出的 Excel 表格直链: {excel_url}")
 
-        # 演示一下融合后的结果，随便取一条包含【短链接】的商品数据打印
         if goods:
             sample_goods = goods[0]
             print(f"👉 融合示例 - 商品名称: {sample_goods.get('goodsName', sample_goods.get('商品名称'))}")
             print(f"👉 融合示例 - 短链接: {sample_goods.get('短链接', '无')}")
-
