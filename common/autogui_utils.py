@@ -5,295 +5,348 @@ import time
 import os
 import traceback
 import json
+import datetime
+
+# === 轻量级 OCR 依赖 ===
 import numpy as np
 import cv2
 from rapidocr_onnxruntime import RapidOCR
-from typing import Tuple, Optional
-
 
 # ==========================================
-# ⚙️ 全局配置与初始化
+# ⚙️ 全局配置区
 # ==========================================
-class Config:
-    PDD_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\拼多多.lnk"
-    DEBUG_MODE = True
+PDD_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\拼多多.lnk"
+DEBUG_MODE = True
 
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    SUCCESS_DIR = os.path.join(BASE_DIR, "results_success")
-    ERROR_DIR = os.path.join(BASE_DIR, "results_error")
-    TRACE_DIR = os.path.join(BASE_DIR, "results_trace")
-    STATE_FILE = os.path.join(BASE_DIR, "goods_state.json")
-
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SUCCESS_DIR = os.path.join(BASE_DIR, "results_success")
+ERROR_DIR = os.path.join(BASE_DIR, "results_error")
+TRACE_DIR = os.path.join(BASE_DIR, "results_trace")
+STATE_FILE = os.path.join(BASE_DIR, "goods_state.json")
 
 # 确保目录存在
-for d in [Config.SUCCESS_DIR, Config.ERROR_DIR, Config.TRACE_DIR]:
+for d in [SUCCESS_DIR, ERROR_DIR, TRACE_DIR]:
     os.makedirs(d, exist_ok=True)
 
 
 # ==========================================
-# 🧠 核心模块 1：状态管理器 (解耦本地存储)
+# 📝 带时间戳的精准日志系统
 # ==========================================
-class StateManager:
-    @staticmethod
-    def load() -> dict:
-        if os.path.exists(Config.STATE_FILE):
-            try:
-                with open(Config.STATE_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"[⚠️ 状态加载失败] {e}")
-        return {}
+def log(msg, level="INFO"):
+    """标准化日志输出，带精确时间戳"""
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    print(f"[{ts}] [{level}] {msg}")
 
-    @staticmethod
-    def save(state: dict):
-        # 使用临时文件写入后重命名，防止写入中断导致 JSON 损坏
-        temp_file = f"{Config.STATE_FILE}.tmp"
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(state, f, ensure_ascii=False, indent=4)
-        os.replace(temp_file, Config.STATE_FILE)
+
+log("正在初始化 RapidOCR 轻量级引擎...", "SYSTEM")
+ocr = RapidOCR()
 
 
 # ==========================================
-# 👁️ 核心模块 2：视觉与 OCR 引擎
+# 💾 状态管理
 # ==========================================
-class VisionEngine:
-    def __init__(self):
-        print("\n[⚙️ 系统] 正在初始化 RapidOCR 轻量级引擎...")
-        self.ocr = RapidOCR()
-
-    def wait_for_text(self, target_texts: list, capture_region: tuple, timeout: float = 5.0) -> bool:
-        """
-        动态视觉断言：只要识别到 target_texts 中的任意一个词即返回 True
-        """
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            try:
-                # 极速截图并转为 BGR 格式
-                img = pyautogui.screenshot(region=capture_region)
-                img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-
-                result, _ = self.ocr(img_cv)
-                if result:
-                    for line in result:
-                        if len(line) >= 2:
-                            text = line[1]
-                            if any(t in text for t in target_texts):
-                                return True
-            except Exception as e:
-                pass
-            time.sleep(0.05)  # 缩短重试间隔，发现目标瞬间放行 (速度优化)
-        return False
-
-
-# ==========================================
-# 🤖 核心模块 3：拼多多 RPA 机器人
-# ==========================================
-class PddAutomation:
-    def __init__(self, vision_engine: VisionEngine):
-        self.window = None
-        self.vision = vision_engine
-
-    def _safe_copy(self, text: str):
-        """安全剪贴板操作，防止 Windows 剪贴板占用冲突"""
-        for _ in range(3):
-            try:
-                pyperclip.copy(text)
-                return
-            except:
-                time.sleep(0.1)
-        raise Exception("剪贴板被其他程序锁死")
-
-    def ensure_focus(self):
-        """获取并锁定焦点，如果失败立刻抛出异常，防止盲点桌面的灾难"""
-        if not self.window or not self.window.Exists(0.1, 0):
-            raise RuntimeError("窗口不存在，无法获取焦点")
+def load_state():
+    if os.path.exists(STATE_FILE):
         try:
-            # 判断是否已经在前台，减少无意义的 SetTopmost 闪烁
-            if not self.window.IsTopmost:
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            log(f"读取状态文件失败: {e}，将初始化空状态", "WARN")
+    return {}
+
+
+def save_state(state):
+    # 使用临时文件写入后重命名，防止写入过程中断电/崩溃导致 JSON 损坏 (原子写入)
+    tmp_file = STATE_FILE + ".tmp"
+    with open(tmp_file, 'w', encoding='utf-8') as f:
+        json.dump(state, f, ensure_ascii=False, indent=4)
+    os.replace(tmp_file, STATE_FILE)
+
+
+# ==========================================
+# 🤖 RPA 核心引擎 (UI基础动作层)
+# ==========================================
+class UIActionEngine:
+    """封装所有基础 UI 交互，确保每次动作前绝对置顶"""
+
+    def __init__(self, window_name):
+        self.window_name = window_name
+        self.window = None
+
+    def find_window(self, timeout=3):
+        self.window = auto.WindowControl(searchDepth=1, Name=self.window_name)
+        return self.window.Exists(timeout, 1)
+
+    def _force_active(self):
+        """内部核心：强制窗口置顶，穿透任何焦点抢占"""
+        if self.window and self.window.Exists(0, 0):
+            try:
                 self.window.SetActive()
                 self.window.SetTopmost(True)
-                self.window.SetTopmost(False)
-        except Exception as e:
-            raise RuntimeError(f"无法置顶窗口，可能被安全软件拦截: {e}")
+                time.sleep(0.02)  # 给系统极短的渲染时间
+                self.window.SetTopmost(False)  # 保持在顶层但解除锁定，防止卡死其他应用
+            except Exception as e:
+                log(f"窗口置顶受阻: {e}", "DEBUG")
 
-    def get_window_rect(self) -> Tuple[int, int, int, int]:
-        self.ensure_focus()
-        rect = self.window.BoundingRectangle
-        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+    def safe_click(self, x, y, desc=""):
+        """安全点击"""
+        self._force_active()
+        if desc: log(f"执行点击: {desc} ({x}, {y})")
+        auto.Click(int(x), int(y))
+        time.sleep(0.1)  # 点击后的基础硬直时间
 
-    def restart_mini_program(self) -> bool:
-        """硬重启环境"""
-        print("\n[⚙️ 系统] 准备环境，清理旧窗口...")
-        old_window = auto.WindowControl(searchDepth=1, Name='拼多多')
-        if old_window.Exists(0.5, 0):
-            old_window.SetActive()
-            rect = old_window.BoundingRectangle
-            close_x, close_y = rect.right - 25, rect.top + 20  # 修正右上角关闭按钮位置
-            auto.Click(close_x, close_y)
-            time.sleep(1.0)  # 等待窗口彻底消失
-
-        try:
-            print("  [🚀 启动] 正在唤醒小程序...")
-            os.startfile(Config.PDD_SHORTCUT_PATH)
-        except FileNotFoundError:
-            print(f"  [❌ 致命错误] 未找到快捷方式: {Config.PDD_SHORTCUT_PATH}")
-            return False
-
-        self.window = auto.WindowControl(searchDepth=1, Name='拼多多')
-        if not self.window.Exists(10, 1):
-            print("  [❌ 启动超时] 小程序主窗口未出现。")
-            return False
-
-        self.ensure_focus()
-        print("  [✅ 启动成功] 小程序已就绪。")
-        return True
-
-    def prepare_home_page(self) -> bool:
-        """软重启：动态校验首页，避免不必要的硬重启，大幅提高速度"""
-        if not self.window or not self.window.Exists(0.5, 0):
-            self.window = auto.WindowControl(searchDepth=1, Name='拼多多')
-            if not self.window.Exists(0.5, 0):
-                return self.restart_mini_program()
-
-        print("\n  [🔄 准备状态] 校验并返回首页...")
-        start_time = time.time()
-
-        while time.time() - start_time < 8:
-            left, top, w, h = self.get_window_rect()
-
-            # 动态判断是否在首页 (底部 1/6 区域包含"首页")
-            region_bottom = (left, top + h - (h // 6), w, h // 6)
-            if self.vision.wait_for_text(["首页"], region_bottom, timeout=0.3):
-                print("  [✅ 确认首页] 当前处于首页，准备执行。")
-                return True
-
-            # 不在首页，点击左上角返回
-            try:
-                auto.Click(left + 20, top + 60)
-            except:
-                pass
-            time.sleep(0.3)
-
-        print("  [⚠️ 超时] 未能通过返回键到达首页，执行兜底硬重启...")
-        return self.restart_mini_program()
-
-    def take_screenshot(self, save_dir: str, prefix: str, index: int) -> str:
-        """统一截图方法"""
-        left, top, w, h = self.get_window_rect()
-        filename = f"{prefix}_{index}_{int(time.time())}.png"
-        path = os.path.join(save_dir, filename)
-        pyautogui.screenshot(path, region=(left, top, w, h))
-        return path
-
-    def process_single_goods(self, goods_id: str, index: int) -> Tuple[bool, str, str]:
-        goods_url = f"https://mobile.yangkeduo.com/goods.html?goods_id={goods_id}"
-        left, top, w, h = self.get_window_rect()
-
-        # --- 步骤 1：输入搜索 ---
-        print(f"[{index}] 步骤 1/4: 输入商品链接...")
-        search_entry_x = left + w // 2
-        search_entry_y = top + 65
-
-        self.ensure_focus()
-        auto.Click(search_entry_x, search_entry_y)
-
-        self._safe_copy(goods_url)
-        time.sleep(0.1)  # 等待焦点和剪贴板就绪
+    def safe_input(self, text, desc=""):
+        """安全粘贴与输入"""
+        self._force_active()
+        if desc: log(f"执行输入: {desc}")
+        pyperclip.copy(text)
         auto.SendKeys('{Ctrl}v')
         time.sleep(0.1)
         auto.SendKeys('{Enter}')
 
-        if Config.DEBUG_MODE: self.take_screenshot(Config.TRACE_DIR, f"Step1_{index}", index)
+    def safe_screenshot(self, save_path, region=None):
+        """安全截图"""
+        self._force_active()
+        if region is None:
+            rect = self.window.BoundingRectangle
+            region = (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
 
-        # --- 步骤 2：校验详情页 ---
-        print(f"[{index}] 步骤 2/4: 校验详情页状态...")
-        region_bottom = (left, top + h - (h // 6), w, h // 6)
+        # 确保 region 都是整数，避免 pyautogui 报错
+        region = tuple(map(int, region))
+        return pyautogui.screenshot(save_path, region=region)
 
-        if not self.vision.wait_for_text(["客服", "店铺"], region_bottom, timeout=5):
-            path = self.take_screenshot(Config.ERROR_DIR, "DETAIL_Error", index)
-            return False, path, "进入商品详情页超时"
+    def safe_ocr_wait(self, target_texts, timeout=5, region=None, interval=0.2):
+        """安全 OCR 断言识别 (支持多关键词，任意匹配即成功)"""
+        if isinstance(target_texts, str):
+            target_texts = [target_texts]
 
-        if Config.DEBUG_MODE: self.take_screenshot(Config.TRACE_DIR, f"Step2_{index}", index)
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            self._force_active()
 
-        # --- 步骤 3：点击购买 ---
-        print(f"[{index}] 步骤 3/4: 唤起 SKU 面板...")
-        buy_x, buy_y = left + w - 60, top + h - 25
-        self.ensure_focus()
-        auto.Click(buy_x, buy_y)
+            if region is None:
+                rect = self.window.BoundingRectangle
+                capture_region = (rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top)
+            else:
+                capture_region = tuple(map(int, region))
 
-        # --- 步骤 4：校验 SKU 面板 ---
-        print(f"[{index}] 步骤 4/4: 校验 SKU 界面是否就绪...")
-        region_sku = (left, top + h - (h // 2), w, h // 2)
+            try:
+                img = pyautogui.screenshot(region=capture_region)
+                img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+                result, _ = ocr(img_cv)
 
-        if not self.vision.wait_for_text(["确定", "请选择"], region_sku, timeout=5):
-            print(f"[{index}] ❌ SKU 面板未就绪")
-            path = self.take_screenshot(Config.ERROR_DIR, "SKU_Error", index)
-            return False, path, "SKU 面板未展开"
+                if result:
+                    for line in result:
+                        text = line[1] if len(line) >= 2 else ""
+                        for target in target_texts:
+                            if target in text:
+                                return True, target  # 返回布尔值和匹配到的词
+            except Exception as e:
+                log(f"OCR捕获异常: {e}", "DEBUG")
 
-        # --- 步骤 5：成功截图 ---
-        print(f"[{index}] 🎯 验证通过！保存 SKU 截图...")
-        path = self.take_screenshot(Config.SUCCESS_DIR, "SUCCESS_SKU", index)
-        return True, path, ""
+            time.sleep(interval)
+
+        return False, None
 
 
 # ==========================================
-# ⚙️ 任务调度器
+# 🏢 拼多多业务逻辑层
 # ==========================================
-def batch_runner(goods_id_list: list):
-    state = StateManager.load()
+class PddAutomation(UIActionEngine):
+    def __init__(self):
+        super().__init__('拼多多')
 
-    # 过滤任务：跳过成功或超过阈值的任务
-    filtered_list = [gid for gid in goods_id_list if
-                     not state.get(gid, {}).get("success", False) and state.get(gid, {}).get("attempts", 0) < 5]
+    def restart_mini_program(self):
+        log("准备环境，检查是否需要清理旧窗口...", "SYSTEM")
+        if self.find_window(timeout=1):
+            rect = self.window.BoundingRectangle
+            self.safe_click(rect.right - 25, rect.top + 60, "关闭残留窗口")
+            time.sleep(1.0)  # 等待动画彻底消失
+
+        try:
+            log("正在唤醒小程序...", "SYSTEM")
+            os.startfile(PDD_SHORTCUT_PATH)
+        except Exception as e:
+            log(f"致命错误，快捷方式启动失败: {e}", "ERROR")
+            return False
+
+        if not self.find_window(timeout=10):
+            log("启动超时，小程序主窗口未出现。", "ERROR")
+            return False
+
+        log("小程序已就绪。", "SUCCESS")
+        return True
+
+    def prepare_home_page(self):
+        if not self.find_window(timeout=0.5):
+            log("窗口丢失，执行硬重启...", "WARN")
+            return self.restart_mini_program()
+
+        rect = self.window.BoundingRectangle
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+        region_bottom = (rect.left, rect.bottom - h // 6, w, h // 6)
+
+        # 优化点：先做一次免等待的 OCR 检查，如果在首页，直接跳过点击返回
+        log("检测当前是否已在首页...")
+        is_home, _ = self.safe_ocr_wait("首页", timeout=0.5, region=region_bottom)
+        if is_home:
+            log("当前已处于首页，无需返回。", "SUCCESS")
+            return True
+
+        log("尝试通过点击返回图标回到首页...", "ACTION")
+        start_time = time.time()
+        while time.time() - start_time < 8:
+            self.safe_click(rect.left + 20, rect.top + 60, "点击返回按键")
+            # 点击后马上断言
+            is_home, _ = self.safe_ocr_wait("首页", timeout=1.0, region=region_bottom)
+            if is_home:
+                log("确认回到首页。", "SUCCESS")
+                return True
+
+        log("软返回超时，执行兜底硬重启...", "WARN")
+        return self.restart_mini_program()
+
+    def record_checkpoint(self, index, step_name):
+        if not DEBUG_MODE: return
+        filename = f"Step_{step_name}_{index}_{int(time.time())}.png"
+        path = os.path.join(TRACE_DIR, filename)
+        self.safe_screenshot(path)
+
+    def process_single_goods(self, goods_id, index):
+        goods_url = f"https://mobile.yangkeduo.com/goods.html?goods_id={goods_id}"
+        rect = self.window.BoundingRectangle
+        w, h = rect.right - rect.left, rect.bottom - rect.top
+
+        # --- 步骤 1 ---
+        log(f"[{index}] 步骤 1/4: 输入商品链接", "TASK")
+        search_entry_x = rect.left + w // 2
+        search_entry_y = rect.top + 65
+
+        self.safe_click(search_entry_x, search_entry_y, "激活搜索框")
+        self.safe_input(goods_url, "粘贴链接并回车")
+        self.record_checkpoint(index, "1_输入搜索")
+
+        # --- 步骤 2 ---
+        log(f"[{index}] 步骤 2/4: 校验详情页状态", "TASK")
+        region_bottom = (rect.left, rect.bottom - h // 6, w, h // 6)
+        # 支持传列表，任意匹配一个即成功，代码更整洁
+        is_detail, keyword = self.safe_ocr_wait(["客服", "店铺"], timeout=20, region=region_bottom)
+
+        if not is_detail:
+            path = os.path.join(ERROR_DIR, f"DETAIL_Error_{index}_{int(time.time())}.png")
+            self.safe_screenshot(path)
+            return False, path, "进入详情页失败或超时"
+        self.record_checkpoint(index, "2_进入详情")
+
+        # --- 步骤 3 ---
+        log(f"[{index}] 步骤 3/4: 点击购买面板", "TASK")
+        buy_x = rect.right - 60
+        buy_y = rect.bottom - 25
+        self.safe_click(buy_x, buy_y, "点击右下角购买")
+        self.record_checkpoint(index, "3_点击购买")
+
+        # --- 步骤 4 ---
+        log(f"[{index}] 步骤 4/4: 校验 SKU 界面", "TASK")
+        region_sku = (rect.left, rect.bottom - h // 2, w, h // 2)
+        is_sku_ready, _ = self.safe_ocr_wait(["确定", "请选择"], timeout=5, region=region_sku)
+
+        if not is_sku_ready:
+            path = os.path.join(ERROR_DIR, f"SKU_Error_{index}_{int(time.time())}.png")
+            self.safe_screenshot(path)
+            return False, path, "SKU面板未完全展开"
+
+        # --- 步骤 5 ---
+        log(f"[{index}] 🎯 断言全部通过！生成最终截图...", "TASK")
+        success_path = os.path.join(SUCCESS_DIR, f"SUCCESS_{goods_id}_{int(time.time())}.png")
+        self.safe_screenshot(success_path)
+        return True, success_path, ""
+
+
+# ==========================================
+# 🚦 任务调度引擎
+# ==========================================
+def batch_runner(goods_id_list):
+    state = load_state()
+
+    # 过滤机制
+    filtered_list = [gid for gid in goods_id_list
+                     if not state.get(gid, {}).get("success", False)
+                     and state.get(gid, {}).get("attempts", 0) < 30]
 
     print(f"\n{'=' * 60}")
-    print(f"🚀 拼多多自动化 RPA 启动 (待执行 {len(filtered_list)} / 总计 {len(goods_id_list)})")
+    log(f"🚀 PDD 自动化 RPA 任务启动", "SYSTEM")
+    log(f"📊 总任务: {len(goods_id_list)} | 跳过: {len(goods_id_list) - len(filtered_list)} | 待执行: {len(filtered_list)}",
+        "INFO")
     print(f"{'=' * 60}\n")
 
     if not filtered_list:
-        print("✅ 所有任务均已完成，流程结束。")
+        log("✅ 所有任务均已完成或到达重试上限。", "SUCCESS")
         return
 
-    vision = VisionEngine()
-    bot = PddAutomation(vision)
+    bot = PddAutomation()
     success_count, fail_count = 0, 0
 
     for i, goods_id in enumerate(filtered_list, 1):
-        print(f"\n▶▶ [任务进度 {i}/{len(filtered_list)}] 处理商品: {goods_id}")
+        print("\n" + "-" * 40)
+        log(f"▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
 
         if goods_id not in state:
             state[goods_id] = {"success": False, "image_path": "", "error_msg": "", "attempts": 0}
 
         state[goods_id]["attempts"] += 1
-        StateManager.save(state)
+        save_state(state)
 
         try:
             if not bot.prepare_home_page():
-                raise Exception("系统级异常：无法到达首页")
+                log(f"系统异常跳过", "WARN")
+                state[goods_id]["error_msg"] = "系统级启动失败"
+                fail_count += 1
+                continue
 
             success, img_path, error_msg = bot.process_single_goods(goods_id, i)
 
-            state[goods_id].update({"success": success, "image_path": img_path, "error_msg": error_msg})
-            StateManager.save(state)
+            state[goods_id].update({
+                "success": success,
+                "image_path": img_path,
+                "error_msg": error_msg
+            })
 
             if success:
+                log(f"✅ 处理成功 -> {img_path}", "SUCCESS")
                 success_count += 1
             else:
+                log(f"❌ 处理失败 -> {error_msg} 截图: {img_path}", "ERROR")
                 fail_count += 1
 
         except Exception as e:
-            print(f"\n[💥 异常] {e}")
+            log(f"💥 发生严重异常: {str(e)}", "FATAL")
+            traceback.print_exc()
             fail_count += 1
+
+            # 尝试记录崩溃现场
             try:
-                crash_path = bot.take_screenshot(Config.ERROR_DIR, "CRASH", i)
-                state[goods_id].update({"success": False, "image_path": crash_path, "error_msg": str(e)})
-                StateManager.save(state)
+                crash_path = os.path.join(ERROR_DIR, f"CRASH_{goods_id}_{int(time.time())}.png")
+                bot.safe_screenshot(crash_path)
+                state[goods_id].update({
+                    "success": False,
+                    "image_path": crash_path,
+                    "error_msg": f"代码异常: {str(e)}"
+                })
             except:
                 pass
 
-    print(f"\n{'=' * 50}\n✅ 任务完毕！成功: {success_count} | 失败: {fail_count}\n{'=' * 50}")
+        finally:
+            save_state(state)
+            time.sleep(0.3)  # 任务间缓冲
+
+    print(f"\n{'=' * 50}")
+    log(f"🎉 批量任务完毕！ 成功: {success_count} | 失败: {fail_count}", "SYSTEM")
+    print(f"{'=' * 50}")
 
 
 if __name__ == "__main__":
-    test_goods_ids = ["997025592944", "702868469934"]
+    test_goods_ids = [
+        "997025592944",
+        "702868469934"
+    ]
     batch_runner(test_goods_ids)
