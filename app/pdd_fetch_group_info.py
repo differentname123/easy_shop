@@ -252,7 +252,7 @@ def normalize_intercept_goods(item, default_category):
     record["image_url"] = item.get("goodsImageUrl") or item.get("goodsThumbnailUrl", "")
 
     # 价格字段映射 (千分位 -> 元)
-    record["original_price"] = (item.get("goodsMarkPrice") or 0) / 1000
+    record["original_price"] = (item.get("goodsMarkPrice") or 0) / 100
     record["activity_price"] = (item.get("minGroupPrice") or 0) / 1000
     record["saved_price"] = (item.get("couponDiscount") or 0) / 1000
 
