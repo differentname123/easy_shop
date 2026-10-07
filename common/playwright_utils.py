@@ -424,9 +424,51 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             if debug: page.bring_to_front()
 
             logger.info(f"[业务/游览] 初始化目标页面 | URL: [{target_url}]")
-            page.goto(target_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+
+            # --- 核心修复区域：成功则跳出，否则统一硬等10s ---
+            logger.info("[业务/游览] 等待最多10s探活初始接口，仅当成功响应时跳过等待...")
+
+            start_time = time.time()
+            target_wait_sec = 10.0
+            skip_wait = False  # 控制是否跳过等待的唯一开关
+
+            try:
+                # 设置 10s 超时去捕获请求，将 page.goto 裹在上下文里防止错失
+                with page.expect_response(
+                        lambda r: "/network/api/common/goodsList" in r.url and r.request.method == "POST",
+                        timeout=int(target_wait_sec * 1000)
+                ) as response_info:
+                    page.goto(target_url, wait_until="domcontentloaded")
+
+                resp = response_info.value
+
+                try:
+                    resp_json = resp.json()
+                    # 【核心逻辑】：只有明确拿到 success: True，才允许打开跳过开关
+                    if resp_json.get("success") is True:
+                        logger.info("[业务/游览] ✅ 明确捕捉到成功的数据流，获得特权，提前跳出 10s 等待")
+                        skip_wait = True
+                    else:
+                        logger.info("[业务/游览] ⚠️ 响应状态非成功(疑似被风控驳回)，必须等满 10 秒")
+                except Exception:
+                    logger.warning("[业务/游览] ⚠️ 响应无法解析为有效的 JSON，必须等满 10 秒")
+
+            except Exception as e:
+                # 捕获 Playwright 超时或页面崩溃等异常
+                logger.info("[业务/游览] ⏳ 10秒内未捕捉到指定网络请求或发生异常，必须等满 10 秒")
+
+            # 【强制时间补偿】：如果没拿到特权，计算已经过去的时间，强行把剩下的时间睡满
+            if not skip_wait:
+                elapsed = time.time() - start_time
+                remain_time = target_wait_sec - elapsed
+                if remain_time > 0:
+                    logger.info(f"[业务/游览] ⏳ 强制挂起，正在补齐剩余的 {remain_time:.2f} 秒等待时间...")
+                    page.wait_for_timeout(int(remain_time * 1000))
+
+            # 无论如何，最后切入验证码探测分支
             handle_pdd_captcha(page)
+
+            # ------------------------------------------------
 
             # --- 内部状态操作算子 ---
             def do_batch_select_all():
