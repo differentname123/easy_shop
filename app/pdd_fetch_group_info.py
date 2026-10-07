@@ -18,13 +18,13 @@ from playwright.sync_api import sync_playwright
 
 from app.pdd_utils import search_pdd_goods_by_keyword, get_pdd_recommend_goods
 from common.playwright_utils import launch_persistent_context, search_goods_and_intercept
-from common.common_utils import get_config, read_json, save_json
+from common.common_utils import get_config, read_json, save_json, setup_logger
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 
 USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
-logger = logging.getLogger("pdd_scraper")
+logger = setup_logger("pdd_scraper")
 
 GLOBAL_CONFIG = {
     "target_url": "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel",
