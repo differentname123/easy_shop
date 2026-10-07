@@ -95,8 +95,9 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
         original_price = product.get("original_price")
         activity_price = product.get("activity_price", 999999)
+        is_suspicious = False
 
-        # ============== 新增需求逻辑：计算比值与异常值过滤 ==============
+        # ============== 新增需求逻辑：计算比值并标记可疑商品 ==============
         # 提取有效的价格用于判断
         if original_price is not None and activity_price != 999999 and activity_price > 0:
             try:
@@ -110,9 +111,8 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
                 # 计算 original_price 和 activity_price 的比值
                 ratio = orig_p / act_p
-                # 如果比值大于2的就不要返回
-                if ratio > 3:
-                    continue
+                # 比值大于3时仍然返回，只标记为可疑
+                is_suspicious = ratio > 3
 
                 # 将计算后的价格更新回 original_price，供后续赋值展示
                 original_price = orig_p
@@ -123,19 +123,19 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
         products.append({
             "name": product.get("name"),
-            # "product_id": product.get("product_id"),
+            "product_id": product.get("product_id") or product_url,
             "platform": product.get("platform"),
             "image_url": product.get("image_url"),
             "product_url": product_url,
             # 新增：判断是否有佣金 (存在 promotion_url 即为有佣金)
             "has_commission": bool(product.get("promotion_url")),
-            # "original_price": original_price,
-            # "saved_price": product.get("saved_price"),
+            "original_price": original_price,
+            "saved_price": product.get("saved_price") or 0,
             # "sales_tip": product.get("sales_tip"),
             "brand": product.get("brand"),
-            "category": product.get("category"),
             "format_info": product.get("format_info"),
             "activity_price": activity_price,
+            "is_suspicious": is_suspicious,
             # "updated_at": product.get("updated_at"),
             # 新增：来源字段，如果不存在则默认赋值为 "group"
             "_source_api": product.get("_source_api") or "group"
@@ -254,9 +254,49 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     top_filters = valid_attributes[:5]
     # ===================================================
 
+    # 计算结束后再精简响应，避免影响匹配、单位换算和筛选维度统计
+    response_products = []
+    for product in final_results:
+        format_info = product.get("format_info") or {}
+        pricing_basis = format_info.get("pricing_basis") or {}
+        response_products.append({
+            "product_id": product["product_id"],
+            "name": product["name"],
+            "platform": product["platform"],
+            "image_url": product["image_url"],
+            "product_url": product["product_url"],
+            "has_commission": product["has_commission"],
+            "original_price": product["original_price"],
+            "saved_price": product["saved_price"],
+            "brand": product["brand"],
+            "activity_price": product["activity_price"],
+            "_source_api": product["_source_api"],
+            "is_suspicious": product["is_suspicious"],
+            "base_unit": product["base_unit"],
+            "format_info": {
+                "pricing_basis": {
+                    "total_value": pricing_basis.get("total_value", 1),
+                    "structure": [
+                        {"value": item.get("value"), "unit": item.get("unit")}
+                        for item in (pricing_basis.get("structure") or [])
+                    ]
+                },
+                "decision_keywords": [
+                    {
+                        "attribute_name": kw.get("attribute_name"),
+                        "attribute_value": kw.get("attribute_value")
+                    }
+                    for kw in (format_info.get("decision_keywords") or [])
+                ]
+            }
+        })
+
     return {
-        "results": final_results,
-        "filters": top_filters
+        "results": response_products,
+        "filters": [
+            {"attribute_name": item["attribute_name"], "options": item["options"]}
+            for item in top_filters
+        ]
     }
 
 
