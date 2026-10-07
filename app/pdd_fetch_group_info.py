@@ -302,7 +302,7 @@ def web_search_intercept_task():
     ]
 
     # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
-    stats_file_path = Path(__file__).resolve().parents[1] / "data" / "keyword_intercept_stats.json"
+    stats_file_path = "keyword_intercept_stats.json"
 
     while True:
         logger.info("[UI拦截任务/轮次开始] 开始执行 UI 搜索数据拦截...")
