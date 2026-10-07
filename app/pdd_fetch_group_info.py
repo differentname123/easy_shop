@@ -282,6 +282,7 @@ def normalize_intercept_goods(item, default_category):
 def web_search_intercept_task():
     """后台任务：利用 Playwright 拦截指定关键词的商品流数据，每轮等待 24 小时"""
     search_keywords = [
+        "猕猴桃",
         # 基础水饮与酒水
         "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
         "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
@@ -1040,7 +1041,7 @@ if __name__ == "__main__":
 
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
-        playwright_task,
+        # playwright_task,
         # api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
         web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
