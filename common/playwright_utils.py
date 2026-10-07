@@ -543,11 +543,24 @@ def search_goods_and_intercept(search_key_list: list, user_data_dir: str, limit_
 # ==============================================================================
 if __name__ == "__main__":
 
-    # 打开拼多多网页版
-    USER_DATA_DIR = r"W:\\project\\python_project\\easy_shop\\temp_data\\browser_data\\pdd_browser_data"
-    TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
+    # # 打开拼多多网页版
+    # USER_DATA_DIR = r"W:\\project\\python_project\\easy_shop\\temp_data\\browser_data\\pdd_browser_data"
+    # TEST_URL = "https://mobile.pinduoduo.com/pincard_ask.html?__rp_name=brand_amazing_price_group_channel"
+    #
+    # # 场景二：携带环境自由操作 (按需打开) 拼多多 多人团 网页版
+    # open_browser_for_manual_use(
+    #     user_data_dir=USER_DATA_DIR,
+    #     home_url=TEST_URL
+    # )
 
-    # 场景二：携带环境自由操作 (按需打开)
+
+
+    # 配置测试环境目录与目标网址
+    TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
+    USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
+
+
+    # 场景二：携带环境自由操作 (按需打开) 多多进宝
     open_browser_for_manual_use(
         user_data_dir=USER_DATA_DIR,
         home_url=TEST_URL
@@ -555,9 +568,7 @@ if __name__ == "__main__":
 
 
 
-    # 配置测试环境目录与目标网址
-    TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
-    USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
+
 
     # 执行搜索并拦截
     result = search_goods_and_intercept(search_key_list=["方便面"], user_data_dir=USER_DATA_DIR, debug=True,
@@ -579,11 +590,4 @@ if __name__ == "__main__":
             sample_goods = goods[0]
             print(f"👉 融合示例 - 商品名称: {sample_goods.get('goodsName', sample_goods.get('商品名称'))}")
             print(f"👉 融合示例 - 短链接: {sample_goods.get('短链接', '无')}")
-
-    # 场景二：携带环境自由操作 (按需打开)
-    open_browser_for_manual_use(
-        user_data_dir=USER_DATA_DIR,
-        home_url=TEST_URL
-    )
-
 
