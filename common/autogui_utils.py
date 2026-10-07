@@ -317,8 +317,10 @@ def batch_runner(goods_id_list):
 
 
 if __name__ == "__main__":
-    test_goods_ids = [
-        "997025592944",
-        "702868469934"
-    ]
-    batch_runner(test_goods_ids)
+    while True:
+        try:
+            need_sku_product_id_list = read_json("need_sku_product_id.json")
+            batch_runner(need_sku_product_id_list)
+        except Exception as e:
+            log(f"[FATAL] 💥 主程序异常退出: {str(e)}")
+        time.sleep(3600)
