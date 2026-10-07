@@ -279,10 +279,15 @@ def normalize_intercept_goods(item, default_category):
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
 # ==========================================
+# ==========================================
+# 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
+# ==========================================
 def web_search_intercept_task():
     """后台任务：利用 Playwright 拦截指定关键词的商品流数据，每轮等待 24 小时"""
     search_keywords = [
-        "猕猴桃",
+        "猕猴桃", "蒜",
+        "洋葱",
+
         # 基础水饮与酒水
         "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
         "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
@@ -310,92 +315,122 @@ def web_search_intercept_task():
             # 1. 读取历史记录字典
             current_stats = read_json(str(stats_file_path)) or {}
 
-            # 2. 对关键字进行排序
+            # 2. 统一过滤 24 小时内已成功搜索的关键字
+            bj_tz = timezone(timedelta(hours=8))
+            now_bj = datetime.now(bj_tz)
+
+            pending_keywords = []
+            for keyword in search_keywords:
+                stat = current_stats.get(keyword)
+                # 只有当记录存在，且上次抓取数量大于 0 (即成功记录) 时才进行时间校验
+                if stat and stat.get("count", 0) > 0:
+                    last_time_str = stat.get("last_time")
+                    if last_time_str:
+                        try:
+                            # 解析保存的北京时间字符串
+                            last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=bj_tz)
+                            # 如果距离上次成功搜索小于 24 小时，则跳过
+                            if (now_bj - last_time).total_seconds() < 12 * 3600:
+                                continue
+                        except ValueError:
+                            # 若时间格式解析异常，则不跳过该关键字
+                            pass
+
+                pending_keywords.append(keyword)
+
+            # 3. 对剩余的待搜关键字进行排序
             # 排序规则：(是否出现过(未出现为0，已出现为1), 上次拉取的个数(默认0))
-            # 这样保证：从未拉取过的在最前；拉取过的按数量升序排列（越少越靠前）
-            search_keywords.sort(key=lambda k: (
+            pending_keywords.sort(key=lambda k: (
                 1 if k in current_stats else 0,
                 current_stats.get(k, {}).get("count", 0)
             ))
 
-            logger.info(f"[UI拦截任务/排序完成] 即将拉取的前5个关键字预览: {search_keywords[:5]}")
+            # 4. 打印最终需要搜索的关键字列表和顺序
+            logger.info("\n" + "=" * 50)
+            logger.info(f"🎯 [UI拦截任务] 过滤后本轮需搜索的关键字顺序 (共 {len(pending_keywords)} 个):")
+            for idx, k in enumerate(pending_keywords, 1):
+                print(f"  {idx:02d}. {k}")
+            print("=" * 50 + "\n")
 
-            # 在最外层建立数据库连接，避免内层循环反复重连
-            with closing(gen_db_object()) as db_instance:
-                db_instance.ping()
-                product_manager = ProductManager(db_instance)
 
-                # 遍历排序后的关键词列表
-                for keyword in search_keywords:
-                    logger.info(f"[UI拦截任务/搜索] 正在执行关键字: [{keyword}] 的搜索拦截...")
-                    item_count = 0  # 记录本次拉取的商品数量
+            # 只有在有关键字需要搜索时才连接数据库
+            if pending_keywords:
+                # 在最外层建立数据库连接，避免内层循环反复重连
+                with closing(gen_db_object()) as db_instance:
+                    db_instance.ping()
+                    product_manager = ProductManager(db_instance)
 
-                    try:
-                        # 包装成单元素列表传入
-                        intercept_result = search_goods_and_intercept(
-                            search_key_list=[keyword],
-                            user_data_dir=USER_DATA_DIR,
-                            debug=False
-                        )
+                    # 遍历排序后的关键词列表
+                    for keyword in pending_keywords:
+                        logger.info(f"[UI拦截任务/搜索] 正在执行关键字: [{keyword}] 的搜索拦截...")
+                        item_count = 0  # 记录本次拉取的商品数量
 
-                        if intercept_result and keyword in intercept_result:
-                            data = intercept_result[keyword]
+                        try:
+                            # 包装成单元素列表传入
+                            intercept_result = search_goods_and_intercept(
+                                search_key_list=[keyword],
+                                user_data_dir=USER_DATA_DIR,
+                                debug=False
+                            )
 
-                            # 适配新数据结构，提取字典内部的 goodsList
-                            if isinstance(data, dict):
-                                item_list = data.get("goodsList", [])
+                            if intercept_result and keyword in intercept_result:
+                                data = intercept_result[keyword]
+
+                                # 适配新数据结构，提取字典内部的 goodsList
+                                if isinstance(data, dict):
+                                    item_list = data.get("goodsList", [])
+                                else:
+                                    item_list = data
+
+                                if not item_list:
+                                    logger.info("[UI拦截任务/空数据] 关键词: [%s] | 未拦截到商品", keyword)
+                                else:
+                                    records = []
+                                    now = datetime.now(timezone.utc)
+                                    for item in item_list:
+                                        record = normalize_intercept_goods(item, keyword)
+                                        if record is not None:
+                                            record["updated_at"] = now
+                                            records.append(record)
+
+                                    if records:
+                                        item_count = len(records)
+                                        counts = product_manager.update(records)
+                                        logger.info("[UI拦截任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
+                                                    keyword, item_count, counts.get("new", 0), counts.get("update", 0))
                             else:
-                                item_list = data
+                                logger.warning("[UI拦截任务/失败] 关键词: [%s] 拦截工具未返回有效数据", keyword)
 
-                            if not item_list:
-                                logger.info("[UI拦截任务/空数据] 关键词: [%s] | 未拦截到商品", keyword)
-                            else:
-                                records = []
-                                now = datetime.now(timezone.utc)
-                                for item in item_list:
-                                    record = normalize_intercept_goods(item, keyword)
-                                    if record is not None:
-                                        record["updated_at"] = now
-                                        records.append(record)
+                        except Exception as inner_exc:
+                            logger.error("[UI拦截任务/单次异常] 执行关键词 [%s] 拦截或落库时发生错误 | 错误: [%s]",
+                                         keyword, inner_exc)
 
-                                if records:
-                                    item_count = len(records)
-                                    counts = product_manager.update(records)
-                                    logger.info("[UI拦截任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
-                                                keyword, item_count, counts.get("new", 0), counts.get("update", 0))
+                        # 更新本地关键字记录字典并落盘 (无论成功失败都更新，若失败则 count 为 0，下次不会被跳过)
+                        current_stats[keyword] = {
+                            "last_time": datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S"),  # 北京时间
+                            "count": item_count
+                        }
+                        stats_file_path.parent.mkdir(parents=True, exist_ok=True)
+                        save_json(str(stats_file_path), current_stats)
+
+                        # 判断本次是否为0，触发冷却预警或正常休眠
+                        if item_count == 0:
+                            print("\n" + "❗" * 45)
+                            print(f"🚨🚨🚨 醒目警报: 关键字 [{keyword}] 本次抓取数量为 0！🚨🚨🚨")
+                            print("⏳ 触发风控或限流保护，强制等待 2 分钟 (120秒) 后继续...")
+                            print("❗" * 45 + "\n")
+                            logger.warning("[UI拦截任务/冷却保护] 关键字: [%s] 数量为0，开始深度休眠 120 秒", keyword)
+                            time.sleep(120)
                         else:
-                            logger.warning("[UI拦截任务/失败] 关键词: [%s] 拦截工具未返回有效数据", keyword)
-
-                    except Exception as inner_exc:
-                        logger.error("[UI拦截任务/单次异常] 执行关键词 [%s] 拦截或落库时发生错误 | 错误: [%s]", keyword,
-                                     inner_exc)
-
-                    # 3. 更新本地关键字记录字典并落盘
-                    bj_tz = timezone(timedelta(hours=8))
-                    current_stats[keyword] = {
-                        "last_time": datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S"),  # 北京时间
-                        "count": item_count
-                    }
-                    stats_file_path.parent.mkdir(parents=True, exist_ok=True)
-                    save_json(str(stats_file_path), current_stats)
-
-                    # 4. 判断本次是否为0，触发冷却预警或正常休眠
-                    if item_count == 0:
-                        print("\n" + "❗" * 45)
-                        print(f"🚨🚨🚨 醒目警报: 关键字 [{keyword}] 本次抓取数量为 0！🚨🚨🚨")
-                        print("⏳ 触发风控或限流保护，强制等待 2 分钟 (120秒) 后继续...")
-                        print("❗" * 45 + "\n")
-                        logger.warning("[UI拦截任务/冷却保护] 关键字: [%s] 数量为0，开始深度休眠 120 秒", keyword)
-                        time.sleep(120)
-                    else:
-                        # 正常数据，给每次搜索独立操作间增加喘息时间，防反爬
-                        time.sleep(3)
+                            # 正常数据，给每次搜索独立操作间增加喘息时间，防反爬
+                            time.sleep(3)
 
         except Exception as exc:
             logger.error("[UI拦截任务/全局异常] 数据库连接或执行时发生严重错误 | 错误: [%s]", exc)
 
         logger.info("[UI拦截任务/轮次结束] 本轮 UI 拦截拉取完成，休眠 24 小时...")
-        time.sleep(24 * 3600)
+        time.sleep(1 * 3600)
+
 
 # ==========================================
 # 新增：API 并行任务模块

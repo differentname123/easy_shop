@@ -93,22 +93,50 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         if not product_url:
             continue
 
+        original_price = product.get("original_price")
+        activity_price = product.get("activity_price", 999999)
+
+        # ============== 新增需求逻辑：计算比值与异常值过滤 ==============
+        # 提取有效的价格用于判断
+        if original_price is not None and activity_price != 999999 and activity_price > 0:
+            try:
+                # 确保转换为数值类型进行比较与计算
+                orig_p = float(original_price)
+                act_p = float(activity_price)
+
+                # 如果 activity_price 大于 original_price，那么 original_price 要乘10
+                if act_p > orig_p:
+                    orig_p *= 10
+
+                # 计算 original_price 和 activity_price 的比值
+                ratio = orig_p / act_p
+                # 如果比值大于2的就不要返回
+                if ratio > 3:
+                    continue
+
+                # 将计算后的价格更新回 original_price，供后续赋值展示
+                original_price = orig_p
+            except (ValueError, TypeError):
+                # 若价格字段转换抛出异常，为了容错，选择跳过当前价格验证流程
+                pass
+        # ==============================================================
+
         products.append({
             "name": product.get("name"),
-            "product_id": product.get("product_id"),
+            # "product_id": product.get("product_id"),
             "platform": product.get("platform"),
             "image_url": product.get("image_url"),
             "product_url": product_url,
             # 新增：判断是否有佣金 (存在 promotion_url 即为有佣金)
             "has_commission": bool(product.get("promotion_url")),
-            "original_price": product.get("original_price"),
-            "saved_price": product.get("saved_price"),
-            "sales_tip": product.get("sales_tip"),
+            # "original_price": original_price,
+            # "saved_price": product.get("saved_price"),
+            # "sales_tip": product.get("sales_tip"),
             "brand": product.get("brand"),
             "category": product.get("category"),
             "format_info": product.get("format_info"),
-            "activity_price": product.get("activity_price", 999999),
-            "updated_at": product.get("updated_at"),
+            "activity_price": activity_price,
+            # "updated_at": product.get("updated_at"),
             # 新增：来源字段，如果不存在则默认赋值为 "group"
             "_source_api": product.get("_source_api") or "group"
         })
@@ -230,6 +258,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         "results": final_results,
         "filters": top_filters
     }
+
 
 # 1. 搜索 API 接口
 # 修改 1. 搜索 API 接口
