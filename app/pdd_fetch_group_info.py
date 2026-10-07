@@ -1041,7 +1041,7 @@ if __name__ == "__main__":
 
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
-        # playwright_task,
+        playwright_task,
         # api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
         web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
