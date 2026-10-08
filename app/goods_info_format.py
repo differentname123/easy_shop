@@ -13,13 +13,15 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import multiprocessing
-from app.pdd_utils import batch_convert_pdd_urls, verify_and_convert_pdd_goods
 from common.common_utils import read_file_to_str, setup_logger, string_to_object, get_config
+logger = setup_logger(app_name="goods_format")
+from app.pdd_utils import batch_convert_pdd_urls, verify_and_convert_pdd_goods
+
+
 from common.model_api import generate_content
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 
-logger = setup_logger(app_name="goods_format")
 
 PROMPT_FILE_PATH = Path(__file__).resolve().parents[1] / "prompt" / "商品数据结构化清洗.txt"
 LLM_MAX_RETRIES = 3
