@@ -557,6 +557,9 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
 
                     # 翻页状态机
                     page_num = 1
+                    error_retry_count = 0  # 🚀新增：连续错误重试计数器
+                    MAX_RETRIES = 3        # 🚀新增：最大连续重试熔断阈值
+
                     while True:
                         if limit_count > 0 and len(all_goods) >= limit_count:
                             logger.info(
@@ -579,8 +582,7 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                                 robust_click(next_btn_locator)
 
                             json_data = response_info.value.json()
-                            current_goods = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data,
-                                                                                                           dict) else []
+                            current_goods = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data, dict) else []
 
                             if not current_goods:
                                 logger.info("[业务/状态] 遭遇空报文 | 停止翻页")
@@ -590,16 +592,45 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                             logger.info(
                                 f"[业务/采集] 报文剥离完毕 | 轮次: [{page_num}] | 新增: [{len(current_goods)}] | 累计: [{len(all_goods)}]")
 
+                            # 🚀请求成功，清零重试计数器
+                            error_retry_count = 0
+
                             page.wait_for_timeout(500)
                             do_batch_select_all()
                             page.wait_for_timeout(1000)
 
                         except Exception as e:
                             logger.warning(f"[业务/异常] 翻页数据流断裂 | 异常: [{e}]")
-                            if handle_pdd_captcha(page):
+
+                            # 🚀明确探测是否真的是因为验证码引发的超时
+                            has_captcha = False
+                            try:
+                                if page.locator('button:has-text("安全验证")').first.is_visible(timeout=1000) or \
+                                   page.locator('.slider-img-bg').first.is_visible(timeout=1000):
+                                    has_captcha = True
+                            except Exception:
+                                pass
+
+                            if has_captcha:
+                                logger.info("[业务/状态] 检测到安全盾，准备切入风控对抗逻辑...")
+                                if handle_pdd_captcha(page):
+                                    logger.info("[业务/状态] ✅ 安全盾解除，准备重试该页...")
+                                    page_num -= 1  # 🚀补偿：刚才那一页没翻成功，退回页码以免无意义累加
+                                    continue
+                                else:
+                                    logger.error("[业务/异常] ❌ 风控强阻拦无法突破，强制截断当前翻页链路。")
+                                    break
+                            else:
+                                # 🚀如果没有验证码，说明是纯粹的网络超时或被平台软拦截（不给数据）
+                                error_retry_count += 1
+                                if error_retry_count >= MAX_RETRIES:
+                                    logger.error(f"[业务/异常] ❌ 连续 {MAX_RETRIES} 次无验证码超时，触发硬性熔断，防止死循环！")
+                                    break
+
+                                logger.warning(f"[业务/状态] 未检测到安全盾，执行常规网络重试 ({error_retry_count}/{MAX_RETRIES})...")
+                                page_num -= 1  # 🚀补偿：退回页码
+                                page.wait_for_timeout(2000) # 稍作喘息再次请求
                                 continue
-                            logger.error("[业务/异常] ❌ 风控强阻拦无法突破，强制截断当前翻页链路。")
-                            break
 
                     if limit_count > 0:
                         all_goods = all_goods[:limit_count]
@@ -638,7 +669,6 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             logger.info(f"[系统/退出] 🚀 Playwright 沙盒已销毁 | 闭环交付总量: 【{len(final_results)}】\n")
 
     return final_results
-
 
 # ==============================================================================
 #                                   使用示例
