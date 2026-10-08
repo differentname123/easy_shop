@@ -194,18 +194,14 @@ class PddAutomation(UIActionEngine):
         if not edit_box.Exists(2, 1):
             return False, "", "无法定位中转小程序的输入框"
 
-        # 【修复点】：小程序必须触发底层 bindinput 事件。不能用 SetValue。
-        # simulateMove=False 保证了鼠标不会出现慢速滑动的动画，而是瞬间点击
         edit_box.Click(simulateMove=False)
         time.sleep(0.05)
 
-        # 物理级全选并删除，确保触发框架的数据更新
         auto.SendKeys('{Ctrl}a')
         time.sleep(0.05)
         auto.SendKeys('{Delete}')
         time.sleep(0.05)
 
-        # 写入新的 goods_id
         pyperclip.copy(str(goods_id))
         auto.SendKeys('{Ctrl}v')
         time.sleep(0.05)
@@ -215,7 +211,6 @@ class PddAutomation(UIActionEngine):
         if not jump_btn.Exists(1, 1):
             return False, "", "无法定位中转小程序的跳转按钮"
 
-        # 按钮点击可以使用底层接口，不会有事件丢失问题
         try:
             jump_btn.GetInvokePattern().Invoke()
         except Exception:
@@ -233,52 +228,77 @@ class PddAutomation(UIActionEngine):
         else:
             log("[INFO] 未检测到“允许”弹窗（可能已静默放行或系统延迟）")
 
-        # --- 步骤 3：接管弹出的拼多多目标窗口 ---
-        log(f"[TASK] [{index}] 步骤 3/4: 接管并校验拼多多详情页")
-        # 切换句柄目标，确保接下来的操作只在拼多多小程序内进行，不跟合力汇串台
+        # --- 步骤 3 & 4：【重构】接管拼多多并进行状态机轮询 ---
+        log(f"[TASK] [{index}] 步骤 3/4: 状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获)")
         self.window_name = TARGET_APP_NAME
 
         if not self.find_window(timeout=5):
             return False, "", "未检测到拼多多窗口弹出（跳转可能失败）"
 
-        # 严格保留置顶操作，确保拼多多窗口拿到最高控制权，后续点击不被拦截
         self.force_bring_to_front()
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
 
-        region_bottom = (rect.left, rect.bottom - h // 6, w, h // 6)
-        is_detail, _ = self.safe_ocr_wait(["客服", "店铺"], timeout=10, region=region_bottom)
+        # 将区域放大为底部 1/4，这样既能盖住详情页的“客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
+        capture_region = (int(rect.left), int(rect.bottom - h // 4), int(w), int(h // 4))
+        monitor = {"left": capture_region[0], "top": capture_region[1],
+                   "width": capture_region[2], "height": capture_region[3]}
 
-        if not is_detail:
+        start_time = time.time()
+        detail_entered = False
+        sku_ready = False
+
+        # 极限轮询：最多尝试 10 秒
+        while time.time() - start_time < 10:
+            try:
+                sct_img = sct.grab(monitor)
+                img_cv = cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
+                result, _ = ocr(img_cv)
+
+                if result:
+                    # 把识别到的文字拼接起来，方便进行多关键词判断
+                    detected_text = "".join([line[1] for line in result if len(line) >= 2])
+
+                    # 状态 A：如果看到 SKU 的标志性文字，说明点击成功且弹窗已出，直接终止轮询！
+                    if any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+                        sku_ready = True
+                        break
+
+                    # 状态 B：如果依然停留在详情页，则疯狂尝试点击购买
+                    if any(kw in detected_text for kw in ["客服", "店铺"]):
+                        detail_entered = True
+                        # 无延迟点击目标位置，如果被吞了，下一次 while 循环又会进来重新点击
+                        self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
+                        # 仅做极小延时，防止 UI 线程被点死
+                        time.sleep(0.3)
+
+            except Exception:
+                pass
+
+        # 轮询结束，进行结果清算
+        if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.close_current_window()  # 没成功的时候重启(关闭)拼多多
+            self.close_current_window()
             return False, path, "进入详情页失败"
 
-        # --- 步骤 4：闭环后续操作 ---
-        self.safe_click(rect.right - 60, rect.bottom - 25, "点击购买")
-        log(f"[TASK] [{index}] 步骤 4/4: 校验 SKU 界面并快照")
-
-        region_sku = (rect.left, rect.bottom - h // 2, w, h // 2)
-        is_sku_ready, _ = self.safe_ocr_wait(["确定", "请选择", "可选", "已选"], timeout=5, region=region_sku)
-
-        if not is_sku_ready:
+        if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.close_current_window()  # 没成功的时候重启(关闭)拼多多
-            return False, path, "SKU面板未完全展开"
+            self.close_current_window()
+            return False, path, "SKU面板未完全展开或点击全部失效"
 
+        # 流程圆满成功，保存截图
         success_path = os.path.join(SUCCESS_DIR, f"{goods_id}.png")
         self.fast_screenshot_save(success_path)
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
 
-        # 【优化】只有连续成功达到 50 次，才主动关闭重启拼多多
+        # 连续成功清理策略
         if (consecutive_successes + 1) % 50 == 0:
             self.close_current_window()
             log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, success_path, ""
-
 
 # ==========================================
 # 🚦 任务调度引擎
