@@ -487,11 +487,57 @@ def batch_runner(goods_id_list):
     log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {success_count} | 失败: {fail_count}")
     print(f"{'=' * 50}")
 
+from datetime import datetime, timedelta, timezone
+from contextlib import closing
+# 确保你的文件中已经导入了下面这两个模块
+from common.mongo_db.mongo_base import gen_db_object
+from common.mongo_db.mongo_manager import ProductManager
+def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
+    """
+    查询最近 24 小时内更新的商品数据（基于 updated_at 字段）。
+
+    :param limit: 返回的最大文档数，0 表示不限制。
+    :param extra_query: dict, 额外的 MongoDB 查询条件。例如: {"format_status": "success"}。
+    :param projection: dict, 需要返回的字段映射。例如: {"_id": 1, "product_id": 1, "name": 1}。
+    :return: list, 包含查询结果的字典列表。
+    """
+    # 1. 计算 24 小时前的时间阈值（使用 UTC 时间，与项目时区保持一致）
+    time_threshold = datetime.now(timezone.utc) - timedelta(hours=12)
+
+    # 2. 构建基础查询条件
+    query_condition = {
+        "updated_at": {"$gte": time_threshold}
+    }
+
+    # 3. 合并额外查询条件（如果不为空）
+    if extra_query and isinstance(extra_query, dict):
+        # 避免直接覆盖原字典引发引用冲突
+        query_condition = {**query_condition, **extra_query}
+
+    # 4. 获取数据库连接并执行查询
+    # 使用 closing 语法糖，确保哪怕查询中途发生异常，数据库连接也能被正确关闭
+    with closing(gen_db_object()) as db_instance:
+        db_instance.ping()  # 探活
+        product_manager = ProductManager(db_instance)
+
+        # 执行查询，默认按更新时间倒序排列（最新的在最前）
+        results = product_manager.query(
+            query_condition,
+            projection=projection,
+            sort=[("updated_at", -1)],
+            limit=limit
+        )
+
+    return results
 
 if __name__ == "__main__":
     while True:
         try:
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
+
+            results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"}, projection={"product_id": 1, "_id": 0})
+            need_sku_product_id_list = [item["product_id"] for item in results]
+
             batch_runner(need_sku_product_id_list)
         except Exception as e:
             log(f"[FATAL] 💥 主程序异常退出: {str(e)}")
