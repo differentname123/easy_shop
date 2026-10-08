@@ -588,9 +588,30 @@ def _run_task(task):
             task.__name__,
         )
         raise
+def extract_sku():
+
+    prompt_text = read_file_to_str(r"W:\project\python_project\easy_shop\prompt\商品SKU提取.txt")
+
+    # 获取 W:\project\python_project\easy_shop\common\results_success 下面的所有png文件列表
+    results_success_dir = Path(r"W:\project\python_project\easy_shop\common\results_success")
+
+    png_file_list = list(results_success_dir.glob("*.png"))
+    # 分成batch，每个batch 5 张图片
+    batch_size = 5
+
+    batch_list = [png_file_list[i:i + batch_size] for i in range(0, len(png_file_list), batch_size)]
+    for batch in batch_list:
+        result = generate_content(prompt=prompt_text, model="gpt-5.6-max", file_paths=batch)
+        print()
+
+
+
 
 
 if __name__ == "__main__":
+    # extract_sku()
+
+
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
         format_task,
