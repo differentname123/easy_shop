@@ -259,8 +259,8 @@ class PddAutomation(UIActionEngine):
                     # 把识别到的文字拼接起来，方便进行多关键词判断
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 状态 A：如果看到 SKU 的标志性文字，说明点击成功且弹窗已出，直接终止轮询！
-                    if any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+                    # 状态 A：【修改点】必须是在判断过 "客服" 和 "店铺" (detail_entered 为 True) 之后，才能判断 SKU
+                    if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
                         sku_ready = True
                         break
 
@@ -299,7 +299,6 @@ class PddAutomation(UIActionEngine):
             log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, success_path, ""
-
 # ==========================================
 # 🚦 任务调度引擎
 # ==========================================
