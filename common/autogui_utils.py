@@ -491,7 +491,7 @@ def batch_runner(goods_id_list):
 if __name__ == "__main__":
     while True:
         try:
-            need_sku_product_id_list = read_json("need_sku_product_id.json")
+            need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
             batch_runner(need_sku_product_id_list)
         except Exception as e:
             log(f"[FATAL] 💥 主程序异常退出: {str(e)}")
