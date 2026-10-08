@@ -176,6 +176,135 @@ class PddAutomation(UIActionEngine):
             self.safe_click(rect.right - 25, rect.top + 60, f"关闭 {self.window_name} 窗口")
             time.sleep(0.3)
 
+    def get_control_text(self, ctrl):
+        """获取控件文本，优先 ValuePattern，兜底 LegacyIAccessible 或 Name"""
+        if not ctrl:
+            return ""
+        try:
+            vp = ctrl.GetValuePattern()
+            if vp:
+                return vp.Value or ""
+        except Exception:
+            pass
+        try:
+            lp = ctrl.GetLegacyIAccessiblePattern()
+            if lp:
+                return lp.Value or ""
+        except Exception:
+            pass
+        return ctrl.Name or ""
+
+    def ensure_transfer_clean_state(self, max_retries=3):
+        """
+        【自愈核心】检测非期望弹窗并自动消除，强行将中转站恢复至【情况2】干净状态：
+        - 遇到【情况1】残留的拼多多跳转弹窗 -> 点击“取消”（防止带错商品参数）
+        - 遇到【情况3】不支持拖入文件弹窗 -> 点击“确定”消除
+        """
+        for _ in range(max_retries):
+            cleaned = False
+
+            # 1. 检查并修复【情况3】：不支持拖入文件弹窗
+            title_unsupported = self.window.TextControl(Name="当前小程序不支持拖入文件")
+            if title_unsupported.Exists(0, 0):
+                btn_ok = self.window.TextControl(Name="确定")
+                if btn_ok.Exists(0.5, 0):
+                    try:
+                        btn_ok.GetInvokePattern().Invoke()
+                    except Exception:
+                        btn_ok.Click(simulateMove=False)
+                    log("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
+                    cleaned = True
+                    time.sleep(0.1)
+
+            # 2. 检查并修复【情况1】：遗留的跳转弹窗
+            title_jump = self.window.TextControl(Name="即将打开“拼多多”小程序")
+            if title_jump.Exists(0, 0):
+                btn_cancel = self.window.TextControl(Name="取消")
+                if btn_cancel.Exists(0.5, 0):
+                    try:
+                        btn_cancel.GetInvokePattern().Invoke()
+                    except Exception:
+                        btn_cancel.Click(simulateMove=False)
+                    log("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
+                    cleaned = True
+                    time.sleep(0.1)
+
+            # 3. 检查是否有遮挡的 wrap 容器弹窗
+            wrap_modal = self.window.GroupControl(ClassName="wrap")
+            if wrap_modal.Exists(0, 0):
+                btn_cancel = wrap_modal.TextControl(Name="取消")
+                btn_ok = wrap_modal.TextControl(Name="确定")
+                if btn_cancel.Exists(0.2, 0):
+                    try:
+                        btn_cancel.GetInvokePattern().Invoke()
+                    except Exception:
+                        btn_cancel.Click(simulateMove=False)
+                    cleaned = True
+                elif btn_ok.Exists(0.2, 0):
+                    try:
+                        btn_ok.GetInvokePattern().Invoke()
+                    except Exception:
+                        btn_ok.Click(simulateMove=False)
+                    cleaned = True
+                time.sleep(0.1)
+
+            if not cleaned:
+                break
+
+        # 最终校验是否已进入洁净的【情况2】
+        wrap_modal = self.window.GroupControl(ClassName="wrap")
+        if wrap_modal.Exists(0, 0):
+            return False
+        return True
+
+    def set_transfer_goods_id(self, goods_id, max_attempts=3):
+        """
+        【输入与双向绑定保障】真实按键事件驱动 + 严格值校验，彻底规避双向绑定不更新及张冠李戴
+        """
+        target_str = str(goods_id).strip()
+        edit_box = self.window.EditControl()
+        if not edit_box.Exists(2, 1):
+            return False, "无法定位中转小程序的输入框"
+
+        for attempt in range(1, max_attempts + 1):
+            # 1. 真实点击聚焦输入框
+            edit_box.Click(simulateMove=False)
+            time.sleep(0.02)
+
+            # 2. 彻底清空内容
+            auto.SendKeys('{Ctrl}a{Delete}')
+            time.sleep(0.02)
+
+            # 3. 极速粘贴并附加真实键盘按键，强行触发小程序底层的 bindinput 监听
+            pyperclip.copy(target_str)
+            auto.SendKeys('{Ctrl}v')
+            time.sleep(0.02)
+
+            # 核心步骤：产生真实的按键输入流（空格+退格），确保小程序数据模型彻底响应
+            auto.SendKeys(' {Back}')
+            time.sleep(0.03)
+
+            # 4. 严格值校验
+            current_val = self.get_control_text(edit_box).strip()
+            if current_val == target_str:
+                return True, ""
+
+            log(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
+
+            # 兜底方案：纯按键逐字敲击输入
+            edit_box.Click(simulateMove=False)
+            time.sleep(0.02)
+            auto.SendKeys('{Ctrl}a{Delete}')
+            time.sleep(0.02)
+            auto.SendKeys(target_str)
+            time.sleep(0.03)
+
+            current_val = self.get_control_text(edit_box).strip()
+            if current_val == target_str:
+                return True, ""
+
+        return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
+
     def process_single_goods(self, goods_id, index, consecutive_successes=0):
         # --- 步骤 1：确立中转站据点 ---
         self.window_name = TRANSFER_APP_NAME
@@ -188,23 +317,16 @@ class PddAutomation(UIActionEngine):
         # 严格保留置顶操作，防止输入框失去焦点
         self.force_bring_to_front()
 
-        # --- 步骤 2：精确操控控件进行传参 ---
+        # --- 步骤 1.5：环境自愈（确保恢复至【情况2】） ---
+        if not self.ensure_transfer_clean_state():
+            return False, "", "中转小程序存在无法自动关闭的弹窗，环境未能恢复至正常状态"
+
+        # --- 步骤 2：精确写入商品 ID 并严格比对 ---
         log(f"[TASK] [{index}] 步骤 1/4: 向中转站写入商品 ID")
-        edit_box = self.window.EditControl()
-        if not edit_box.Exists(2, 1):
-            return False, "", "无法定位中转小程序的输入框"
-
-        edit_box.Click(simulateMove=False)
-        time.sleep(0.05)
-
-        auto.SendKeys('{Ctrl}a')
-        time.sleep(0.05)
-        auto.SendKeys('{Delete}')
-        time.sleep(0.05)
-
-        pyperclip.copy(str(goods_id))
-        auto.SendKeys('{Ctrl}v')
-        time.sleep(0.05)
+        input_ok, input_err = self.set_transfer_goods_id(goods_id)
+        if not input_ok:
+            # 校验失败严禁点击跳转，彻底切断张冠李戴可能
+            return False, "", input_err
 
         log(f"[TASK] [{index}] 步骤 2/4: 触发 API 跳转")
         jump_btn = self.window.ButtonControl(Name="跳转到该商品")
@@ -219,7 +341,7 @@ class PddAutomation(UIActionEngine):
         # --- 步骤 2.5：处理微信跳转授权弹窗 ---
         log(f"[TASK] [{index}] 步骤 2.5/4: 处理微信跳转授权弹窗")
         allow_btn = self.window.TextControl(Name="允许")
-        if allow_btn.Exists(2, 1):
+        if allow_btn.Exists(2, 0.2):
             try:
                 allow_btn.GetInvokePattern().Invoke()
             except Exception:
@@ -228,7 +350,7 @@ class PddAutomation(UIActionEngine):
         else:
             log("[INFO] 未检测到“允许”弹窗（可能已静默放行或系统延迟）")
 
-        # --- 步骤 3 & 4：【重构】接管拼多多并进行状态机轮询 ---
+        # --- 步骤 3 & 4：接管拼多多并进行状态机轮询 ---
         log(f"[TASK] [{index}] 步骤 3/4: 状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获)")
         self.window_name = TARGET_APP_NAME
 
@@ -259,12 +381,12 @@ class PddAutomation(UIActionEngine):
                     # 把识别到的文字拼接起来，方便进行多关键词判断
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 状态 A：【修改点】必须是在判断过 "客服" 和 "店铺" (detail_entered 为 True) 之后，才能判断 SKU
+                    # 状态 A：必须是在判断过 "客服" 和 "店铺" (detail_entered 为 True) 之后，才能判断 SKU
                     if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
                         sku_ready = True
                         break
 
-                    # 状态 B：如果依然停留在详情页，则疯狂尝试点击购买
+                    # 状态 B：如果依然停留在详情页，则动态点击购买
                     if any(kw in detected_text for kw in ["客服", "店铺"]):
                         detail_entered = True
                         # 无延迟点击目标位置，如果被吞了，下一次 while 循环又会进来重新点击
@@ -299,6 +421,8 @@ class PddAutomation(UIActionEngine):
             log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, success_path, ""
+
+
 # ==========================================
 # 🚦 任务调度引擎
 # ==========================================
