@@ -176,7 +176,7 @@ class PddAutomation(UIActionEngine):
             self.safe_click(rect.right - 25, rect.top + 60, f"关闭 {self.window_name} 窗口")
             time.sleep(0.3)
 
-    def process_single_goods(self, goods_id, index):
+    def process_single_goods(self, goods_id, index, consecutive_successes=0):
         # --- 步骤 1：确立中转站据点 ---
         self.window_name = TRANSFER_APP_NAME
         if not self.find_window(timeout=1):
@@ -194,29 +194,41 @@ class PddAutomation(UIActionEngine):
         if not edit_box.Exists(2, 1):
             return False, "", "无法定位中转小程序的输入框"
 
-        # 点击获取内部焦点
-        edit_box.Click()
+        # 【修复点】：小程序必须触发底层 bindinput 事件。不能用 SetValue。
+        # simulateMove=False 保证了鼠标不会出现慢速滑动的动画，而是瞬间点击
+        edit_box.Click(simulateMove=False)
         time.sleep(0.05)
-        # 关键解惑点：物理级全选并删除，确保每次循环不被上一次的脏数据污染
+
+        # 物理级全选并删除，确保触发框架的数据更新
         auto.SendKeys('{Ctrl}a')
         time.sleep(0.05)
         auto.SendKeys('{Delete}')
         time.sleep(0.05)
 
+        # 写入新的 goods_id
         pyperclip.copy(str(goods_id))
         auto.SendKeys('{Ctrl}v')
+        time.sleep(0.05)
 
         log(f"[TASK] [{index}] 步骤 2/4: 触发 API 跳转")
         jump_btn = self.window.ButtonControl(Name="跳转到该商品")
         if not jump_btn.Exists(1, 1):
             return False, "", "无法定位中转小程序的跳转按钮"
-        jump_btn.Click()
+
+        # 按钮点击可以使用底层接口，不会有事件丢失问题
+        try:
+            jump_btn.GetInvokePattern().Invoke()
+        except Exception:
+            jump_btn.Click(simulateMove=False)
 
         # --- 步骤 2.5：处理微信跳转授权弹窗 ---
         log(f"[TASK] [{index}] 步骤 2.5/4: 处理微信跳转授权弹窗")
         allow_btn = self.window.TextControl(Name="允许")
         if allow_btn.Exists(2, 1):
-            allow_btn.Click()
+            try:
+                allow_btn.GetInvokePattern().Invoke()
+            except Exception:
+                allow_btn.Click(simulateMove=False)
             log("[INFO] 已自动点击“允许”跳转")
         else:
             log("[INFO] 未检测到“允许”弹窗（可能已静默放行或系统延迟）")
@@ -238,9 +250,9 @@ class PddAutomation(UIActionEngine):
         is_detail, _ = self.safe_ocr_wait(["客服", "店铺"], timeout=10, region=region_bottom)
 
         if not is_detail:
-            path = os.path.join(ERROR_DIR, f"DETAIL_Error_{index}.png")
+            path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.close_current_window()  # 错误时清理拼多多窗口
+            self.close_current_window()  # 没成功的时候重启(关闭)拼多多
             return False, path, "进入详情页失败"
 
         # --- 步骤 4：闭环后续操作 ---
@@ -251,17 +263,20 @@ class PddAutomation(UIActionEngine):
         is_sku_ready, _ = self.safe_ocr_wait(["确定", "请选择", "可选", "已选"], timeout=5, region=region_sku)
 
         if not is_sku_ready:
-            path = os.path.join(ERROR_DIR, f"SKU_Error_{index}.png")
+            path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.close_current_window()
+            self.close_current_window()  # 没成功的时候重启(关闭)拼多多
             return False, path, "SKU面板未完全展开"
 
-        success_path = os.path.join(SUCCESS_DIR, f"SUCCESS_{goods_id}_{int(time.time())}.png")
+        success_path = os.path.join(SUCCESS_DIR, f"{goods_id}.png")
         self.fast_screenshot_save(success_path)
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
 
-        # 流程结束，关闭当前的拼多多窗口，为下一次循环保证桌面整洁
-        self.close_current_window()
+        # 【优化】只有连续成功达到 50 次，才主动关闭重启拼多多
+        if (consecutive_successes + 1) % 50 == 0:
+            self.close_current_window()
+            log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
+
         return True, success_path, ""
 
 
@@ -285,6 +300,7 @@ def batch_runner(goods_id_list):
 
     bot = PddAutomation()
     success_count, fail_count = 0, 0
+    consecutive_successes = 0  # 追踪连续成功次数，用于按频次重启
 
     for i, goods_id in enumerate(filtered_list, 1):
         print("\n" + "-" * 40)
@@ -296,19 +312,30 @@ def batch_runner(goods_id_list):
         state[goods_id]["attempts"] += 1
 
         try:
-            success, img_path, error_msg = bot.process_single_goods(goods_id, i)
+            # 透传 consecutive_successes 参数给方法评估是否达到 50 次关闭阈值
+            success, img_path, error_msg = bot.process_single_goods(goods_id, i, consecutive_successes)
             state[goods_id].update({"success": success, "image_path": img_path, "error_msg": error_msg})
 
             if success:
                 log(f"[SUCCESS] ✅ 处理成功 ({goods_id})")
                 success_count += 1
+                consecutive_successes += 1
             else:
                 log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
                 fail_count += 1
+                consecutive_successes = 0  # 失败即清零
 
         except Exception as e:
             log(f"[FATAL] 💥 发生严重异常: {str(e)}")
             fail_count += 1
+            consecutive_successes = 0  # 发生异常即清零
+            # 异常时进行保护性环境清理（没成功时重启）
+            try:
+                bot.window_name = TARGET_APP_NAME
+                if bot.find_window(timeout=1):
+                    bot.close_current_window()
+            except:
+                pass
 
         finally:
             save_state(state)
