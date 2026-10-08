@@ -713,7 +713,7 @@ def check_sku_info(sku_info_dict, expected_filenames):
 
 def run_sku_round(product_manager):
     """
-    SKU信息提取的核心业务逻辑，作为调度循环的一轮执行。
+    SKU信息提取的核心业务逻辑，作为调度循环的一轮执行。（增加并行度：5）
     """
     started = time.monotonic()
 
@@ -751,19 +751,21 @@ def run_sku_round(product_manager):
     batch_size = 5
     batches = [valid_file_paths[i:i + batch_size] for i in range(0, len(valid_file_paths), batch_size)]
 
-    logger.info("[SKU提取/本轮] 开始提取SKU | 匹配图片: [%d] | 批次: [%d]", len(valid_file_paths), len(batches))
+    SKU_WORKERS = 5  # 设置并行度为 5
+    logger.info("[SKU提取/本轮] 开始提取SKU | 匹配图片: [%d] | 批次: [%d] | 并发度: [%d]", len(valid_file_paths),
+                len(batches), SKU_WORKERS)
 
-    for batch in batches:
+    # 提取单次批次处理逻辑，供线程池并发调用
+    def process_batch(batch, batch_counts):
         expected_filenames = [p.name for p in batch]
-
         try:
             result = generate_content(prompt=prompt_text, model="gpt-5.6-max", file_paths=batch)
 
             if result.get("status") != "✅ 成功":
                 error_detail = "；".join(str(e) for e in (result.get("error_history", []) or []))
                 logger.error("❌ [SKU提取/批次失败] 模型调用失败 | 原因: %s", error_detail)
-                counts["failed"] += len(batch)
-                continue
+                batch_counts["failed"] += len(batch)
+                return
 
             content = result.get("content", "")
             parsed_obj = string_to_object(content)
@@ -772,8 +774,8 @@ def run_sku_round(product_manager):
 
             if not valid and not results:
                 logger.error("❌ [SKU提取/批次失败] %s | 详情: %s", batch_error, item_errors)
-                counts["failed"] += len(batch)
-                continue
+                batch_counts["failed"] += len(batch)
+                return
 
             # 4. 遍历处理结果，更新回数据库
             for file_path in batch:
@@ -791,7 +793,7 @@ def run_sku_round(product_manager):
                     update_data = {
                         "platform": product["platform"],
                         "product_id": product["product_id"],
-                        "need_reformat":True,
+                        "need_reformat": True,
                         "sku_info": sku_info,
                         "activity_price": sku_info["price"]
                     }
@@ -803,21 +805,47 @@ def run_sku_round(product_manager):
                     )
 
                     if saved["update"]:
-                        counts["success"] += 1
+                        batch_counts["success"] += 1
                     else:
-                        counts["skipped"] += 1
+                        batch_counts["skipped"] += 1
                 else:
-                    counts["failed"] += 1
+                    batch_counts["failed"] += 1
                     logger.warning("⚠️ [SKU提取/单品失败] 文件: %s | 原因: %s", filename, item_errors.get(filename))
 
         except Exception as exc:
             logger.exception("❌ [SKU提取/批次异常] 批次执行报错 | 首个文件: [%s] | 原因: %s", expected_filenames[0],
                              exc)
-            counts["failed"] += len(batch)
+            batch_counts["failed"] += len(batch)
+
+    # 4. 使用线程池并发执行批次任务
+    with ThreadPoolExecutor(max_workers=SKU_WORKERS) as executor:
+        futures = {}
+        for batch in batches:
+            batch_counts = {"success": 0, "failed": 0, "skipped": 0}
+            futures[executor.submit(process_batch, batch, batch_counts)] = (batch, batch_counts)
+
+        # 实时捕获已完成的线程结果
+        for future in as_completed(futures):
+            batch, batch_counts = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                # 兜底捕获未处理严重异常
+                unfinished = len(batch) - (batch_counts["success"] + batch_counts["failed"] + batch_counts["skipped"])
+                batch_counts["failed"] += unfinished
+                logger.exception("❌ [SKU提取/未知异常] 并发线程执行出错 | 批次首文件: [%s] | 原因: %s", batch[0].name,
+                                 exc)
+
+            # 汇总各线程池批次的执行结果
+            counts["success"] += batch_counts["success"]
+            counts["failed"] += batch_counts["failed"]
+            counts["skipped"] += batch_counts["skipped"]
 
     logger.info("[SKU提取/完成] 本轮处理结束 | 成功: [%d] | 失败: [%d] | 跳过: [%d] | 耗时: [%.2f 秒]",
                 counts["success"], counts["failed"], counts["skipped"], time.monotonic() - started)
+
     return counts
+
 def sku_task():
     """将 SKU 提取任务包装为无参函数，便于加入统一的任务列表管理"""
     _task_worker_loop("SKU提取", run_sku_round)
@@ -829,7 +857,7 @@ if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
         sku_task,
-        # format_task,
+        format_task,
         # promotion_task
     ]
 
