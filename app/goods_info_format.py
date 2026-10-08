@@ -662,7 +662,7 @@ def extract_sku():
 
     batch_list = [png_file_list[i:i + batch_size] for i in range(0, len(png_file_list), batch_size)]
     for batch in batch_list:
-        result = generate_content(prompt=prompt_text, model="gpt-5.6-max", file_paths=batch)
+        result = generate_content(prompt=prompt_text,preset_model_group="low", file_paths=batch)
         print()
 
 
@@ -759,7 +759,7 @@ def run_sku_round(product_manager):
     def process_batch(batch, batch_counts):
         expected_filenames = [p.name for p in batch]
         try:
-            result = generate_content(prompt=prompt_text, model="gpt-5.6-max", file_paths=batch)
+            result = generate_content(prompt=prompt_text, preset_model_group="low", file_paths=batch)
 
             if result.get("status") != "✅ 成功":
                 error_detail = "；".join(str(e) for e in (result.get("error_history", []) or []))

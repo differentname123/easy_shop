@@ -95,7 +95,8 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
         original_price = product.get("original_price")
         activity_price = product.get("activity_price", 999999)
-        is_suspicious = False
+        # 默认是正常状态 (0)
+        is_suspicious = 0
 
         # ============== 新增需求逻辑：计算比值并标记可疑商品 ==============
         # 提取有效的价格用于判断
@@ -111,14 +112,21 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
                 # 计算 original_price 和 activity_price 的比值
                 ratio = orig_p / act_p
-                # 比值大于3时仍然返回，只标记为可疑
-                is_suspicious = ratio > 3
+                # 比值大于3时标记为可疑 (-1)
+                if ratio > 3:
+                    is_suspicious = -1
 
                 # 将计算后的价格更新回 original_price，供后续赋值展示
                 original_price = orig_p
             except (ValueError, TypeError):
                 # 若价格字段转换抛出异常，为了容错，选择跳过当前价格验证流程
                 pass
+
+        # 如果 sku_info 存在且不为空，而且 need_reformat 字段为 false 那么就应该是 已人工确定 (1) 的状态
+        sku_info = product.get("sku_info")
+        need_reformat = product.get("need_reformat")
+        if sku_info and (need_reformat is False or need_reformat == "false"):
+            is_suspicious = 1
         # ==============================================================
 
         products.append({

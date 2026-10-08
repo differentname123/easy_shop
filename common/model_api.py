@@ -58,6 +58,7 @@ MEDIUM_MODEL_LIST = [
 LOW_MODEL_LIST = [
     {"model_name": "gpt-5.6-max", "权重": 1, "备注": "来源chatgpt_web "},
     {"model_name": "gemini-web-3.5-flash-lite-thinking-max", "权重": 0, "备注": "来源gemini_web"},
+    {"model_name": "gemini-aistudio-3.7-flash", "权重": 1, "备注": "来源aistudio_web"},
 
 ]
 
@@ -691,6 +692,6 @@ if __name__ == "__main__":
 
     ]
 
-    result = generate_content(prompt="一一告诉我每个商品的SKU,返回结果只能够是存粹的json格式，key为名", model="gpt-5.6-max", file_paths=file_paths)
+    result = generate_content(prompt="一一告诉我每个商品的SKU,返回结果只能够是存粹的json格式，key为名", model="gemini-web-3.5-flash-lite-thinking-max", file_paths=file_paths)
     print()
 
