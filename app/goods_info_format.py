@@ -178,7 +178,8 @@ def gen_goods_format_info(product_batch, prompt_text=None):
             return outcome
         if product_id in input_ids:
             raise ValueError("同一次模型请求不能包含重复 product_id，请将不同平台的同名 ID 分批")
-        inputs.append({"product_desc": name, "product_id": product_id})
+        selected_spec = product.get("sku_info",{}).get("selected_spec")
+        inputs.append({"product_desc": name, "product_id": product_id, "selected_spec": selected_spec})
         input_ids.append(product_id)
     if prompt_text is None:
         prompt_text = read_file_to_str(PROMPT_FILE_PATH)
@@ -264,6 +265,7 @@ def run_format_round(product_manager):
                     "format_status": status, "format_info": format_info,
                     "format_model": generated["model_used"], "format_updated_at": datetime.now(timezone.utc),
                     "format_error": error,
+                    "need_reformat":False
                 },
                 condition=condition, increments={"format_retry_count": 1 if status == "failed" else 0}, upsert=False,
             )
@@ -605,8 +607,161 @@ def extract_sku():
         print()
 
 
+def check_sku_info(sku_info_dict, expected_filenames):
+    """
+    校验模型返回的 SKU 提取信息是否符合要求。
+    返回: (是否至少有一项成功, {成功文件: 对象}, {失败文件: 错误原因}, 批次整体错误信息)
+    """
+    if not isinstance(sku_info_dict, dict):
+        return False, {}, {}, "顶层结构必须是一个对象(JSON Object)"
+
+    results, item_errors = {}, {}
+    for filename in expected_filenames:
+        if filename not in sku_info_dict:
+            item_errors[filename] = "模型未返回该图片的提取结果"
+            continue
+
+        item = sku_info_dict[filename]
+        if not isinstance(item, dict):
+            item_errors[filename] = f"[{filename}] 的值必须是 JSON 对象"
+            continue
+
+        if "price" not in item or "selected_spec" not in item:
+            item_errors[filename] = f"[{filename}] 缺少 'price' 或 'selected_spec' 字段"
+            continue
+
+        price = item["price"]
+        if type(price) not in (int, float) or price < 0:
+            item_errors[filename] = f"[{filename}].price 必须是大于等于0的数字，且不能是字符串"
+            continue
+
+        spec = item["selected_spec"]
+        if not isinstance(spec, str) or not spec.strip():
+            item_errors[filename] = f"[{filename}].selected_spec 必须是非空字符串"
+            continue
+
+        # 规整化数据，丢弃模型可能擅自添加的多余字段
+        results[filename] = {
+            "price": float(price),
+            "selected_spec": spec
+        }
+
+    if not results:
+        return False, {}, item_errors, "批次内所有商品图片均解析或校验失败"
+
+    return True, results, item_errors, ""
 
 
+def run_sku_round(product_manager):
+    """
+    SKU信息提取的核心业务逻辑，作为调度循环的一轮执行。
+    """
+    started = time.monotonic()
+
+    # 1. 查库: 查询【没有】sku_info 字段的数据
+    query = {
+        "sku_info": {"$exists": False}
+    }
+    # ⚠️ 修复点1：projection 中增加 "platform": 1
+    products = product_manager.query(query, projection={"_id": 1, "product_id": 1, "platform": 1})
+    counts = {"success": 0, "failed": 0, "skipped": 0}
+
+    if not products:
+        logger.info("[SKU提取/完成] 本轮无待处理商品 | 耗时: [%.2f 秒]", time.monotonic() - started)
+        return counts
+
+    product_id_map = {str(p["product_id"]): p for p in products}
+
+    # 2. 读取本地图片并比对寻找匹配目标
+    results_success_dir = Path(r"W:\project\python_project\easy_shop\common\results_success")
+    prompt_text = read_file_to_str(r"W:\project\python_project\easy_shop\prompt\商品SKU提取.txt")
+
+    all_png_files = list(results_success_dir.glob("*.png"))
+    valid_file_paths = []
+
+    for png_path in all_png_files:
+        if png_path.stem in product_id_map:
+            valid_file_paths.append(png_path)
+
+    if not valid_file_paths:
+        logger.info("[SKU提取/完成] 查到需要处理的商品记录，但未在本地找到对应的 PNG 图片 | 耗时: [%.2f 秒]",
+                    time.monotonic() - started)
+        return counts
+
+    # 3. 按照 5 个为一个批次进行提取
+    batch_size = 5
+    batches = [valid_file_paths[i:i + batch_size] for i in range(0, len(valid_file_paths), batch_size)]
+
+    logger.info("[SKU提取/本轮] 开始提取SKU | 匹配图片: [%d] | 批次: [%d]", len(valid_file_paths), len(batches))
+
+    for batch in batches:
+        expected_filenames = [p.name for p in batch]
+
+        try:
+            result = generate_content(prompt=prompt_text, model="gpt-5.6-max", file_paths=batch)
+
+            if result.get("status") != "✅ 成功":
+                error_detail = "；".join(str(e) for e in (result.get("error_history", []) or []))
+                logger.error("❌ [SKU提取/批次失败] 模型调用失败 | 原因: %s", error_detail)
+                counts["failed"] += len(batch)
+                continue
+
+            content = result.get("content", "")
+            parsed_obj = string_to_object(content)
+
+            valid, results, item_errors, batch_error = check_sku_info(parsed_obj, expected_filenames)
+
+            if not valid and not results:
+                logger.error("❌ [SKU提取/批次失败] %s | 详情: %s", batch_error, item_errors)
+                counts["failed"] += len(batch)
+                continue
+
+            # 4. 遍历处理结果，更新回数据库
+            for file_path in batch:
+                filename = file_path.name
+                product_id = file_path.stem
+                product = product_id_map.get(product_id)
+
+                if not product:
+                    continue
+
+                if filename in results:
+                    sku_info = results[filename]
+
+                    # ⚠️ 修复点2：更新字典中带上底层的必填项 platform 和 product_id
+                    update_data = {
+                        "platform": product["platform"],
+                        "product_id": product["product_id"],
+                        "need_reformat":True,
+                        "sku_info": sku_info,
+                        "activity_price": sku_info["price"]
+                    }
+
+                    saved = product_manager.update(
+                        update_data,
+                        condition={"_id": product["_id"]},
+                        upsert=False
+                    )
+
+                    if saved["update"]:
+                        counts["success"] += 1
+                    else:
+                        counts["skipped"] += 1
+                else:
+                    counts["failed"] += 1
+                    logger.warning("⚠️ [SKU提取/单品失败] 文件: %s | 原因: %s", filename, item_errors.get(filename))
+
+        except Exception as exc:
+            logger.exception("❌ [SKU提取/批次异常] 批次执行报错 | 首个文件: [%s] | 原因: %s", expected_filenames[0],
+                             exc)
+            counts["failed"] += len(batch)
+
+    logger.info("[SKU提取/完成] 本轮处理结束 | 成功: [%d] | 失败: [%d] | 跳过: [%d] | 耗时: [%.2f 秒]",
+                counts["success"], counts["failed"], counts["skipped"], time.monotonic() - started)
+    return counts
+def sku_task():
+    """将 SKU 提取任务包装为无参函数，便于加入统一的任务列表管理"""
+    _task_worker_loop("SKU提取", run_sku_round)
 
 if __name__ == "__main__":
     # extract_sku()
@@ -614,7 +769,8 @@ if __name__ == "__main__":
 
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
-        format_task,
+        sku_task,
+        # format_task,
         # promotion_task
     ]
 
