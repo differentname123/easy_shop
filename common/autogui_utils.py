@@ -2,7 +2,11 @@ import uiautomation as auto
 import pyperclip
 import time
 import os
-import datetime
+from datetime import datetime, timedelta, timezone
+from contextlib import closing
+# 确保你的文件中已经导入了下面这两个模块
+from common.mongo_db.mongo_base import gen_db_object
+from common.mongo_db.mongo_manager import ProductManager
 import win32gui
 import win32con
 
@@ -37,7 +41,7 @@ sct = mss()
 
 
 def log(msg):
-    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     print(f"[{ts}] {msg}")
 
 
@@ -487,11 +491,7 @@ def batch_runner(goods_id_list):
     log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {success_count} | 失败: {fail_count}")
     print(f"{'=' * 50}")
 
-from datetime import datetime, timedelta, timezone
-from contextlib import closing
-# 确保你的文件中已经导入了下面这两个模块
-from common.mongo_db.mongo_base import gen_db_object
-from common.mongo_db.mongo_manager import ProductManager
+
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
     查询最近 24 小时内更新的商品数据（基于 updated_at 字段）。
