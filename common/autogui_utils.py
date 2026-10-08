@@ -431,7 +431,7 @@ def batch_runner(goods_id_list):
 
     filtered_list = [gid for gid in goods_id_list
                      if not state.get(gid, {}).get("success", False)
-                     and state.get(gid, {}).get("attempts", 0) < 30]
+                     and state.get(gid, {}).get("attempts", 0) < 1]
 
     print(f"\n{'=' * 60}")
     log("[SYSTEM] 🚀 桥接级 RPA 引擎启动 (通过合力汇中转)")
