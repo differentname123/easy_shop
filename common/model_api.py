@@ -691,6 +691,6 @@ if __name__ == "__main__":
 
     ]
 
-    result = generate_content(prompt="一一告诉我每个商品的SKU", model="gpt-5.6-max", file_paths=file_paths)
+    result = generate_content(prompt="一一告诉我每个商品的SKU,返回结果只能够是存粹的json格式，key为名", model="gpt-5.6-max", file_paths=file_paths)
     print()
 
