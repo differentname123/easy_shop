@@ -220,16 +220,40 @@ def run_format_round(product_manager):
     批次进度在写入确认后立即累计，后续异常不会丢失已经保存商品的统计。
     """
     started = time.monotonic()
+
+    # 1. 组合查询条件：常规未格式化商品 或 需要重洗的商品
+    query_condition = {
+        "$or": [
+            pending_format_query(),
+            {"need_reformat": True}
+        ]
+    }
+
+    # 2. projection中加入 need_reformat 以便区分，加入 sku_info 以便供 gen_goods_format_info 提取 selected_spec
     products = product_manager.query(
-        pending_format_query(), projection={"_id": 1, "platform": 1, "product_id": 1, "name": 1},
+        query_condition,
+        projection={"_id": 1, "platform": 1, "product_id": 1, "name": 1, "need_reformat": 1, "sku_info": 1},
     )
-    counts = dict.fromkeys(COUNT_KEYS, 0)
+
+    # 3. 拓展统计维度
+    counts = {
+        "success": 0, "failed": 0, "skipped": 0,
+        "normal_success": 0, "normal_failed": 0, "normal_skipped": 0,
+        "reformat_success": 0, "reformat_failed": 0, "reformat_skipped": 0
+    }
+
     if not products:
         logger.info("[调度/完成] 本轮无待处理商品 | 数量: [0] | 耗时: [%.2f 秒]", time.monotonic() - started)
         return counts
+
     prompt_text = read_file_to_str(PROMPT_FILE_PATH)
     batches, batch, batch_ids = [], [], set()
+
+    total_reformat = 0
     for product in products:
+        if product.get("need_reformat"):
+            total_reformat += 1
+
         product_id = product["product_id"]
         if len(batch) == FORMAT_BATCH_SIZE or product_id in batch_ids:
             batches.append(batch)
@@ -238,52 +262,76 @@ def run_format_round(product_manager):
         batch_ids.add(product_id)
     if batch:
         batches.append(batch)
-    logger.info("[调度/本轮] 开始格式化商品 | 商品: [%d] | 批次: [%d] | 每批上限: [%d] | 并发: [%d]",
-                len(products), len(batches), FORMAT_BATCH_SIZE, FORMAT_WORKERS)
+
+    total_normal = len(products) - total_reformat
+    logger.info(
+        "[调度/本轮] 开始格式化商品 | 总计: [%d] (常规: %d, 重洗: %d) | 批次: [%d] | 每批上限: [%d] | 并发: [%d]",
+        len(products), total_normal, total_reformat, len(batches), FORMAT_BATCH_SIZE, FORMAT_WORKERS)
 
     def process_batch(batch, batch_counts):
         """batch 为候选商品列表；batch_counts 是当前批次已确认保存/跳过的计数，异常时供主线程统计。"""
         batch_started = time.monotonic()
         generated = gen_goods_format_info(batch, prompt_text)
         failure_details, skipped_ids = [], []
+
         for product in batch:
             product_id = product["product_id"]
+            is_reformat = bool(product.get("need_reformat"))
+
             format_info = generated["results"].get(product_id)
             status = "success" if format_info is not None else "failed"
             error = "" if status == "success" else (
                 generated["error"] if generated["status"] == "failed"
                 else generated["item_errors"].get(product_id, "未知的单品解析错误")
             )
-            condition = pending_format_query()
-            condition.update(
-                _id=product["_id"],
-                name={"$eq": product["name"]} if "name" in product else {"$exists": False},
-            )
+
+            # 构建写回校验条件：区分常规数据与重洗数据
+            condition = {"_id": product["_id"]}
+            if "name" in product:
+                condition["name"] = {"$eq": product["name"]}
+            else:
+                condition["name"] = {"$exists": False}
+
+            if is_reformat:
+                condition["need_reformat"] = True
+            else:
+                condition.update(pending_format_query())
+
             saved = product_manager.update(
                 {
                     "platform": product["platform"], "product_id": product_id,
                     "format_status": status, "format_info": format_info,
                     "format_model": generated["model_used"], "format_updated_at": datetime.now(timezone.utc),
                     "format_error": error,
-                    "need_reformat":False
+                    "need_reformat": False
                 },
                 condition=condition, increments={"format_retry_count": 1 if status == "failed" else 0}, upsert=False,
             )
+
             if not saved["update"]:
                 batch_counts["skipped"] += 1
+                batch_counts["reformat_skipped" if is_reformat else "normal_skipped"] += 1
                 skipped_ids.append(product_id)
                 continue
+
             batch_counts[status] += 1
+            batch_counts[f"reformat_{status}" if is_reformat else f"normal_{status}"] += 1
+
             if status == "failed":
                 failure_details.append(f"{product_id}: {' '.join(error.split())[:240]}")
+
         failed, skipped = batch_counts["failed"], batch_counts["skipped"]
         all_failed = failed == len(batch)
         log = logger.error if all_failed else logger.warning if failed or skipped else logger.info
         message = "❌ [商品/批次完成] 全批生成失败，失败结果已保存" if all_failed else "[商品/批次完成] 商品结果已逐项处理"
-        detail = " ".join(generated["error"].split())[:800] if generated["status"] == "failed" else "; ".join(failure_details)[:800]
-        log("%s | 商品 ID: [%s] | 成功/失败/跳过: [%d/%d/%d] | 模型: [%s] | 耗时: [%.2f 秒] "
+        detail = " ".join(generated["error"].split())[:800] if generated["status"] == "failed" else "; ".join(
+            failure_details)[:800]
+
+        log("%s | 商品 ID: [%s] | 总计成功/失败/跳过: [%d/%d/%d] (重洗: %d/%d/%d) | 模型: [%s] | 耗时: [%.2f 秒] "
             "| 失败摘要: [%s] | 跳过 ID: [%s] | 排查: [模型协议、名称变化或候选条件]", message,
-            ", ".join(str(product["product_id"]) for product in batch), batch_counts["success"], failed, skipped,
+            ", ".join(str(product["product_id"]) for product in batch),
+            batch_counts["success"], failed, skipped,
+            batch_counts["reformat_success"], batch_counts["reformat_failed"], batch_counts["reformat_skipped"],
             generated["model_used"] or "未返回", time.monotonic() - batch_started, detail or "无",
             ", ".join(map(str, skipped_ids)) or "无")
 
@@ -291,28 +339,39 @@ def run_format_round(product_manager):
     with ThreadPoolExecutor(max_workers=FORMAT_WORKERS) as executor:
         futures = {}
         for batch in batches:
-            batch_counts = dict.fromkeys(COUNT_KEYS, 0)
+            # 扩展了初始化结构体
+            batch_counts = {
+                "success": 0, "failed": 0, "skipped": 0,
+                "normal_success": 0, "normal_failed": 0, "normal_skipped": 0,
+                "reformat_success": 0, "reformat_failed": 0, "reformat_skipped": 0
+            }
             futures[executor.submit(process_batch, batch, batch_counts)] = (batch, batch_counts)
+
         for future in as_completed(futures):
             batch, batch_counts = futures[future]
             try:
                 future.result()
             except Exception as exc:
-                # : 保留批次异常后其他批次继续的规则；已保存记录不回滚，未完成记录留待后续轮次。
-                unfinished = len(batch) - sum(batch_counts.values())
+                unfinished = len(batch) - (batch_counts["success"] + batch_counts["failed"] + batch_counts["skipped"])
                 unexpected_errors += unfinished
                 logger.exception("❌ [商品/批次异常] 本批未完成，其他批次继续 | 首个 ID: [%s] | 未完成: [%d] "
                                  "| 已成功/失败/跳过: [%d/%d/%d] | 原因: [%s] | 排查: [异常链、模型接口、MongoDB 写入]",
                                  batch[0]["product_id"], unfinished, batch_counts["success"], batch_counts["failed"],
                                  batch_counts["skipped"], " ".join(str(exc).split())[:400])
-            for key in COUNT_KEYS:
-                counts[key] += batch_counts[key]
-    log = logger.warning if unexpected_errors else logger.info
-    log("[调度/完成] 本轮处理结束 | 成功/失败/跳过: [%d/%d/%d] | 异常未完成: [%d] | 耗时: [%.2f 秒] "
-        "| 排查: [异常批次日志]", counts["success"], counts["failed"], counts["skipped"], unexpected_errors,
-        time.monotonic() - started)
-    return counts
 
+            # 将批次统计汇入总统计
+            for key in counts.keys():
+                counts[key] += batch_counts[key]
+
+    log = logger.warning if unexpected_errors else logger.info
+    log("[调度/完成] 本轮处理结束 | 总计成功/失败/跳过: [%d/%d/%d] | 常规: [%d/%d/%d] | 重洗: [%d/%d/%d] | 异常未完成: [%d] | 耗时: [%.2f 秒] "
+        "| 排查: [异常批次日志]",
+        counts["success"], counts["failed"], counts["skipped"],
+        counts["normal_success"], counts["normal_failed"], counts["normal_skipped"],
+        counts["reformat_success"], counts["reformat_failed"], counts["reformat_skipped"],
+        unexpected_errors, time.monotonic() - started)
+
+    return counts
 
 
 
