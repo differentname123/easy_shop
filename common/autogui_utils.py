@@ -17,7 +17,11 @@ from common.common_utils import read_json, save_json
 # ==========================================
 # ⚙️ 全局配置区
 # ==========================================
-PDD_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\拼多多.lnk"
+# 新增中转小程序配置
+TRANSFER_APP_NAME = "合力汇"
+TRANSFER_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\合力汇.lnk"
+TARGET_APP_NAME = "拼多多"
+
 DEBUG_MODE = True
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -158,96 +162,106 @@ class UIActionEngine:
 
 
 # ==========================================
-# 🏢 拼多多业务逻辑层
+# 🏢 双桥梁业务逻辑层 (已重构)
 # ==========================================
 class PddAutomation(UIActionEngine):
     def __init__(self):
-        super().__init__('拼多多')
+        # 初始目标设为中转小程序
+        super().__init__(TRANSFER_APP_NAME)
 
-    def restart_mini_program(self):
-        log("[SYSTEM] 正在唤醒/重启小程序...")
-        if self.find_window(timeout=1):
+    def close_current_window(self):
+        """通用窗口关闭，用于清理拼多多窗口，保持桌面整洁"""
+        if self.window and self.window.Exists(0, 0):
             rect = self.window.BoundingRectangle
-            self.safe_click(rect.right - 25, rect.top + 60, "关闭旧窗口")
-            time.sleep(0.5)
-
-        try:
-            os.startfile(PDD_SHORTCUT_PATH)
-        except Exception as e:
-            log(f"[ERROR] 快捷方式启动失败: {e}")
-            return False
-
-        if not self.find_window(timeout=10):
-            return False
-        return True
-
-    def prepare_home_page(self):
-        if not self.find_window(timeout=0.5):
-            return self.restart_mini_program()
-
-        rect = self.window.BoundingRectangle
-        w, h = rect.right - rect.left, rect.bottom - rect.top
-        region_bottom = (rect.left, rect.bottom - h // 6, w, h // 6)
-
-        # 极速检测首页
-        is_home, _ = self.safe_ocr_wait("首页", timeout=0.2, region=region_bottom)
-        if is_home:
-            return True
-
-        log("[ACTION] 触发返回上一层...")
-        start_time = time.time()
-        # 由于我们响应速度极快，这里可以狂点返回，直到看见首页
-        while time.time() - start_time < 3:
-            self.safe_click(rect.left + 20, rect.top + 60)
-            is_home, _ = self.safe_ocr_wait("首页", timeout=0.3, region=region_bottom)
-            if is_home:
-                return True
-
-        log("[WARN] 返回超时，执行兜底重启...")
-        return self.restart_mini_program()
+            self.safe_click(rect.right - 25, rect.top + 60, f"关闭 {self.window_name} 窗口")
+            time.sleep(0.3)
 
     def process_single_goods(self, goods_id, index):
-        goods_url = f"https://mobile.yangkeduo.com/goods.html?goods_id={goods_id}"
+        # --- 步骤 1：确立中转站据点 ---
+        self.window_name = TRANSFER_APP_NAME
+        if not self.find_window(timeout=1):
+            log(f"[SYSTEM] 正在唤醒中转小程序: {TRANSFER_APP_NAME}")
+            os.startfile(TRANSFER_SHORTCUT_PATH)
+            if not self.find_window(timeout=5):
+                return False, "", "中转小程序启动失败"
 
+        # 严格保留置顶操作，防止输入框失去焦点
+        self.force_bring_to_front()
+
+        # --- 步骤 2：精确操控控件进行传参 ---
+        log(f"[TASK] [{index}] 步骤 1/4: 向中转站写入商品 ID")
+        edit_box = self.window.EditControl()
+        if not edit_box.Exists(2, 1):
+            return False, "", "无法定位中转小程序的输入框"
+
+        # 点击获取内部焦点
+        edit_box.Click()
+        time.sleep(0.05)
+        # 关键解惑点：物理级全选并删除，确保每次循环不被上一次的脏数据污染
+        auto.SendKeys('{Ctrl}a')
+        time.sleep(0.05)
+        auto.SendKeys('{Delete}')
+        time.sleep(0.05)
+
+        pyperclip.copy(str(goods_id))
+        auto.SendKeys('{Ctrl}v')
+
+        log(f"[TASK] [{index}] 步骤 2/4: 触发 API 跳转")
+        jump_btn = self.window.ButtonControl(Name="跳转到该商品")
+        if not jump_btn.Exists(1, 1):
+            return False, "", "无法定位中转小程序的跳转按钮"
+        jump_btn.Click()
+
+        # --- 步骤 2.5：处理微信跳转授权弹窗 ---
+        log(f"[TASK] [{index}] 步骤 2.5/4: 处理微信跳转授权弹窗")
+        allow_btn = self.window.TextControl(Name="允许")
+        if allow_btn.Exists(2, 1):
+            allow_btn.Click()
+            log("[INFO] 已自动点击“允许”跳转")
+        else:
+            log("[INFO] 未检测到“允许”弹窗（可能已静默放行或系统延迟）")
+
+        # --- 步骤 3：接管弹出的拼多多目标窗口 ---
+        log(f"[TASK] [{index}] 步骤 3/4: 接管并校验拼多多详情页")
+        # 切换句柄目标，确保接下来的操作只在拼多多小程序内进行，不跟合力汇串台
+        self.window_name = TARGET_APP_NAME
+
+        if not self.find_window(timeout=5):
+            return False, "", "未检测到拼多多窗口弹出（跳转可能失败）"
+
+        # 严格保留置顶操作，确保拼多多窗口拿到最高控制权，后续点击不被拦截
+        self.force_bring_to_front()
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
 
-        # --- 步骤 1 ---
-        log(f"[TASK] [{index}] 步骤 1/4: 输入商品链接")
-        self.safe_click(rect.left + w // 2, rect.top + 65, "激活搜索框")
-        self.safe_input(goods_url, "粘贴并回车")
-
-        # --- 步骤 2 ---
-        log(f"[TASK] [{index}] 步骤 2/4: 校验详情页状态")
-        # 优化区域：缩小 OCR 扫描范围，只扫描底部按键区域，成倍提升 OCR 帧率
         region_bottom = (rect.left, rect.bottom - h // 6, w, h // 6)
-        is_detail, keyword = self.safe_ocr_wait(["客服", "店铺"], timeout=10, region=region_bottom)
+        is_detail, _ = self.safe_ocr_wait(["客服", "店铺"], timeout=10, region=region_bottom)
 
         if not is_detail:
             path = os.path.join(ERROR_DIR, f"DETAIL_Error_{index}.png")
             self.fast_screenshot_save(path)
+            self.close_current_window()  # 错误时清理拼多多窗口
             return False, path, "进入详情页失败"
 
-        # --- 步骤 3 ---
-        # OCR 捕捉到的瞬间，立刻发起点击！无需任何多余等待！
-        log(f"[TASK] [{index}] 步骤 3/4: 点击购买面板")
+        # --- 步骤 4：闭环后续操作 ---
         self.safe_click(rect.right - 60, rect.bottom - 25, "点击购买")
-
-        # --- 步骤 4 ---
-        log(f"[TASK] [{index}] 步骤 4/4: 校验 SKU 界面")
-        # 优化区域：只扫描中间偏上的弹窗标题区，极大提升识别速度
+        log(f"[TASK] [{index}] 步骤 4/4: 校验 SKU 界面并快照")
 
         region_sku = (rect.left, rect.bottom - h // 2, w, h // 2)
         is_sku_ready, _ = self.safe_ocr_wait(["确定", "请选择", "可选", "已选"], timeout=5, region=region_sku)
+
         if not is_sku_ready:
             path = os.path.join(ERROR_DIR, f"SKU_Error_{index}.png")
             self.fast_screenshot_save(path)
+            self.close_current_window()
             return False, path, "SKU面板未完全展开"
 
-        # --- 步骤 5 ---
         success_path = os.path.join(SUCCESS_DIR, f"SUCCESS_{goods_id}_{int(time.time())}.png")
         self.fast_screenshot_save(success_path)
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
+
+        # 流程结束，关闭当前的拼多多窗口，为下一次循环保证桌面整洁
+        self.close_current_window()
         return True, success_path, ""
 
 
@@ -262,7 +276,7 @@ def batch_runner(goods_id_list):
                      and state.get(gid, {}).get("attempts", 0) < 30]
 
     print(f"\n{'=' * 60}")
-    log("[SYSTEM] 🚀 PDD 极速版 RPA 引擎启动")
+    log("[SYSTEM] 🚀 桥接级 RPA 引擎启动 (通过合力汇中转)")
     log(f"[INFO] 📊 待执行任务数: {len(filtered_list)}")
     print(f"{'=' * 60}\n")
 
@@ -274,13 +288,6 @@ def batch_runner(goods_id_list):
 
     for i, goods_id in enumerate(filtered_list, 1):
         print("\n" + "-" * 40)
-
-        if not bot.find_window(timeout=1):
-            bot.restart_mini_program()
-
-        # 【核心约束实现】拉取商品 ID 和执行前，使用底层 Win32 API 霸道置顶焦点
-        bot.force_bring_to_front()
-
         log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
 
         if goods_id not in state:
@@ -289,11 +296,6 @@ def batch_runner(goods_id_list):
         state[goods_id]["attempts"] += 1
 
         try:
-            if not bot.prepare_home_page():
-                log("[WARN] 首页初始化失败跳过")
-                fail_count += 1
-                continue
-
             success, img_path, error_msg = bot.process_single_goods(goods_id, i)
             state[goods_id].update({"success": success, "image_path": img_path, "error_msg": error_msg})
 
