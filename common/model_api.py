@@ -24,7 +24,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-from common.common_utils import get_config, save_json, setup_logger
+from common.common_utils import get_config, save_json, setup_logger, read_file_to_str
 
 if os.name == "nt":
     import msvcrt
@@ -686,12 +686,14 @@ if __name__ == "__main__":
     # print(_redact(result))
     # probe_models("model_probe_results.json")
     file_paths = [
-        r"W:\project\python_project\easy_shop\common\results_success\963275561923.png",
+        r"W:\project\python_project\easy_shop\common\results_success\1011856607905.png",
         r"W:\project\python_project\easy_shop\common\results_success\856961287638.png",
         r"W:\project\python_project\easy_shop\common\results_success\511007545729.png"
 
     ]
+    prompt_text = read_file_to_str(r"W:\project\python_project\easy_shop\prompt\商品SKU提取.txt")
 
-    result = generate_content(prompt="一一告诉我每个商品的SKU,返回结果只能够是存粹的json格式，key为名", model="gemini-web-3.5-flash-lite-thinking-max", file_paths=file_paths)
+
+    result = generate_content(prompt=prompt_text, model="gemini-aistudio-3.7-flash", file_paths=file_paths)
     print()
 
