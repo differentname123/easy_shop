@@ -684,7 +684,13 @@ if __name__ == "__main__":
     # )
     # print(_redact(result))
     # probe_models("model_probe_results.json")
+    file_paths = [
+        r"W:\project\python_project\easy_shop\common\results_success\963275561923.png",
+        r"W:\project\python_project\easy_shop\common\results_success\856961287638.png",
+        r"W:\project\python_project\easy_shop\common\results_success\511007545729.png"
 
-    generate_content(prompt="请帮我搜索拼多多上单瓶性价比最高的500ml可乐，告诉我具体的商品名称、规格、总价及核算后的单瓶价格，并强制输出以http或https开头的完整真实商品跳转链接，若因平台限制无法获取真实链接请直接明确告知，严禁编造虚假链接、使用隐藏网址的格式或直接留空。", model="gemini-web-3.5-flash-lite-thinking-max")
-    generate_content(prompt="请帮我搜索拼多多上单瓶性价比最高的500ml可乐，告诉我具体的商品名称、规格、总价及核算后的单瓶价格，并强制输出以http或https开头的完整真实商品跳转链接，若因平台限制无法获取真实链接请直接明确告知，严禁编造虚假链接、使用隐藏网址的格式或直接留空。", model="gemini-web-3.5-flash-lite-thinking-max")
+    ]
+
+    result = generate_content(prompt="一一告诉我每个商品的SKU", model="gpt-5.6-max", file_paths=file_paths)
+    print()
 
