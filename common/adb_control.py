@@ -131,16 +131,6 @@ class PddAdbBot:
         cmd = f'"{ADB_PATH}" shell input text "{escaped_text}"'
         subprocess.run(cmd, shell=True)
 
-    def clear_input_box(self):
-        """高效清空输入框文本：移动光标至末尾并发送多次删除指令"""
-        log("[ACTION] 清空搜索框内容...")
-        # KEYCODE_MOVE_END (123) 移动到末尾
-        subprocess.run(f'"{ADB_PATH}" shell input keyevent 123', shell=True)
-        # 连续发送35次 KEYCODE_DEL (67)
-        del_events = " ".join(["67"] * 35)
-        subprocess.run(f'"{ADB_PATH}" shell input keyevent {del_events}', shell=True)
-        time.sleep(1)
-
     def get_screenshot_cv(self):
         proc = subprocess.Popen(
             f'"{ADB_PATH}" exec-out screencap -p',
@@ -156,42 +146,16 @@ class PddAdbBot:
         return img_cv
 
     def process_single_goods(self, goods_id, index, consecutive_successes=0):
-        # 步骤 1: 确保 Via 浏览器在前台
-        log(f"[TASK] [{index}] 步骤 1/4: 确保 Via 浏览器处于前台")
-        ensure_app_foreground(VIA_PACKAGE)
-        time.sleep(1)
+        # 步骤 1: 直接重启 Via 浏览器
+        log(f"[TASK] [{index}] 步骤 1/3: 重启 Via 浏览器")
+        restart_app(VIA_PACKAGE)
 
-        # 步骤 2: 点击 Via 搜索框并清空内容
-        log(f"[TASK] [{index}] 步骤 2/4: 点击 Via 搜索框并校验")
+        # 步骤 2: 点击 Via 搜索框并直接输入链接跳转
+        log(f"[TASK] [{index}] 步骤 2/3: 点击搜索框并输入商品链接")
         # 搜索框中心点转换: 1800x2880下 (150+1400)/2=775 -> 43.06%, (75+160)/2=117.5 -> 4.08%
         self.click_relative(0.4306, 0.0408, "Via 搜索框")
         time.sleep(1)
-        self.clear_input_box()
 
-        # 截图校验清空是否彻底
-        img = self.get_screenshot_cv()
-        if img is None:
-            return False, "", "无法获取截图校验搜索框"
-
-        # 搜索框区域边界相对换算:
-        # X: 150/1800=0.0833, 1400/1800=0.7778
-        # Y: 75/2880=0.0260, 160/2880=0.0556
-        x1, x2 = int(self.width * 0.0833), int(self.width * 0.7778)
-        y1, y2 = int(self.height * 0.0260), int(self.height * 0.0556)
-
-        # 截取对应区域进行OCR
-        search_box_img = img[y1:y2, x1:x2]
-        result, _ = ocr(search_box_img)
-        detected_text = "".join([line[1] for line in result if len(line) >= 2]) if result else ""
-
-        log(f"[OCR] 搜索框当前识别文本内容: '{detected_text}'")
-        if len(detected_text) > 5:
-            log("[WARN] 搜索框未清空干净 (字数>5)，重启 Via 浏览器并记为失败。")
-            restart_app(VIA_PACKAGE)
-            return False, "", "输入框未清空干净"
-
-        # 步骤 3: 输入链接并点击"访问网址"
-        log(f"[TASK] [{index}] 步骤 3/4: 输入商品链接并访问")
         target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
         self.input_text(target_link, "商品链接")
         time.sleep(0.5)
@@ -199,8 +163,8 @@ class PddAdbBot:
         # 访问网址按钮转换: 1741/1800=96.72%, 123/2880=4.27%
         self.click_relative(0.9672, 0.0427, "访问网址 按钮")
 
-        # 步骤 4: 状态机轮询等待拼多多拉起 -> 详情页识别 -> 购买点击 -> SKU捕获
-        log(f"[TASK] [{index}] 步骤 4/4: 等待应用跳转并抓取 SKU")
+        # 步骤 3: 状态机轮询等待拼多多拉起 -> 详情页识别 -> 购买点击 -> SKU捕获
+        log(f"[TASK] [{index}] 步骤 3/3: 等待应用跳转并抓取 SKU")
         start_time = time.time()
         detail_entered = False
         sku_ready = False
@@ -251,12 +215,6 @@ class PddAdbBot:
         cv2.imwrite(success_path, final_img)
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
 
-        # 内存释放策略: 连续50次成功后清理 Via 和 拼多多
-        if (consecutive_successes + 1) % 50 == 0:
-            log(f"[INFO] 循环连轴转达到 50 次，执行垃圾回收(重启应用)。")
-            subprocess.run(f'"{ADB_PATH}" shell am force-stop {PDD_PACKAGE}', shell=True)
-            restart_app(VIA_PACKAGE)
-
         return True, success_path, ""
 
 
@@ -278,12 +236,15 @@ def batch_runner(goods_id_list):
     if not filtered_list:
         return
 
+    # 最开始重启一下拼多多
+    log("[INFO] 🔧 初始化启动：重启拼多多客户端...")
+    restart_app(PDD_PACKAGE)
+
     bot = PddAdbBot()
     success_count, fail_count = 0, 0
     consecutive_successes = 0
 
     for i, goods_id in enumerate(filtered_list, 1):
-        # 修复了原代码中的 "-" 40 语法错误
         print("\n" + "-" * 40)
         log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
 
@@ -314,6 +275,11 @@ def batch_runner(goods_id_list):
 
         finally:
             save_state(state)
+
+            # 每处理 10 个 ID 重启一下拼多多
+            if i % 10 == 0 and i != len(filtered_list):
+                log(f"[INFO] ♻️ 已处理 {i} 个任务，定期重启拼多多客户端清理内存...")
+                restart_app(PDD_PACKAGE)
 
     print(f"\n{'=' * 50}")
     log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {success_count} | 失败: {fail_count}")
