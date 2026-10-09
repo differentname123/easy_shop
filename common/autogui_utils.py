@@ -448,9 +448,11 @@ def batch_runner(goods_id_list):
     bot = PddAutomation()
     success_count, fail_count = 0, 0
     consecutive_successes = 0  # 追踪连续成功次数，用于按频次重启
+    consecutive_failures = 0   # 新增：追踪连续失败次数
 
     for i, goods_id in enumerate(filtered_list, 1):
         print("\n" + "-" * 40)
+
         log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
 
         if goods_id not in state:
@@ -467,15 +469,18 @@ def batch_runner(goods_id_list):
                 log(f"[SUCCESS] ✅ 处理成功 ({goods_id})")
                 success_count += 1
                 consecutive_successes += 1
+                consecutive_failures = 0  # 成功即清零失败次数
             else:
                 log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
                 fail_count += 1
-                consecutive_successes = 0  # 失败即清零
+                consecutive_successes = 0  # 失败即清零成功次数
+                consecutive_failures += 1  # 失败次数递增
 
         except Exception as e:
             log(f"[FATAL] 💥 发生严重异常: {str(e)}")
             fail_count += 1
-            consecutive_successes = 0  # 发生异常即清零
+            consecutive_successes = 0  # 发生异常即清零成功次数
+            consecutive_failures += 1  # 异常即失败次数递增
             # 异常时进行保护性环境清理（没成功时重启）
             try:
                 bot.window_name = TARGET_APP_NAME
@@ -487,10 +492,14 @@ def batch_runner(goods_id_list):
         finally:
             save_state(state)
 
+        # 【核心修改点】判断是否连续失败5次
+        if consecutive_failures >= 5:
+            log(f"[WARN] ⚠️ 已连续发生 5 次失败，主动触发熔断机制，跳过本轮剩余的 {len(filtered_list) - i} 个任务！")
+            break
+
     print(f"\n{'=' * 50}")
     log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {success_count} | 失败: {fail_count}")
     print(f"{'=' * 50}")
-
 
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
