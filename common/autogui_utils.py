@@ -533,10 +533,17 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 if __name__ == "__main__":
     while True:
         try:
+            target_category_list = ["可乐", "蒜"]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
-            results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"}, projection={"product_id": 1, "_id": 0})
-            need_sku_product_id_list = [item["product_id"] for item in results]
+            results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"}, projection={"product_id": 1,"name": 1, "_id": 0})
+            # 过滤出 item.get("name") 包含 target_category_list 中任意一个关键词的商品
+            filtered_results = [
+                item for item in results
+                if any(keyword in item.get("name", "") for keyword in target_category_list)
+            ]
+            need_sku_product_id_list = [item["product_id"] for item in filtered_results]
+
 
             batch_runner(need_sku_product_id_list)
         except Exception as e:
