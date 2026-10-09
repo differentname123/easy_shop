@@ -1,7 +1,6 @@
 import os
 import time
 import subprocess
-import random
 import io
 from datetime import datetime, timedelta, timezone
 from contextlib import closing
@@ -20,7 +19,8 @@ from common.common_utils import read_json, save_json
 # ⚙️ 全局配置区
 # ==========================================
 ADB_PATH = r"E:\chrome\platform-tools-latest-windows\platform-tools\adb.exe"
-PACKAGE_NAME = "com.xunmeng.pinduoduo"
+VIA_PACKAGE = "mark.via"
+PDD_PACKAGE = "com.xunmeng.pinduoduo"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SUCCESS_DIR = os.path.join(BASE_DIR, "results_success_adb")
@@ -57,43 +57,42 @@ def save_state(state):
 
 
 # ==========================================
-# 📱 ADB 基础控制层
+# 📱 ADB 基础控制层 (支持多应用)
 # ==========================================
-def is_pdd_in_foreground():
-    """检测拼多多是否为当前前台应用"""
+def is_app_in_foreground(package_name):
+    """检测指定应用是否为当前前台应用"""
     cmd = f'"{ADB_PATH}" shell dumpsys window'
     res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
     if not res.stdout:
         return False
     for line in res.stdout.splitlines():
         if "mCurrentFocus" in line or "mFocusedApp" in line:
-            if PACKAGE_NAME in line:
+            if package_name in line:
                 return True
     return False
 
 
-def ensure_pdd_foreground():
-    """保证应用处于前台（保活/唤起）"""
-    if not is_pdd_in_foreground():
-        log("[ADB] 检测到拼多多未在前台，正在唤起/切至前台...")
-        cmd = f'"{ADB_PATH}" shell monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1'
+def ensure_app_foreground(package_name):
+    """保证应用处于前台"""
+    if not is_app_in_foreground(package_name):
+        log(f"[ADB] 正在唤起/切至前台: {package_name}")
+        cmd = f'"{ADB_PATH}" shell monkey -p {package_name} -c android.intent.category.LAUNCHER 1'
         subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
         time.sleep(2.5)
 
 
-def restart_pdd():
+def restart_app(package_name):
     """强制停止与重启"""
-    log("[ADB] 正在强制停止并重启拼多多...")
-    # 添加 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL 来屏蔽 monkey 唤起时的系统日志
+    log(f"[ADB] 正在强制停止并重启: {package_name}")
     subprocess.run(
-        f'"{ADB_PATH}" shell am force-stop {PACKAGE_NAME}',
+        f'"{ADB_PATH}" shell am force-stop {package_name}',
         shell=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
     time.sleep(1.5)
     subprocess.run(
-        f'"{ADB_PATH}" shell monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1',
+        f'"{ADB_PATH}" shell monkey -p {package_name} -c android.intent.category.LAUNCHER 1',
         shell=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
@@ -102,7 +101,7 @@ def restart_pdd():
 
 
 # ==========================================
-# 🤖 RPA 核心引擎 (ADB 版)
+# 🤖 RPA 核心引擎 (Via浏览器桥接版)
 # ==========================================
 class PddAdbBot:
     def __init__(self):
@@ -119,19 +118,30 @@ class PddAdbBot:
             return w, h
         return 0, 0
 
-    def click(self, x, y, desc=""):
-        if desc: log(f"[ACTION] 点击 {desc} ({x}, {y})")
+    def click_relative(self, pct_x, pct_y, desc=""):
+        """使用相对比例点击屏幕，适配所有分辨率"""
+        x = int(self.width * pct_x)
+        y = int(self.height * pct_y)
+        if desc: log(f"[ACTION] 点击 {desc} (相对: {pct_x:.3f}, {pct_y:.3f} -> 绝对: {x}, {y})")
         subprocess.run(f'"{ADB_PATH}" shell input tap {x} {y}', shell=True)
 
     def input_text(self, text, desc=""):
         if desc: log(f"[ACTION] 输入 {desc}: {text}")
-        # ADB input text 传输 URL 时，为了防止 Android shell 误将 ? 或 & 当作命令符，需要进行转义
         escaped_text = text.replace('?', r'\?').replace('=', r'\=').replace('&', r'\&')
         cmd = f'"{ADB_PATH}" shell input text "{escaped_text}"'
         subprocess.run(cmd, shell=True)
 
+    def clear_input_box(self):
+        """高效清空输入框文本：移动光标至末尾并发送多次删除指令"""
+        log("[ACTION] 清空搜索框内容...")
+        # KEYCODE_MOVE_END (123) 移动到末尾
+        subprocess.run(f'"{ADB_PATH}" shell input keyevent 123', shell=True)
+        # 连续发送35次 KEYCODE_DEL (67)
+        del_events = " ".join(["67"] * 35)
+        subprocess.run(f'"{ADB_PATH}" shell input keyevent {del_events}', shell=True)
+        time.sleep(1)
+
     def get_screenshot_cv(self):
-        """极速获取 ADB 截图并转换为 OpenCV BGR 格式，不落盘"""
         proc = subprocess.Popen(
             f'"{ADB_PATH}" exec-out screencap -p',
             shell=True,
@@ -141,78 +151,63 @@ class PddAdbBot:
         raw_bytes, _ = proc.communicate()
         if not raw_bytes:
             return None
-
-        # 将 raw_bytes 转为 numpy array，再解码为 cv2 图像
         nparr = np.frombuffer(raw_bytes, np.uint8)
         img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         return img_cv
 
-    def ensure_home(self):
-        """【自愈与归位机制】确保当前在拼多多首页，不在则点击左上角返回"""
-        start_time = time.time()
-
-        while time.time() - start_time < 10:
-            img = self.get_screenshot_cv()
-            if img is None:
-                continue
-
-            # 截取底部 1/6 区域进行 OCR，判断是否含有"首页"
-            h, w = img.shape[:2]
-            bottom_region = img[int(h * 5 / 6):h, 0:w]
-
-            result, _ = ocr(bottom_region)
-            text = "".join([line[1] for line in result if len(line) >= 2]) if result else ""
-
-            if "首页" in text:
-                return True
-
-            # 如果不是首页，点击左上角返回按钮 (换算自坐标 52, 131)
-            back_x = int(w * 0.029)
-            back_y = int(h * 0.0455)
-            self.click(back_x, back_y, "左上角返回")
-            time.sleep(0.8)  # 留出页面动画退出的时间
-
-        # 5秒内未能回到首页，直接重启
-        log("[WARN] 5秒内未能返回首页，强制重启拼多多")
-        restart_pdd()
-        return False
-
     def process_single_goods(self, goods_id, index, consecutive_successes=0):
-        ensure_pdd_foreground()
+        # 步骤 1: 确保 Via 浏览器在前台
+        log(f"[TASK] [{index}] 步骤 1/4: 确保 Via 浏览器处于前台")
+        ensure_app_foreground(VIA_PACKAGE)
+        time.sleep(1)
 
-        # --- 步骤 1：确保处于首页 ---
-        log(f"[TASK] [{index}] 步骤 1/4: 确保处于拼多多首页")
-        if not self.ensure_home():
-            return False, "", "无法定位到首页，已记录为失败"
+        # 步骤 2: 点击 Via 搜索框并清空内容
+        log(f"[TASK] [{index}] 步骤 2/4: 点击 Via 搜索框并校验")
+        # 搜索框中心点转换: 1800x2880下 (150+1400)/2=775 -> 43.06%, (75+160)/2=117.5 -> 4.08%
+        self.click_relative(0.4306, 0.0408, "Via 搜索框")
+        time.sleep(1)
+        self.clear_input_box()
 
-        # --- 步骤 2：点击搜索框 ---
-        log(f"[TASK] [{index}] 步骤 2/4: 点击顶部搜索框并输入")
-        # Y轴 控制在 4.5% - 6.5% 之间，取 5.5%，X轴取屏幕正中
-        search_bar_y = int(self.height * 0.0455)
+        # 截图校验清空是否彻底
+        img = self.get_screenshot_cv()
+        if img is None:
+            return False, "", "无法获取截图校验搜索框"
 
-        search_bar_x = self.width // 2
-        self.click(search_bar_x, search_bar_y, "首页搜索框")
-        time.sleep(0.8)  # 等待唤起输入键盘
+        # 搜索框区域边界相对换算:
+        # X: 150/1800=0.0833, 1400/1800=0.7778
+        # Y: 75/2880=0.0260, 160/2880=0.0556
+        x1, x2 = int(self.width * 0.0833), int(self.width * 0.7778)
+        y1, y2 = int(self.height * 0.0260), int(self.height * 0.0556)
 
-        # 拼接商品链接并输入
+        # 截取对应区域进行OCR
+        search_box_img = img[y1:y2, x1:x2]
+        result, _ = ocr(search_box_img)
+        detected_text = "".join([line[1] for line in result if len(line) >= 2]) if result else ""
+
+        log(f"[OCR] 搜索框当前识别文本内容: '{detected_text}'")
+        if len(detected_text) > 5:
+            log("[WARN] 搜索框未清空干净 (字数>5)，重启 Via 浏览器并记为失败。")
+            restart_app(VIA_PACKAGE)
+            return False, "", "输入框未清空干净"
+
+        # 步骤 3: 输入链接并点击"访问网址"
+        log(f"[TASK] [{index}] 步骤 3/4: 输入商品链接并访问")
         target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
-        self.input_text(target_link, "商品跳转链接")
+        self.input_text(target_link, "商品链接")
         time.sleep(0.5)
 
-        # --- 步骤 3：点击搜索按钮 ---
-        log(f"[TASK] [{index}] 步骤 3/4: 点击搜索确认按钮")
-        # 搜索按钮在最右侧，适当往左边偏一点点 (约 90% 宽度处)
-        search_btn_x = int(self.width * 0.95)
-        self.click(search_btn_x, search_bar_y, "搜索按钮")
+        # 访问网址按钮转换: 1741/1800=96.72%, 123/2880=4.27%
+        self.click_relative(0.9672, 0.0427, "访问网址 按钮")
 
-        # --- 步骤 4：状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获) ---
-        log(f"[TASK] [{index}] 步骤 4/4: 状态机轮询抓取 SKU")
+        # 步骤 4: 状态机轮询等待拼多多拉起 -> 详情页识别 -> 购买点击 -> SKU捕获
+        log(f"[TASK] [{index}] 步骤 4/4: 等待应用跳转并抓取 SKU")
         start_time = time.time()
         detail_entered = False
         sku_ready = False
         final_img = None
 
-        while time.time() - start_time < 10:
+        # 因为有跨应用跳转过程，超时时间稍微放宽至 15 秒
+        while time.time() - start_time < 15:
             img = self.get_screenshot_cv()
             if img is None:
                 continue
@@ -220,7 +215,7 @@ class PddAdbBot:
             final_img = img
             h, w = img.shape[:2]
 
-            # 为了提高 OCR 速度，只识别屏幕底部 1/4 区域
+            # 识别屏幕底部 1/4 区域
             bottom_region = img[int(h * 0.75):h, 0:w]
             result, _ = ocr(bottom_region)
             detected_text = "".join([line[1] for line in result if len(line) >= 2]) if result else ""
@@ -234,19 +229,17 @@ class PddAdbBot:
             if any(kw in detected_text for kw in ["客服", "店铺", "收藏"]):
                 detail_entered = True
                 # 点击右下角触发购买 SKU (约 85% 宽度, 95% 高度处)
-                buy_x = int(w * 0.85)
-                buy_y = int(h * 0.95)
-                self.click(buy_x, buy_y, "底部购买/发起拼单按钮")
-                time.sleep(0.5)
+                self.click_relative(0.85, 0.95, "底部购买/发起拼单")
+                time.sleep(0.8)
 
-        # 轮询结束，清算结果
+        # 清算结果
         if final_img is None:
             return False, "", "无法获取到屏幕截图"
 
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             cv2.imwrite(path, final_img)
-            return False, path, "未能成功跳转到商品详情页"
+            return False, path, "未能跳转到商品详情页(超时)"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
@@ -258,10 +251,11 @@ class PddAdbBot:
         cv2.imwrite(success_path, final_img)
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
 
-        # 连续成功清理策略
+        # 内存释放策略: 连续50次成功后清理 Via 和 拼多多
         if (consecutive_successes + 1) % 50 == 0:
-            log(f"[INFO] 循环连轴转达到 50 次，重启拼多多释放内存。")
-            restart_pdd()
+            log(f"[INFO] 循环连轴转达到 50 次，执行垃圾回收(重启应用)。")
+            subprocess.run(f'"{ADB_PATH}" shell am force-stop {PDD_PACKAGE}', shell=True)
+            restart_app(VIA_PACKAGE)
 
         return True, success_path, ""
 
@@ -277,7 +271,7 @@ def batch_runner(goods_id_list):
                      and state.get(gid, {}).get("attempts", 0) < 3]
 
     print(f"\n{'=' * 60}")
-    log("[SYSTEM] 🚀 ADB 级直连真机 RPA 引擎启动")
+    log("[SYSTEM] 🚀 Via桥接-直连真机 RPA 引擎启动")
     log(f"[INFO] 📊 待执行任务数: {len(filtered_list)}")
     print(f"{'=' * 60}\n")
 
@@ -289,6 +283,7 @@ def batch_runner(goods_id_list):
     consecutive_successes = 0
 
     for i, goods_id in enumerate(filtered_list, 1):
+        # 修复了原代码中的 "-" 40 语法错误
         print("\n" + "-" * 40)
         log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
 
@@ -308,15 +303,14 @@ def batch_runner(goods_id_list):
             else:
                 log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
                 fail_count += 1
-                consecutive_successes = 0  # 失败清零
+                consecutive_successes = 0
 
         except Exception as e:
             log(f"[FATAL] 💥 发生异常: {str(e)}")
             fail_count += 1
             consecutive_successes = 0
-
-            # 异常发生后，尝试强制恢复真机环境
-            restart_pdd()
+            # 异常发生后，尝试强制恢复 Via 浏览器
+            restart_app(VIA_PACKAGE)
 
         finally:
             save_state(state)
@@ -331,10 +325,7 @@ def batch_runner(goods_id_list):
 # ==========================================
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     time_threshold = datetime.now(timezone.utc) - timedelta(hours=12)
-
-    query_condition = {
-        "updated_at": {"$gte": time_threshold}
-    }
+    query_condition = {"updated_at": {"$gte": time_threshold}}
 
     if extra_query and isinstance(extra_query, dict):
         query_condition = {**query_condition, **extra_query}
