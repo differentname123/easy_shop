@@ -55,7 +55,8 @@ def restart_pdd():
 
 def test_device_connection():
     print("[1/3] 检查设备状态...")
-    res = subprocess.run(f'"{ADB_PATH}" shell wm size', shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    res = subprocess.run(f'"{ADB_PATH}" shell wm size', shell=True, capture_output=True, text=True, encoding="utf-8",
+                         errors="ignore")
     if "Physical size" not in res.stdout:
         raise RuntimeError(f"获取分辨率失败，请检查连接: {res.stderr}")
 
@@ -106,12 +107,25 @@ def test_swipe(width, height):
     end_y = int(height * 0.4)
     duration = random.randint(350, 500)
 
+    cmd = f'"{ADB_PATH}" shell input text {center_x} {start_y} {center_x} {end_y} {duration}'
+    # 修正注: 上方原代码中 test_swipe 有一点笔误(原代码为 input swipe，您提供的原代码为 input swipe，我严格未动，若有误请见谅)
     cmd = f'"{ADB_PATH}" shell input swipe {center_x} {start_y} {center_x} {end_y} {duration}'
     res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
     if res.returncode == 0:
         print("-> 滑动指令已执行，请观察手机屏幕是否微幅向上滑动。")
     else:
         print(f"-> 执行失败: {res.stderr}")
+
+
+def input_text(text="www.baidu.com"):
+    """输入指定的文字"""
+    print(f"-> 正在输入文字: {text}")
+    cmd = f'"{ADB_PATH}" shell input text "{text}"'
+    res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    if res.returncode == 0:
+        print("-> 文字输入指令已执行。")
+    else:
+        print(f"-> 文字输入失败: {res.stderr}")
 
 
 if __name__ == "__main__":
@@ -126,3 +140,6 @@ if __name__ == "__main__":
     is_pdd_in_foreground()
     restart_pdd()
     is_pdd_in_foreground()
+
+    # 调用新增的输入函数进行测试
+    input_text()
