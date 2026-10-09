@@ -162,8 +162,7 @@ class PddAdbBot:
         log(f"[TASK] [{index}] 步骤 1/3: 重启 Via 浏览器")
         restart_app(VIA_PACKAGE)
 
-        # 步骤 2: 瞬间注入商品链接 (利用底层 Intent 替代 UI 点击与打字)
-        log(f"[TASK] [{index}] 步骤 2/3: 瞬间唤起浏览器并打开商品链接")
+
 
         # 优先使用 product_url，其次 promotion_url，最后采用原拼接逻辑
         if product_url and str(product_url).strip():
@@ -172,6 +171,10 @@ class PddAdbBot:
             target_link = str(promotion_url).strip()
         else:
             target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
+
+
+        # 步骤 2: 瞬间注入商品链接 (利用底层 Intent 替代 UI 点击与打字)
+        log(f"[TASK] [{index}] 步骤 2/3: 瞬间唤起浏览器并打开商品链接 {target_link}")
 
         # 🚀 核心优化：直接通过 am start 将 URL 传给 Via 浏览器，瞬间打开，告别逐字输入
         cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
@@ -197,22 +200,58 @@ class PddAdbBot:
             final_img = img
             h, w = img.shape[:2]
 
-            # 识别屏幕底部 1/4 区域
-            bottom_region = img[int(h * 0.75):h, 0:w]
-            result, _ = ocr(bottom_region)
-            detected_text = "".join([line[1] for line in result if len(line) >= 2]) if result else ""
+            # ================= [ 修改开始 ] =================
+            # 识别整个屏幕，而不再只是底部
+            result, _ = ocr(img)
+
+            if not result:
+                continue
+
+            # 拼合当前页面所有文字，用于判断 SKU 弹窗是否拉起
+            all_text = "".join([line[1] for line in result if len(line) >= 2])
 
             # 状态 A：识别到 SKU 弹窗特征
-            if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+            if detail_entered and any(kw in all_text for kw in ["确定", "请选择", "已选"]):
                 sku_ready = True
                 break
 
-            # 状态 B：识别到处于详情页底部栏，动态点击发起购买
-            if any(kw in detected_text for kw in ["客服", "店铺", "收藏"]):
+            # 状态 B：解析 OCR 结果，区分为底部和上半部分
+            bottom_found = False
+            top_buy_box = None
+
+            for line in result:
+                if len(line) < 2:
+                    continue
+                box, text = line[0], line[1]
+                if not box or len(box) < 4:
+                    continue
+
+                # 计算文本框的中心点 Y 坐标
+                y_center = (box[0][1] + box[2][1]) / 2
+
+                # 判定: Y轴大于屏幕75%为底部
+                if y_center > h * 0.75:
+                    if any(kw in text for kw in ["客服", "店铺", "收藏"]):
+                        bottom_found = True
+                else:
+                    # 判定: 非底部即视为上半部分
+                    if any(kw in text for kw in ["立即购买", "领券购买"]):
+                        top_buy_box = box
+
+            # 判断逻辑：优先看底部，如果没有再看上半部分并动态点击
+            if bottom_found:
                 detail_entered = True
                 # 点击右下角触发购买 SKU (约 85% 宽度, 95% 高度处)
                 self.click_relative(0.85, 0.95, "底部购买/发起拼单")
                 time.sleep(0.8)
+            elif top_buy_box is not None:
+                detail_entered = True
+                # 上半部分找到了“立即购买”或“领券购买”，动态计算该文字区域的中心百分比并点击
+                center_x = (top_buy_box[0][0] + top_buy_box[2][0]) / 2
+                center_y = (top_buy_box[0][1] + top_buy_box[2][1]) / 2
+                self.click_relative(center_x / w, center_y / h, "上半部分[立即/领券购买]")
+                time.sleep(0.8)
+            # ================= [ 修改结束 ] =================
 
         # 清算结果
         if final_img is None:
