@@ -84,9 +84,20 @@ def ensure_pdd_foreground():
 def restart_pdd():
     """强制停止与重启"""
     log("[ADB] 正在强制停止并重启拼多多...")
-    subprocess.run(f'"{ADB_PATH}" shell am force-stop {PACKAGE_NAME}', shell=True)
+    # 添加 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL 来屏蔽 monkey 唤起时的系统日志
+    subprocess.run(
+        f'"{ADB_PATH}" shell am force-stop {PACKAGE_NAME}',
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
     time.sleep(1.5)
-    subprocess.run(f'"{ADB_PATH}" shell monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1', shell=True)
+    subprocess.run(
+        f'"{ADB_PATH}" shell monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1',
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
     time.sleep(4)
 
 
@@ -140,7 +151,7 @@ class PddAdbBot:
         """【自愈与归位机制】确保当前在拼多多首页，不在则点击左上角返回"""
         start_time = time.time()
 
-        while time.time() - start_time < 5:
+        while time.time() - start_time < 10:
             img = self.get_screenshot_cv()
             if img is None:
                 continue
