@@ -7,11 +7,55 @@ from PIL import Image
 # 填写你电脑上 adb.exe 的实际完整绝对路径（注意路径前加 r，防止反斜杠转义）
 # 例如: r"C:\platform-tools\adb.exe" 或 r"D:\android\platform-tools\adb.exe"
 ADB_PATH = r"E:\chrome\platform-tools-latest-windows\platform-tools\adb.exe"
+PACKAGE_NAME = "com.xunmeng.pinduoduo"
+
+
+def is_pdd_in_foreground():
+    """检测拼多多是否为当前前台应用"""
+    cmd = f'"{ADB_PATH}" shell dumpsys window'
+    # 指定 encoding="utf-8" 和 errors="ignore"，防止 Windows 下 GBK 解码大段输出时崩溃
+    res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    if not res.stdout:
+        return False
+
+    for line in res.stdout.splitlines():
+        if "mCurrentFocus" in line or "mFocusedApp" in line:
+            if PACKAGE_NAME in line:
+                print("-> [状态] 拼多多当前处于前台。")
+                return True
+
+    print("-> [状态] 拼多多当前未在前台。")
+    return False
+
+
+def ensure_pdd_foreground():
+    """保证应用处于前台（保活/唤起）"""
+    if not is_pdd_in_foreground():
+        print("-> 检测到拼多多未在前台，正在唤起/切至前台...")
+        cmd = f'"{ADB_PATH}" shell monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1'
+        subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        time.sleep(2)
+    else:
+        print("-> 拼多多当前已处于前台。")
+
+
+def restart_pdd():
+    """强制停止与重启"""
+    print("-> 正在强制停止拼多多...")
+    cmd_stop = f'"{ADB_PATH}" shell am force-stop {PACKAGE_NAME}'
+    subprocess.run(cmd_stop, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    time.sleep(2)
+
+    print("-> 正在重新启动拼多多...")
+    cmd_start = f'"{ADB_PATH}" shell monkey -p {PACKAGE_NAME} -c android.intent.category.LAUNCHER 1'
+    subprocess.run(cmd_start, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
+    time.sleep(3)
+    print("-> 拼多多重启完成。")
 
 
 def test_device_connection():
     print("[1/3] 检查设备状态...")
-    res = subprocess.run(f'"{ADB_PATH}" shell wm size', shell=True, capture_output=True, text=True)
+    res = subprocess.run(f'"{ADB_PATH}" shell wm size', shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
     if "Physical size" not in res.stdout:
         raise RuntimeError(f"获取分辨率失败，请检查连接: {res.stderr}")
 
@@ -63,7 +107,7 @@ def test_swipe(width, height):
     duration = random.randint(350, 500)
 
     cmd = f'"{ADB_PATH}" shell input swipe {center_x} {start_y} {center_x} {end_y} {duration}'
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
     if res.returncode == 0:
         print("-> 滑动指令已执行，请观察手机屏幕是否微幅向上滑动。")
     else:
@@ -75,4 +119,10 @@ if __name__ == "__main__":
     test_screenshot()
     time.sleep(1)
     test_swipe(w, h)
-    print("\n环境验证全部通过！")
+    print("\n环境验证全部通过！\n")
+
+    is_pdd_in_foreground()
+    ensure_pdd_foreground()
+    is_pdd_in_foreground()
+    restart_pdd()
+    is_pdd_in_foreground()
