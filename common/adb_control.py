@@ -182,6 +182,7 @@ class PddAdbBot:
 
         # 因为有跨应用跳转过程，超时时间稍微放宽至 15 秒
         while time.time() - start_time < 15:
+            time.sleep(1)
             img = self.get_screenshot_cv()
             if img is None:
                 continue
