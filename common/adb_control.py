@@ -162,18 +162,16 @@ class PddAdbBot:
         log(f"[TASK] [{index}] 步骤 1/3: 重启 Via 浏览器")
         restart_app(VIA_PACKAGE)
 
-        # 步骤 2: 点击 Via 搜索框并直接输入链接跳转
-        log(f"[TASK] [{index}] 步骤 2/3: 点击搜索框并输入商品链接")
-        # 搜索框中心点转换: 1800x2880下 (150+1400)/2=775 -> 43.06%, (75+160)/2=117.5 -> 4.08%
-        self.click_relative(0.4306, 0.0408, "Via 搜索框")
-        time.sleep(1)
-
+        # 步骤 2: 瞬间注入商品链接 (利用底层 Intent 替代 UI 点击与打字)
+        log(f"[TASK] [{index}] 步骤 2/3: 瞬间唤起浏览器并打开商品链接")
         target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
-        self.input_text(target_link, "商品链接")
-        time.sleep(0.5)
 
-        # 访问网址按钮转换: 1741/1800=96.72%, 123/2880=4.27%
-        self.click_relative(0.9672, 0.0427, "访问网址 按钮")
+        # 🚀 核心优化：直接通过 am start 将 URL 传给 Via 浏览器，瞬间打开，告别逐字输入
+        cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
+        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 给予浏览器响应和触发拼多多跳转的缓冲时间
+        time.sleep(1.5)
 
         # 步骤 3: 状态机轮询等待拼多多拉起 -> 详情页识别 -> 购买点击 -> SKU捕获
         log(f"[TASK] [{index}] 步骤 3/3: 等待应用跳转并抓取 SKU")
@@ -228,7 +226,6 @@ class PddAdbBot:
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
 
         return True, success_path, ""
-
 
 # ==========================================
 # 🚦 任务调度引擎
