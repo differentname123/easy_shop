@@ -129,17 +129,17 @@ def input_text(text="www.baidu.com"):
 
 
 if __name__ == "__main__":
-    w, h = test_device_connection()
-    test_screenshot()
-    time.sleep(1)
-    test_swipe(w, h)
-    print("\n环境验证全部通过！\n")
-
-    is_pdd_in_foreground()
-    ensure_pdd_foreground()
-    is_pdd_in_foreground()
-    restart_pdd()
-    is_pdd_in_foreground()
+    # w, h = test_device_connection()
+    # test_screenshot()
+    # time.sleep(1)
+    # test_swipe(w, h)
+    # print("\n环境验证全部通过！\n")
+    #
+    # is_pdd_in_foreground()
+    # ensure_pdd_foreground()
+    # is_pdd_in_foreground()
+    # restart_pdd()
+    # is_pdd_in_foreground()
 
     # 调用新增的输入函数进行测试
-    input_text()
+    input_text("https://mobile.pinduoduo.com/goods.html?goods_id=993843123351")
