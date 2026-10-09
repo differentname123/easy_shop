@@ -533,7 +533,7 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 if __name__ == "__main__":
     while True:
         try:
-            target_category_list = ["可乐","洗洁精","洗衣液"]
+            target_category_list = ["可乐","洗洁精","洗衣液", "冲牙器"]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
             results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"}, projection={"product_id": 1,"name": 1,"sku_info": 1, "_id": 0})
