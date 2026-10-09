@@ -797,7 +797,8 @@ def run_sku_round(product_manager):
                         "product_id": product["product_id"],
                         "need_reformat": True,
                         "sku_info": sku_info,
-                        "activity_price": sku_info["price"]
+                        "activity_price": sku_info["price"],
+                        "sku_updated_at": datetime.now(timezone.utc),
                     }
 
                     saved = product_manager.update(
