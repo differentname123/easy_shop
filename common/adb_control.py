@@ -157,14 +157,21 @@ class PddAdbBot:
         img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         return img_cv
 
-    def process_single_goods(self, goods_id, index, consecutive_successes=0):
+    def process_single_goods(self, goods_id, index, consecutive_successes=0, product_url=None, promotion_url=None):
         # 步骤 1: 直接重启 Via 浏览器
         log(f"[TASK] [{index}] 步骤 1/3: 重启 Via 浏览器")
         restart_app(VIA_PACKAGE)
 
         # 步骤 2: 瞬间注入商品链接 (利用底层 Intent 替代 UI 点击与打字)
         log(f"[TASK] [{index}] 步骤 2/3: 瞬间唤起浏览器并打开商品链接")
-        target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
+
+        # 优先使用 product_url，其次 promotion_url，最后采用原拼接逻辑
+        if product_url and str(product_url).strip():
+            target_link = str(product_url).strip()
+        elif promotion_url and str(promotion_url).strip():
+            target_link = str(promotion_url).strip()
+        else:
+            target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
 
         # 🚀 核心优化：直接通过 am start 将 URL 传给 Via 浏览器，瞬间打开，告别逐字输入
         cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
@@ -228,15 +235,24 @@ class PddAdbBot:
 
         return True, success_path, ""
 
+
 # ==========================================
 # 🚦 任务调度引擎
 # ==========================================
-def batch_runner(goods_id_list):
+def batch_runner(goods_list):
     state = load_state()
 
-    filtered_list = [gid for gid in goods_id_list
-                     if not state.get(gid, {}).get("success", False)
-                     and state.get(gid, {}).get("attempts", 0) < 3]
+    # 支持直接传 dict 列表或纯 goods_id 列表
+    normalized_list = []
+    for item in goods_list:
+        if isinstance(item, dict):
+            normalized_list.append(item)
+        else:
+            normalized_list.append({"product_id": item, "product_url": None, "promotion_url": None})
+
+    filtered_list = [item for item in normalized_list
+                     if not state.get(item["product_id"], {}).get("success", False)
+                     and state.get(item["product_id"], {}).get("attempts", 0) < 3]
 
     print(f"\n{'=' * 60}")
     log("[SYSTEM] 🚀 Via桥接-直连真机 RPA 引擎启动")
@@ -254,7 +270,11 @@ def batch_runner(goods_id_list):
     success_count, fail_count = 0, 0
     consecutive_successes = 0
 
-    for i, goods_id in enumerate(filtered_list, 1):
+    for i, item in enumerate(filtered_list, 1):
+        goods_id = item["product_id"]
+        product_url = item.get("product_url")
+        promotion_url = item.get("promotion_url")
+
         print("\n" + "-" * 40)
 
         log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
@@ -265,7 +285,13 @@ def batch_runner(goods_id_list):
         state[goods_id]["attempts"] += 1
 
         try:
-            success, img_path, error_msg = bot.process_single_goods(goods_id, i, consecutive_successes)
+            success, img_path, error_msg = bot.process_single_goods(
+                goods_id,
+                i,
+                consecutive_successes,
+                product_url=product_url,
+                promotion_url=promotion_url
+            )
             state[goods_id].update({"success": success, "image_path": img_path, "error_msg": error_msg})
 
             if success:
@@ -342,9 +368,7 @@ if __name__ == "__main__":
                 if not item.get("sku_info")
             ]
 
-            need_sku_product_id_list = [item["product_id"] for item in filtered_results]
-
-            batch_runner(need_sku_product_id_list)
+            batch_runner(filtered_results)
 
         except Exception as e:
             log(f"[FATAL] 💥 主程序异常: {str(e)}")
