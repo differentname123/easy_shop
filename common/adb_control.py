@@ -78,7 +78,13 @@ def ensure_app_foreground(package_name):
         log(f"[ADB] 正在唤起/切至前台: {package_name}")
         cmd = f'"{ADB_PATH}" shell monkey -p {package_name} -c android.intent.category.LAUNCHER 1'
         subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-        time.sleep(2.5)
+
+        # 动态等待：一旦检测到应用已在前台即刻放行
+        for _ in range(10):
+            if is_app_in_foreground(package_name):
+                time.sleep(0.5)  # 稍微缓冲等待UI渲染完成
+                break
+            time.sleep(0.5)
 
 
 def restart_app(package_name):
@@ -90,14 +96,20 @@ def restart_app(package_name):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    time.sleep(1.5)
+    time.sleep(0.5)
     subprocess.run(
         f'"{ADB_PATH}" shell monkey -p {package_name} -c android.intent.category.LAUNCHER 1',
         shell=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
-    time.sleep(4)
+
+    # 动态等待替代原先死等的 time.sleep(4)
+    for _ in range(10):
+        if is_app_in_foreground(package_name):
+            time.sleep(0.5)  # 页面出现后稍作缓冲即可
+            break
+        time.sleep(0.5)
 
 
 # ==========================================
@@ -246,6 +258,7 @@ def batch_runner(goods_id_list):
 
     for i, goods_id in enumerate(filtered_list, 1):
         print("\n" + "-" * 40)
+
         log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(filtered_list)}] goods_id: {goods_id}")
 
         if goods_id not in state:
