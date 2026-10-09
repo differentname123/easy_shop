@@ -329,7 +329,7 @@ if __name__ == "__main__":
             results = get_data_updated_within_24h(
                 limit=0,
                 extra_query={"format_status": "success"},
-                projection={"product_id": 1, "name": 1, "sku_info": 1, "_id": 0}
+                projection={"product_id": 1, "name": 1, "sku_info": 1, "promotion_url": 1, "product_url": 1, "_id": 0}
             )
 
             filtered_results = [
