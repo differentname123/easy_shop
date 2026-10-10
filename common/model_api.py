@@ -58,8 +58,9 @@ MEDIUM_MODEL_LIST = [
 LOW_MODEL_LIST = [
     {"model_name": "gpt-5.6-max", "权重": 1, "备注": "来源chatgpt_web "},
     {"model_name": "gemini-web-3.5-flash-lite-thinking-max", "权重": 0, "备注": "来源gemini_web"},
-    {"model_name": "gemini-aistudio-3.7-flash", "权重": 3, "备注": "来源aistudio_web"},
-    {"model_name": "gemini-aistudio-3.6-flash", "权重": 2, "备注": "来源aistudio_web"},
+    {"model_name": "gemini-aistudio-3.7-flash", "权重": 0, "备注": "来源aistudio_web"},
+    {"model_name": "gemini-aistudio-3.6-flash", "权重": 0, "备注": "来源aistudio_web"},
+    {"model_name": "gemini-antigravity-3.7-flash", "权重": 1, "备注": "来源antigravity"},
 
 ]
 

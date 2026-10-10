@@ -405,13 +405,13 @@ class PddAutomation(UIActionEngine):
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.close_current_window()
+            # self.close_current_window()
             return False, path, "进入详情页失败"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.close_current_window()
+            # self.close_current_window()
             return False, path, "SKU面板未完全展开或点击全部失效"
 
         # 流程圆满成功，保存截图
@@ -472,6 +472,7 @@ def batch_runner(goods_id_list):
                 consecutive_failures = 0  # 成功即清零失败次数
             else:
                 log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
+                time.sleep(60)
                 fail_count += 1
                 consecutive_successes = 0  # 失败即清零成功次数
                 consecutive_failures += 1  # 失败次数递增
