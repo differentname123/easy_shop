@@ -688,14 +688,18 @@ if __name__ == "__main__":
     # print(_redact(result))
     # probe_models("model_probe_results.json")
     file_paths = [
-        r"W:\project\python_project\easy_shop\common\results_success\1011856607905.png",
-        r"W:\project\python_project\easy_shop\common\results_success\856961287638.png",
-        r"W:\project\python_project\easy_shop\common\results_success\511007545729.png"
+        r"W:\project\python_project\easy_shop\common\results_success\1001987535573.png",
+        r"W:\project\python_project\easy_shop\common\results_success\690410394115.png",
+
+
+        r"W:\project\python_project\easy_shop\common\results_success\892747167862.png",
+        r"W:\project\python_project\easy_shop\common\results_success\924715631611.png",
+        r"W:\project\python_project\easy_shop\common\results_success\186093409916.png"
 
     ]
     prompt_text = read_file_to_str(r"W:\project\python_project\easy_shop\prompt\商品SKU提取.txt")
 
 
-    result = generate_content(prompt=prompt_text, model="gemini-aistudio-3.7-flash", file_paths=file_paths)
+    result = generate_content(prompt=prompt_text, model="gemma-4-31b-it", file_paths=file_paths)
     print()
 

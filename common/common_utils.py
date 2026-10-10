@@ -136,47 +136,26 @@ def read_file_to_str(filepath,
 
 def string_to_object(input_str: str):
     """
-    从字符串中提取并解析出 Python 列表或字典对象，设计得更加健壮。
+    从字符串中提取并解析出 Python 列表或字典对象，专为处理 LLM 输出设计。
 
-    该函数增强了对不规范格式的容忍度，特别适合处理来自 LLM 的输出。
-
-    核心功能：
-    1.  **智能提取**: 自动在整个字符串中定位 JSON/Python 对象的边界（从第一个 '{' 或 '[' 到最后一个 '}' 或 ']），
-        忽略前导和尾随的无关文本（例如 "当然，这是您要的JSON："）。
-    2.  **兼容 Markdown**: 能够处理被 ```json ... ``` 代码块包裹的内容。
-    3.  **错误修正**:
-        - 自动移除常见的行内 (//) 和块级 (/* */) 注释。
-        - 自动移除导致 JSON 解析失败的尾随逗号 (trailing commas)。
-    4.  **双引擎解析**:
-        - 首先尝试使用 `json.loads`，因为它更符合标准，速度更快。
-        - 如果失败，则回退到 `ast.literal_eval`，以支持 Python 特有的字面量
-          （如 `None`, `True`, `False` 以及单引号字符串）。
-
-    如果无法找到或解析出有效的对象，则抛出 ValueError 异常。
-
-    :param input_str: 包含列表或字典的输入字符串。
-    :return: 解析后的 Python 列表或字典。
-    :raises ValueError: 如果无法从字符串中找到或解析出有效的对象。
-    :raises TypeError: 如果输入不是字符串。
+    核心增强：
+    1. 智能提取：自动忽略 Markdown 标记（如 ```json）和首尾废话。
+    2. 安全清洗（String-Aware）：在移除注释和尾随逗号时，严格保护字符串内部的内容（如 URL、带 // 的规格名）。
+    3. 双引擎解析：结合 json.loads 的高性能与 ast.literal_eval 的宽容度。
     """
-    # 0. 输入校验：处理 None 或非字符串输入
     if not isinstance(input_str, str):
-        # 抛出 TypeError 更符合 Python 语义，但根据您的要求统一为 ValueError 也可以
         raise TypeError(f"输入必须是字符串，但收到了 {type(input_str).__name__}。")
 
-    # 创建一个统一的错误信息生成器
     def _create_error_message(reason: str) -> str:
-        # 预览原始输入的前50个字符
         preview = (input_str[:50] + '...') if len(input_str) > 50 else input_str
         return f"{reason} | 输入内容预览: '{preview}'"
 
-    # 1. 智能提取：在字符串中寻找对象边界 (重构后，逻辑更清晰)
+    # 1. 智能提取：在字符串中寻找对象边界
     first_bracket = input_str.find('[')
     first_curly = input_str.find('{')
 
-    # 确定第一个开括号的位置
     if first_bracket == -1 and first_curly == -1:
-        raise ValueError(_create_error_message("输入字符串中未找到疑似列表或字典的起始符号 '[' 或 '{'"))
+        raise ValueError(_create_error_message("输入字符串中未找到起始符号 '[' 或 '{'"))
 
     if first_bracket == -1:
         start_pos = first_curly
@@ -185,39 +164,54 @@ def string_to_object(input_str: str):
     else:
         start_pos = min(first_bracket, first_curly)
 
-    # 确定最后一个闭括号的位置
     end_pos = max(input_str.rfind(']'), input_str.rfind('}'))
 
     if end_pos <= start_pos:
         raise ValueError(_create_error_message("未找到与起始括号匹配的结束括号 ']' 或 '}'"))
 
-    # 提取出最可能包含对象的子字符串
     potential_obj_str = input_str[start_pos: end_pos + 1]
 
-    # 2. 错误修正：清理提取出的字符串
-    # 移除 JavaScript/JSONC 风格的注释
-    potential_obj_str = re.sub(r"//.*", "", potential_obj_str)
-    potential_obj_str = re.sub(r"/\*[\s\S]*?\*/", "", potential_obj_str, flags=re.MULTILINE)
-    # 移除尾随逗号 (例如, [1, 2,])
-    potential_obj_str = re.sub(r",\s*([}\]])", r"\1", potential_obj_str)
-    cleaned_str = potential_obj_str.strip()
-
-    # 3. 双引擎解析
+    # 2. 尝试直接解析（在不进行任何危险替换的情况下优先尝试）
     try:
-        # 首先尝试使用 json.loads (更标准，通常更快)
+        return json.loads(potential_obj_str)
+    except json.JSONDecodeError:
+        pass
+
+    try:
+        # ast.literal_eval 原生支持尾随逗号，能解决很多问题
+        return ast.literal_eval(potential_obj_str)
+    except (ValueError, SyntaxError, MemoryError):
+        pass
+
+    # 3. 字符串感知的安全清洗 (如果直接解析失败，再进行深度清洗)
+
+    # 核心黑科技：匹配字符串字面量(组1) 或 注释/尾随逗号(组2)
+    # 如果匹配到组1，原样返回（保护字符串）；如果匹配到组2，返回空（删除干扰符）
+    def safe_cleaner(match):
+        if match.group(1):  # 如果是字符串内部的内容，原样保留
+            return match.group(1)
+        return ""  # 如果是注释或尾随逗号，删除它
+
+    # 3.1 安全移除注释 (// 和 /* */)
+    # 匹配规则：双引号字符串 | 单引号字符串 | 块级注释 | 行级注释
+    comment_pattern = r'(".*?(?<!\\)(?:\\\\)*"|\'.*?(?<!\\)(?:\\\\)*\')|(/\*[\s\S]*?\*/|//[^\r\n]*)'
+    cleaned_str = re.sub(comment_pattern, safe_cleaner, potential_obj_str)
+
+    # 3.2 安全移除尾随逗号 (例如 {"a": 1, } -> {"a": 1})
+    comma_pattern = r'(".*?(?<!\\)(?:\\\\)*"|\'.*?(?<!\\)(?:\\\\)*\')|(,\s*(?=[\]}]))'
+    cleaned_str = re.sub(comma_pattern, safe_cleaner, cleaned_str).strip()
+
+    # 4. 使用清洗后的字符串进行最终解析
+    try:
         return json.loads(cleaned_str)
     except json.JSONDecodeError:
-        # 如果 json.loads 失败，回退到 ast.literal_eval (更宽容，支持 Python 语法)
         try:
             return ast.literal_eval(cleaned_str)
         except (ValueError, SyntaxError, MemoryError) as e:
-            # 如果两种方法都失败，则抛出最终的异常，并提供丰富的上下文信息
             cleaned_preview = (cleaned_str[:150] + '...') if len(cleaned_str) > 150 else cleaned_str
             error_reason = f"无法将提取的内容解析为列表或字典，解析器错误: {e}"
-            # 最终的错误信息包含：原因，原始输入预览，以及尝试解析的内容预览
             raise ValueError(f"{_create_error_message(error_reason)}\n"
-                             f"尝试解析的内容 (清理后): '''{cleaned_preview}'''")
-
+                             f"尝试解析的内容 (安全清洗后): '''{cleaned_str}'''")
 
 def get_config(key):
     """
