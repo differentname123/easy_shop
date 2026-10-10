@@ -1123,7 +1123,7 @@ if __name__ == "__main__":
         playwright_task,
         # api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
-        web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
+        # web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
     ]
 
     threads = []
