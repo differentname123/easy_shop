@@ -420,7 +420,7 @@ class PddAutomation(UIActionEngine):
         log(f"[TASK] [{index}] 🎯 成功生成最终截图。")
 
         # 连续成功清理策略
-        if (consecutive_successes + 1) % 50 == 0:
+        if (consecutive_successes + 1) % 500 == 0:
             self.close_current_window()
             log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
 
