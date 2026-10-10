@@ -276,9 +276,53 @@ def normalize_intercept_goods(item, default_category):
 
     return record
 
-# ==========================================
-# 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
-# ==========================================
+
+def safe_batch_update(product_manager, records):
+    """
+    【新增】安全的批量更新封装。
+    在入库前对账：如果数据库中已有提取成功的 sku_info，
+    则使用 sku_info.price 强行覆盖爬虫刚抓取的 activity_price，防止 AI 清洗成果被破坏。
+    """
+    if not records:
+        return {"new": 0, "update": 0}
+
+    try:
+        # 1. 提取当前批次中所有的 product_id
+        product_ids = [r["product_id"] for r in records if r.get("product_id")]
+
+        if product_ids:
+            # 2. 批量查询：找出这批商品中，数据库里已经存在 sku_info 的记录
+            existing_docs = product_manager.query(
+                {
+                    "product_id": {"$in": product_ids},
+                    "sku_info": {"$exists": True}  # 只查已经有 sku 的，减少数据传输
+                },
+                projection={"product_id": 1, "sku_info.price": 1}
+            )
+
+            # 3. 建立映射关系: product_id -> 数据库中已锁定的 sku_price
+            sku_price_map = {}
+            if existing_docs:
+                for doc in existing_docs:
+                    sku_price = doc.get("sku_info", {}).get("price")
+                    if sku_price is not None:
+                        sku_price_map[str(doc["product_id"])] = sku_price
+
+            # 4. 拦截并覆写爬虫刚抓取到的 activity_price
+            if sku_price_map:
+                for record in records:
+                    pid = str(record.get("product_id"))
+                    if pid in sku_price_map:
+                        # 强行覆盖：用 SKU 价格替换爬虫价格
+                        record["activity_price"] = sku_price_map[pid]
+                        # 可选打标，方便日后排查这是被保护的数据
+                        record["_price_protected"] = True
+
+    except Exception as e:
+        logger.error("[安全更新/拦截异常] 价格对账查询失败，退回直接入库模式 | 错误: %s", e)
+
+    # 5. 原样调用底层的 update 批量更新入库
+    return product_manager.update(records)
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
 # ==========================================
@@ -395,7 +439,7 @@ def web_search_intercept_task():
 
                                     if records:
                                         item_count = len(records)
-                                        counts = product_manager.update(records)
+                                        counts = safe_batch_update(product_manager, records)
                                         logger.info("[UI拦截任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
                                                     keyword, item_count, counts.get("new", 0), counts.get("update", 0))
                             else:
@@ -497,7 +541,7 @@ def api_search_task():
                                 records.append(record)
 
                         if records:
-                            counts = product_manager.update(records)
+                            counts = safe_batch_update(product_manager, records)
                             logger.info("[API任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
                                         keyword, len(records), counts.get("new", 0), counts.get("update", 0))
                         else:
@@ -748,7 +792,7 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
         if not records:
             return
         try:
-            counts = product_manager.update(records)
+            counts = safe_batch_update(product_manager, records)
             new, updated = stats["new"] + counts["new"], stats["update"] + counts["update"]
             stats.update(new=new, update=updated)
         except Exception as exc:
@@ -1054,7 +1098,7 @@ def api_recommend_task():
 
                         # 【核心安全设计】：每次调完 get_pdd_recommend_goods 立刻落库，即使后续其他分类崩溃，本分类也已保存
                         if records:
-                            counts = product_manager.update(records)
+                            counts = safe_batch_update(product_manager, records)
                             logger.info("[推荐API任务/落库] [%s] 采集结束 | 新增/更新: [%d/%d] | 标志: [api_recommend]",
                                         category_name, counts.get("new", 0), counts.get("update", 0))
 
