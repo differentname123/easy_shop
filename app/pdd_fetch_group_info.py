@@ -350,6 +350,7 @@ def web_search_intercept_task():
         "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
         "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
     ]
+    search_keywords = ["土豆"]
 
     # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
     stats_file_path = Path("keyword_intercept_stats.json")
@@ -1123,7 +1124,7 @@ if __name__ == "__main__":
         playwright_task,
         # api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
-        # web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
+        web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
     ]
 
     threads = []
