@@ -448,7 +448,7 @@ def batch_runner(goods_id_list):
     bot = PddAutomation()
     success_count, fail_count = 0, 0
     consecutive_successes = 0  # 追踪连续成功次数，用于按频次重启
-    consecutive_failures = 0   # 新增：追踪连续失败次数
+    consecutive_failures = 0  # 新增：追踪连续失败次数
 
     for i, goods_id in enumerate(filtered_list, 1):
         print("\n" + "-" * 40)
@@ -502,6 +502,7 @@ def batch_runner(goods_id_list):
     log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {success_count} | 失败: {fail_count}")
     print(f"{'=' * 50}")
 
+
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
     查询最近 24 小时内更新的商品数据（基于 updated_at 字段）。
@@ -540,13 +541,21 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 
     return results
 
+
 if __name__ == "__main__":
     while True:
         try:
-            target_category_list = ["可乐", "爆米花", "玉米粒"]
+            target_category_list = [
+                # "可乐",
+                "马桶",
+
+                # "爆米花",
+                # "玉米粒"
+            ]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
-            results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"}, projection={"product_id": 1,"name": 1,"sku_info": 1, "_id": 0})
+            results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"},
+                                                  projection={"product_id": 1, "name": 1, "sku_info": 1, "_id": 0})
             # 过滤出 item.get("name") 包含 target_category_list 中任意一个关键词的商品
             filtered_results = [
                 item for item in results
@@ -558,9 +567,7 @@ if __name__ == "__main__":
                 if not item.get("sku_info")
             ]
 
-
             need_sku_product_id_list = [item["product_id"] for item in filtered_results]
-
 
             batch_runner(need_sku_product_id_list)
         except Exception as e:
