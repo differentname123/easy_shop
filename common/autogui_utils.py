@@ -363,19 +363,25 @@ class PddAutomation(UIActionEngine):
 
         self.force_bring_to_front()
 
-        # 【新增逻辑】：在轮询前检查并关闭超时/阻塞的 close_btn 弹窗
-        close_btn = self.window.GroupControl(ClassName="close_btn")
-        if close_btn.Exists(0.5, 0.1):
-            log("[HEAL] 检测到拼多多存在 'close_btn' 超时弹窗，正在执行消除...")
-            try:
-                close_btn.Click(simulateMove=False)
-            except Exception:
-                btn_rect = close_btn.BoundingRectangle
-                if btn_rect.width() > 0:
-                    self.safe_click((btn_rect.left + btn_rect.right) // 2,
-                                    (btn_rect.top + btn_rect.bottom) // 2,
-                                    "点击 close_btn")
-            time.sleep(0.3)  # 等待蒙层渐隐消失
+        # 【核心防护 1】：给予刚唤醒的 Chromium 内核 0.3 秒缓冲，避免在 DOM 重建期访问抛出 COM 异常
+        time.sleep(0.3)
+
+        # 【核心防护 2】：加装专用 try-except 容错，安全检测 close_btn，防止底层 COM 事件通道断裂 (-2147220991) 击穿任务
+        try:
+            close_btn = self.window.GroupControl(ClassName="close_btn")
+            if close_btn.Exists(0.5, 0.1):
+                log("[HEAL] 检测到拼多多存在 'close_btn' 超时弹窗，正在执行消除...")
+                try:
+                    close_btn.Click(simulateMove=False)
+                except Exception:
+                    btn_rect = close_btn.BoundingRectangle
+                    if btn_rect.width() > 0:
+                        self.safe_click((btn_rect.left + btn_rect.right) // 2,
+                                        (btn_rect.top + btn_rect.bottom) // 2,
+                                        "点击 close_btn")
+                time.sleep(0.3)  # 等待遮罩渐隐消失
+        except Exception as e:
+            log(f"[DEBUG] 检测 close_btn 时 UI 树正在重绘，已安全绕过: {e}")
 
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
@@ -440,7 +446,6 @@ class PddAutomation(UIActionEngine):
             log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, success_path, ""
-
 # ==========================================
 # 🚦 任务调度引擎
 # ==========================================
