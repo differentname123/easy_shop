@@ -225,6 +225,28 @@
             <div v-if="hasSearched && products.length > 0"
                  class="mt-3 flex gap-3 overflow-x-auto no-scrollbar pb-1">
 
+                <!-- 新增：自定义商品名多关键字过滤输入框 -->
+                <div class="flex-shrink-0 relative">
+                    <input
+                            v-model="nameKeywordFilter"
+                            type="text"
+                            placeholder="商品名含关键字(空格隔开)"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-7 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all w-48 sm:w-56 placeholder-zinc-400"
+                    >
+                    <button
+                            v-if="nameKeywordFilter"
+                            @click="nameKeywordFilter = ''"
+                            type="button"
+                            class="absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400 hover:text-zinc-600"
+                    >
+                        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd"
+                                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                                  clip-rule="evenodd"/>
+                        </svg>
+                    </button>
+                </div>
+
                 <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
                     <select
                             v-model="activeUnitFilter"
@@ -669,6 +691,9 @@
             const currentKeyword = ref('')
             const products = shallowRef([])
 
+            // 新增：商品名自定义关键字过滤
+            const nameKeywordFilter = ref('')
+
             const availableUnits = computed(() => {
                 const units = products.value.map(p => p.base_unit).filter(Boolean)
                 return [...new Set(units)]
@@ -719,6 +744,21 @@
             const sortedProducts = computed(() => {
                 let arr = [...products.value]
 
+                // 新增：根据自定义商品名关键字过滤（支持空格或逗号拆分多个关键字，全部满足才保留）
+                if (nameKeywordFilter.value.trim()) {
+                    const terms = nameKeywordFilter.value
+                        .trim()
+                        .toLowerCase()
+                        .split(/[\s,，]+/)
+                        .filter(Boolean)
+                    if (terms.length > 0) {
+                        arr = arr.filter(p => {
+                            const pName = (p.name || '').toLowerCase()
+                            return terms.every(term => pName.includes(term))
+                        })
+                    }
+                }
+
                 if (activeUnitFilter.value) {
                     arr = arr.filter(p => p.base_unit === activeUnitFilter.value)
                 }
@@ -758,11 +798,12 @@
             })
 
             const hasActiveFilter = computed(() => {
-                // 增加了 activeSourceFilter 和 activeSuspiciousFilter 判定
-                return activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || activeSuspiciousFilter.value !== '' || activeSourceFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
+                // 增加了 nameKeywordFilter 判定
+                return nameKeywordFilter.value.trim() !== '' || activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || activeSuspiciousFilter.value !== '' || activeSourceFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
             })
 
             const clearFilters = () => {
+                nameKeywordFilter.value = '' // 清理自定义商品名关键字
                 activeUnitFilter.value = ''
                 activeCommissionFilter.value = 'yes'
                 activeSuspiciousFilter.value = ''
@@ -862,6 +903,7 @@
                 products.value = []
                 availableFilters.value = []
                 activeFilters.value = {}
+                nameKeywordFilter.value = '' // 重置商品名关键字
                 activeUnitFilter.value = ''
                 activeCommissionFilter.value = 'yes'
                 activeSuspiciousFilter.value = ''
@@ -908,6 +950,7 @@
                 keyword, currentKeyword, products, loading, hasSearched,
                 selectedProduct, searchInputRef, sortBy, sortOptions, hotKeywords,
                 placeholderText, sortedProducts, stats,
+                nameKeywordFilter, // 暴露给模板
                 availableUnits, activeUnitFilter, activeCommissionFilter,
                 activeSuspiciousFilter,
                 availableSources, activeSourceFilter, // 暴露给模板
