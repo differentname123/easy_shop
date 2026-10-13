@@ -362,6 +362,21 @@ class PddAutomation(UIActionEngine):
             return False, "", "未检测到拼多多窗口弹出（跳转可能失败）"
 
         self.force_bring_to_front()
+
+        # 【新增逻辑】：在轮询前检查并关闭超时/阻塞的 close_btn 弹窗
+        close_btn = self.window.GroupControl(ClassName="close_btn")
+        if close_btn.Exists(0.5, 0.1):
+            log("[HEAL] 检测到拼多多存在 'close_btn' 超时弹窗，正在执行消除...")
+            try:
+                close_btn.Click(simulateMove=False)
+            except Exception:
+                btn_rect = close_btn.BoundingRectangle
+                if btn_rect.width() > 0:
+                    self.safe_click((btn_rect.left + btn_rect.right) // 2,
+                                    (btn_rect.top + btn_rect.bottom) // 2,
+                                    "点击 close_btn")
+            time.sleep(0.3)  # 等待蒙层渐隐消失
+
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
 
@@ -425,7 +440,6 @@ class PddAutomation(UIActionEngine):
             log(f"[INFO] 循环连轴转达到 50 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, success_path, ""
-
 
 # ==========================================
 # 🚦 任务调度引擎
@@ -547,10 +561,7 @@ if __name__ == "__main__":
         try:
             target_category_list = [
                 "可乐",
-                "马桶",
-
-                "爆米花",
-                "玉米粒"
+                "蟑螂",
             ]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
