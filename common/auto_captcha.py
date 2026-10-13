@@ -1,5 +1,7 @@
 import ctypes
 
+from common.model_api import generate_content
+
 # 强行开启进程 DPI 感知，防止屏幕 125%/150% 缩放导致坐标错位
 try:
     ctypes.windll.user32.SetProcessDPIAware()
@@ -19,21 +21,102 @@ from mss import mss
 
 sct = mss()
 
+import re
+import os
+import time
+
 
 def llm_recognize_best_match(image_paths):
     """
     【预留位置】多模态大模型统一识别函数
-    :param image_paths: 获取到的所有20张图片路径列表
-    :return: 最佳匹配的图片索引 (0 到 len-1)
+    输入滑块验证码逐帧截图，识别拼图与缺口对齐最佳的帧
+    :param image_paths: list - 所有截图的文件路径列表，按滑动顺序排列
+    :param debug_mode: bool - 调试模式，开启后不调用真实大模型，等待20秒后返回中间位置模拟结果
+    :return: int - 最佳匹配的图片索引（0 到 len(image_paths)-1）
     """
-    print(f"⏳ 模拟多模态大模型统一分析中... (共 {len(image_paths)} 张图片，等待 20 秒)")
-    time.sleep(20)
+    total = len(image_paths)
+    # ---------- 前置输入校验 ----------
+    if not isinstance(image_paths, list) or total == 0:
+        print("[ERROR] 图片路径列表为空或格式非法，返回默认索引0")
+        return 0
+    if total == 1:
+        print("[INFO] 仅1张图片，直接返回索引0")
+        return 0
 
-    # 模拟逻辑：直接认定中间的那张（例如20张里的第10张，索引为9）为最佳匹配
-    best_index = (len(image_paths) - 1) // 2
+    # ---------- 兜底默认值（中间位置，兼容原模拟逻辑） ----------
+    fallback_index = (total - 1) // 2
 
-    best_path = image_paths[best_index]
-    print(f"✅ 大模型返回结果：第 {best_index + 1} 张图片 ({best_path}) 最匹配！")
+
+    # ---------- 优化提示词：强约束输出格式，降低解析难度 ----------
+    prompt = (
+        "这些图片是滑块验证码滑动过程中的逐帧截图，拼图在左侧，缺口在右侧。"
+        "请找出拼图块与缺口完全对齐、匹配度最高的那一张图片。"
+        "**严格要求**：只返回对应图片的完整文件名（例如 step_05.png），"
+        "禁止输出任何解释、说明、序号、标点或其他多余内容。"
+    )
+
+    max_retries = 2  # 最大重试次数，应对偶发接口故障
+    best_index = None
+
+    # ---------- 带重试的大模型调用 + 全异常捕获 ----------
+    for attempt in range(max_retries + 1):
+        try:
+            print(f"[INFO] 第 {attempt + 1} 次调用多模态大模型识别...")
+            result = generate_content(
+                prompt=prompt,
+                model="gemini-web-3.6-flash-thinking-max",
+                file_paths=image_paths
+            )
+            result = result.get("content")
+            # 空结果/非字符串结果校验
+            if not result or not isinstance(result, str):
+                print(f"[WARN] 第 {attempt + 1} 次返回结果为空或格式错误")
+                time.sleep(0.5)
+                continue
+
+            result_text =result.strip()
+            text_lower = result_text.lower()
+
+            # ---------- 多层鲁棒解析 ----------
+            # 第1层：匹配文件名（支持带/不带后缀、不区分大小写）
+            for idx, path in enumerate(image_paths):
+                filename = os.path.basename(path)
+                name_no_ext = os.path.splitext(filename)[0]
+                if filename.lower() in text_lower or name_no_ext.lower() in text_lower:
+                    best_index = idx
+                    break
+
+            # 第2层：提取数字序号（兼容返回「第X张」「X号」等不规范格式）
+            if best_index is None:
+                num_matches = re.findall(r'\d+', result_text)
+                for num_str in num_matches:
+                    num = int(num_str)
+                    if 1 <= num <= total:
+                        best_index = num - 1  # 转为0-based索引
+                        break
+
+            # 解析成功直接跳出重试
+            if best_index is not None:
+                break
+            else:
+                print(f"[WARN] 第 {attempt + 1} 次返回结果无法解析：{result_text[:50]}...")
+                time.sleep(0.5)
+
+        except Exception as e:
+            print(f"[ERROR] 第 {attempt + 1} 次大模型调用异常：{str(e)}")
+            time.sleep(1)  # 异常重试间隔加长，避开限流/波动
+            continue
+
+    # ---------- 最终结果 & 降级兜底 ----------
+    if best_index is not None:
+        best_path = image_paths[best_index]
+        print(f"✅ 大模型识别成功：第 {best_index + 1} 张图片 ({os.path.basename(best_path)}) 匹配度最高")
+    else:
+        best_index = fallback_index
+        best_path = image_paths[best_index]
+        print(
+            f"[WARN] 大模型识别/解析全部失败，启用兜底策略：默认中间位置第 {best_index + 1} 张 ({os.path.basename(best_path)})")
+
     return best_index
 
 
@@ -142,7 +225,6 @@ def test_pdd_captcha():
 
         print(f"📸 第 {step}/{num_steps} 步截图已保存: {img_path}")
 
-    print("\n✅ 20张截图全部获取完毕，鼠标保持按压状态。")
     print("🔄 准备统一调用多模态大模型进行识别...")
 
     # 4. 统一调用大模型识别函数 (识别期间鼠标一直保持按下状态)
