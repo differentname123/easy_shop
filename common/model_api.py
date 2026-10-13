@@ -44,8 +44,8 @@ HIGH_MODEL_LIST = [
 
 ]
 MEDIUM_MODEL_LIST = [
-    {"model_name": "gemini-web-3.8-flash-thinking-max", "权重": 2, "备注": "来源gemini_web"},
-    {"model_name": "gemini-web-3.1-pro-thinking-max", "权重": 2, "备注": "来源gemini_web"},
+    {"model_name": "gemini-web-3.8-flash-thinking-max", "权重": 4, "备注": "来源gemini_web"},
+    {"model_name": "gemini-web-3.1-pro-thinking-max", "权重": 4, "备注": "来源gemini_web"},
 
     {"model_name": "gemini-aistudio-3.1-pro-preview", "权重": 2, "备注": "来源aistudio_web"},
     {"model_name": "gemini-aistudio-3.6-flash", "权重": 4, "备注": "来源aistudio_web"},
@@ -70,14 +70,14 @@ MEDIUM_MODEL_LIST = [
 LOW_MODEL_LIST = [
     {"model_name": "gpt-5.6-max", "权重": 1, "备注": "来源chatgpt_web "},
 
-    {"model_name": "gemma-api-key-4-31b-it", "权重": 0, "备注": "来源api key aistudio "},
+    # {"model_name": "gemma-api-key-4-31b-it", "权重": 0, "备注": "来源api key aistudio "},
 
-    {"model_name": "gemini-aistudio-3.5-flash", "权重": 1, "备注": "来源aistudio_web"},
+    {"model_name": "gemini-aistudio-3.5-flash", "权重": 0, "备注": "来源aistudio_web"},
 
-    {"model_name": "gemini-web-3.6-flash-thinking-max", "权重": 0, "备注": "来源gemini_web 目前是免费 gemini用户能够用到的最强模型了"},
+    {"model_name": "gemini-web-3.6-flash-thinking-max", "权重": 1, "备注": "来源gemini_web 目前是免费 gemini用户能够用到的最强模型了"},
 
-    {"model_name": "gemini-antigravity-3.7-flash", "权重": 0, "备注": "来源antigravity"},
 
+    {"model_name": "gemini-antigravity-3.8-flash-high-high", "权重": 0, "备注": "来源antigravity"},
 ]
 
 # 默认固定在本模块同目录，不随调用程序的工作目录变化。
