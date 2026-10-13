@@ -20,26 +20,21 @@ from mss import mss
 sct = mss()
 
 
-def llm_recognize_best_match(image_paths, total_steps=20):
+def llm_recognize_best_match(image_paths):
     """
-    【预留位置】多模态大模型识别函数
-    :param image_paths: 到目前为止截取的所有图片路径列表
-    :param total_steps: 总滑动步数
-    :return: (is_match: bool, best_match_path: str)
-             如果当前还没找到，返回 (False, None)
-             如果找到了，返回 (True, best_match_path)
+    【预留位置】多模态大模型统一识别函数
+    :param image_paths: 获取到的所有20张图片路径列表
+    :return: 最佳匹配的图片索引 (0 到 len-1)
     """
-    print(f"⏳ 模拟多模态大模型分析中... (已传入 {len(image_paths)} 张图片，等待 20 秒)")
+    print(f"⏳ 模拟多模态大模型统一分析中... (共 {len(image_paths)} 张图片，等待 20 秒)")
     time.sleep(20)
 
-    # 模拟逻辑：直接认定中间的那张（第 total_steps // 2 张）为最佳匹配
-    if len(image_paths) == (total_steps // 2):
-        best_path = image_paths[-1]
-        print(f"✅ 大模型返回结果：当前截图（第 {len(image_paths)} 张，即中间那张）最匹配！")
-        return True, best_path
-    else:
-        print(f"⚠️ 大模型返回结果：当前未发现匹配，请继续滑动...")
-        return False, None
+    # 模拟逻辑：直接认定中间的那张（例如20张里的第10张，索引为9）为最佳匹配
+    best_index = (len(image_paths) - 1) // 2
+
+    best_path = image_paths[best_index]
+    print(f"✅ 大模型返回结果：第 {best_index + 1} 张图片 ({best_path}) 最匹配！")
+    return best_index
 
 
 def force_bring_to_front(hwnd):
@@ -58,7 +53,7 @@ def force_bring_to_front(hwnd):
 
 def test_pdd_captcha():
     print("=" * 50)
-    print("🚀 开始测试拼多多滑块验证码解锁 (均匀截图模式)")
+    print("🚀 开始测试拼多多滑块验证码解锁 (均匀截图+统一识别模式)")
     print("=" * 50)
 
     window = auto.WindowControl(searchDepth=1, Name="拼多多")
@@ -103,8 +98,8 @@ def test_pdd_captcha():
 
     monitor = {"left": int(img_left), "top": int(img_top), "width": int(img_width), "height": int(img_height)}
 
-    # ==================== 新增：均匀截图与大模型识别逻辑 ====================
-    num_steps = 20  # 默认参数，均匀分为20次
+    # ==================== 核心逻辑：均匀截图 + 统一大模型识别 ====================
+    num_steps = 10  # 默认参数，均匀分
     # 计算总滑动距离：轨道总宽度减去滑块按钮自身的宽度(估算约50像素)
     total_distance = (track_rect.right - track_rect.left) - 50
     step_size = total_distance / num_steps
@@ -120,14 +115,13 @@ def test_pdd_captcha():
     win32api.SetCursorPos((int(start_x), int(start_y)))
     time.sleep(0.5)
 
-    # 按下鼠标左键，此后整个循环期间绝不松手，防止验证码背景重置
+    # 【关键】按下鼠标左键，此后整个截图和识别期间绝不松手，防止验证码背景重置
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
     time.sleep(0.2)
 
-    current_x, current_y = start_x, start_y
-    matched = False
-    best_match_path = None
+    current_x, current_y = float(start_x), float(start_y)
     image_paths = []
+    step_positions = []  # 记录每一步的X坐标，用于大模型识别后的位置微调
 
     for step in range(1, num_steps + 1):
         # 1. 均匀滑动到当前步
@@ -144,30 +138,29 @@ def test_pdd_captcha():
         img_path = f"temp_data/step_{step}.png"
         cv2.imwrite(img_path, step_img_cv)
         image_paths.append(img_path)
+        step_positions.append(int(current_x))
 
-        print(f"\n🔍 第 {step}/{num_steps} 步截图已保存: {img_path}")
+        print(f"📸 第 {step}/{num_steps} 步截图已保存: {img_path}")
 
-        # 4. 调用大模型识别函数 (识别期间鼠标一直保持按下状态)
-        is_match, best_path = llm_recognize_best_match(image_paths, num_steps)
-        if is_match:
-            matched = True
-            best_match_path = best_path
-            print(f"🎉 在第 {step} 步找到最佳匹配！停止滑动。")
-            break
+    print("\n✅ 20张截图全部获取完毕，鼠标保持按压状态。")
+    print("🔄 准备统一调用多模态大模型进行识别...")
 
-    # 识别结束或遍历完毕，松开鼠标
-    time.sleep(0.3)
+    # 4. 统一调用大模型识别函数 (识别期间鼠标一直保持按下状态)
+    best_index = llm_recognize_best_match(image_paths)
+
+    # 5. 根据大模型返回的结果，将滑块微调至最佳匹配的位置
+    target_x = step_positions[best_index]
+    print(f"\n🎯 大模型指示最佳位置为第 {best_index + 1} 步，准备将滑块微调至 X={target_x}...")
+
+    # 移动鼠标到目标位置 (由于是按住的，这里相当于把滑块拖动回正确的位置)
+    win32api.SetCursorPos((target_x, int(current_y)))
+    time.sleep(0.5)  # 稍微停顿一下再松手，显得更真实
+
+    # 6. 识别并调整完毕，松开鼠标
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-    print("🏁 鼠标已松开。")
-
-    if matched:
-        print(f"🏆 最终识别出的最匹配截图是: {best_match_path}")
-    else:
-        print("❌ 遍历完所有步数仍未找到匹配项。")
+    print("🏁 鼠标已松开，验证流程结束。")
     # ====================================================================
 
 
 if __name__ == "__main__":
-    print("⏳ 等待 2 秒后开始执行 (请勿移动鼠标)...")
-    time.sleep(2)
     test_pdd_captcha()
