@@ -350,7 +350,7 @@ def web_search_intercept_task():
         "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
         "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
     ]
-    search_keywords = ["可乐", "蟑螂药", "蟑螂克星", "蟑螂神器"]
+    search_keywords = ["可乐", "拜耳", "拜灭士", "杀蟑胶饵"]
 
     # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
     stats_file_path = Path("keyword_intercept_stats.json")
