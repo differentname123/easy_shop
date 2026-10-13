@@ -4,6 +4,8 @@ import time
 import os
 from datetime import datetime, timedelta, timezone
 from contextlib import closing
+
+from common.auto_captcha import solve_pdd_captcha
 # 确保你的文件中已经导入了下面这两个模块
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
@@ -491,6 +493,7 @@ def batch_runner(goods_id_list):
                 consecutive_failures = 0  # 成功即清零失败次数
             else:
                 log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
+                solve_pdd_captcha()
                 time.sleep(60)
                 fail_count += 1
                 consecutive_successes = 0  # 失败即清零成功次数
