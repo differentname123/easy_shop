@@ -46,7 +46,6 @@ def llm_recognize_best_match(image_paths):
     # ---------- 兜底默认值（中间位置，兼容原模拟逻辑） ----------
     fallback_index = (total - 1) // 2
 
-
     # ---------- 优化提示词：强约束输出格式，降低解析难度 ----------
     prompt = (
         "这些图片是滑块验证码滑动过程中的逐帧截图，拼图在左侧，缺口在右侧。"
@@ -74,7 +73,7 @@ def llm_recognize_best_match(image_paths):
                 time.sleep(0.5)
                 continue
 
-            result_text =result.strip()
+            result_text = result.strip()
             text_lower = result_text.lower()
 
             # ---------- 多层鲁棒解析 ----------
@@ -234,9 +233,45 @@ def test_pdd_captcha():
     target_x = step_positions[best_index]
     print(f"\n🎯 大模型指示最佳位置为第 {best_index + 1} 步，准备将滑块微调至 X={target_x}...")
 
-    # 移动鼠标到目标位置 (由于是按住的，这里相当于把滑块拖动回正确的位置)
+    # ==================== 【修复1】焦点抢占修复 ====================
+    # 大模型识别耗时较长，期间窗口极易失去焦点，这里强制将拼多多窗口重新置顶并激活
+    # 确保后续的鼠标拖拽事件100%被拼多多捕获，而不是被其他后台应用拦截
+    force_bring_to_front(hwnd)
+    time.sleep(0.3)  # 给窗口一点时间重新获取焦点和渲染
+
+    # ==================== 【修复2】稳健拟人化微调 ====================
+    # 获取当前真实的物理鼠标位置，以防用户在此期间手动移动了鼠标导致代码记录与实际脱节
+    phys_x, phys_y = win32api.GetCursorPos()
+
+    # 如果用户在此期间大幅移动了鼠标，先将其平滑移回代码记录的最后一步位置附近
+    if abs(phys_x - current_x) > 20:
+        print(f"⚠️ 检测到用户手动移动过鼠标(当前X:{phys_x})，先平滑移回记录位置(X:{int(current_x)})")
+        steps_back = 15
+        dx_back = (current_x - phys_x) / steps_back
+        curr_x = float(phys_x)
+        for i in range(steps_back):
+            curr_x += dx_back
+            win32api.SetCursorPos((int(curr_x), int(current_y + random.uniform(-1.0, 1.0))))
+            time.sleep(random.uniform(0.01, 0.03))
+        time.sleep(0.1)
+
+    # 然后再从 current_x 平滑微调至 target_x
+    # 坚决杜绝瞬移(Teleportation)，防止触发拼多多的“轨迹缺失”风控
+    print(f"🎢 开始拟人化平滑微调，从 X={int(current_x)} 移动到 X={target_x}...")
+    steps_forward = 25
+    dx_forward = (target_x - current_x) / steps_forward
+    curr_x = float(current_x)
+
+    for i in range(steps_forward):
+        curr_x += dx_forward
+        # 加入 Y 轴微扰和随机时间间隔，高度模拟人手拖拽
+        y_offset = random.uniform(-1.5, 1.5)
+        win32api.SetCursorPos((int(curr_x), int(current_y + y_offset)))
+        time.sleep(random.uniform(0.01, 0.04))
+
+    # 最后确保精准落在 target_x，消除浮点数累积误差
     win32api.SetCursorPos((target_x, int(current_y)))
-    time.sleep(0.5)  # 稍微停顿一下再松手，显得更真实
+    time.sleep(random.uniform(0.2, 0.4))  # 稍微停顿一下再松手，显得更真实
 
     # 6. 识别并调整完毕，松开鼠标
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
