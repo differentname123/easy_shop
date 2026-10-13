@@ -494,7 +494,8 @@ def batch_runner(goods_id_list):
             else:
                 log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
                 solve_pdd_captcha()
-                time.sleep(60)
+                print("\n" + "-" * 40)
+                time.sleep(10)
                 fail_count += 1
                 consecutive_successes = 0  # 失败即清零成功次数
                 consecutive_failures += 1  # 失败次数递增
