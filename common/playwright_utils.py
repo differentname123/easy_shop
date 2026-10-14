@@ -471,6 +471,22 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             # ------------------------------------------------
 
             # --- 内部状态操作算子 ---
+            def close_activity_popup(wait_timeout=0):
+                """检测并关闭活动/红包弹窗，避免阻挡后续点击与输入"""
+                try:
+                    close_btn = page.locator('[class*="SuperRedPacket_closeIcon"]').first
+                    if wait_timeout > 0:
+                        try:
+                            close_btn.wait_for(state="visible", timeout=wait_timeout)
+                        except Exception:
+                            pass
+                    if close_btn.is_visible():
+                        logger.info("[业务/弹窗] 🎯 检测到活动/红包弹窗，执行关闭拦截...")
+                        robust_click(close_btn)
+                        page.wait_for_timeout(500)
+                except Exception as e:
+                    logger.warning(f"[业务/算子] 活动弹窗处理异常 | 原因: [{e}]")
+
             def do_batch_select_all():
                 try:
                     # : 高危 CSS 依赖，平台迭代随时可能让此定位器失效。
@@ -517,6 +533,9 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             next_btn_locator = page.locator('li[data-testid="beast-core-pagination-next"]')
             search_input.wait_for(state="visible", timeout=20000)
 
+            # 搜索框加载完毕后，提前探测一次可能刚浮出的活动弹窗
+            close_activity_popup(wait_timeout=1000)
+
             # --- 核心采集大循环 ---
             for search_key in search_key_list:
                 logger.info(f"\n--- [任务调度] 切入业务词: 【{search_key}】 ---")
@@ -526,6 +545,9 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                 all_goods = []
 
                 try:
+                    # 真正准备搜索前执行弹窗探活与关闭拦截
+                    close_activity_popup(wait_timeout=0)
+
                     search_input.clear()
                     search_input.fill(search_key)
 
@@ -669,7 +691,6 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             logger.info(f"[系统/退出] 🚀 Playwright 沙盒已销毁 | 闭环交付总量: 【{len(final_results)}】\n")
 
     return final_results
-
 # ==============================================================================
 #                                   使用示例
 # ==============================================================================
