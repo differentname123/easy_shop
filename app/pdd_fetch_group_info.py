@@ -47,6 +47,7 @@ STATUS_REASONS = {
 }
 import threading  # 请确保在文件顶部添加此导入
 
+
 class StorageError(RuntimeError):
     """商品写入或回执处理失败必须终止采集，不能误当成页面问题换号。"""
 
@@ -195,12 +196,22 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
     if type(goods_id) not in (str, int) or not str(goods_id).strip():
         return None
 
+    # 规范化 _source_api 为列表结构
+    if isinstance(source_api, list):
+        api_list = [s for s in source_api if s]
+    elif isinstance(source_api, (tuple, set)):
+        api_list = [s for s in source_api if s]
+    elif source_api:
+        api_list = [str(source_api)]
+    else:
+        api_list = ["api_search"]
+
     record = {
         "platform": GLOBAL_CONFIG["platform"],
         "product_id": str(goods_id).strip(),
         # 如果 API 没有返回 category_name，则用搜索关键词或外部定义分类保底
         "category": item.get("category_name") or default_category,
-        "_source_api": source_api  # 【核心修改】：支持动态指定来源，如 api_recommend
+        "_source_api": api_list  # 【核心修改】：列表格式存储来源
     }
 
     # 基础字段映射 (从 API 字段 -> 数据库字段)
@@ -242,7 +253,7 @@ def normalize_intercept_goods(item, default_category):
         "platform": GLOBAL_CONFIG["platform"],
         "product_id": str(goods_id).strip(),
         "category": item.get("categoryName") or default_category,
-        "_source_api": "web_intercept"  # 标识数据来源为 UI 拦截
+        "_source_api": ["web_intercept"]  # 【核心修改】：列表格式标识数据来源为 UI 拦截
     }
 
     # 基础字段映射 (从驼峰或中文表头字段 -> 数据库字段)
@@ -279,9 +290,10 @@ def normalize_intercept_goods(item, default_category):
 
 def safe_batch_update(product_manager, records):
     """
-    【新增】安全的批量更新封装。
-    在入库前对账：如果数据库中已有提取成功的 sku_info，
-    则使用 sku_info.price 强行覆盖爬虫刚抓取的 activity_price，防止 AI 清洗成果被破坏。
+    【安全批量更新封装】
+    1. 在入库前对账：如果数据库中已有提取成功的 sku_info，
+       则使用 sku_info.price 强行覆盖爬虫刚抓取的 activity_price，防止 AI 清洗成果被破坏。
+    2. 对 _source_api 来源列表进行安全合并与追加，保留商品全部历史来源并去重。
     """
     if not records:
         return {"new": 0, "update": 0}
@@ -291,38 +303,66 @@ def safe_batch_update(product_manager, records):
         product_ids = [r["product_id"] for r in records if r.get("product_id")]
 
         if product_ids:
-            # 2. 批量查询：找出这批商品中，数据库里已经存在 sku_info 的记录
+            # 2. 批量查询：查询这批商品在数据库中的记录（投影 sku_info 与 _source_api）
             existing_docs = product_manager.query(
                 {
-                    "product_id": {"$in": product_ids},
-                    "sku_info": {"$exists": True}  # 只查已经有 sku 的，减少数据传输
+                    "product_id": {"$in": product_ids}
                 },
-                projection={"product_id": 1, "sku_info.price": 1}
+                projection={"product_id": 1, "sku_info.price": 1, "_source_api": 1}
             )
 
-            # 3. 建立映射关系: product_id -> 数据库中已锁定的 sku_price
+            # 3. 建立映射关系: product_id -> 数据库中已锁定的 sku_price 与已有来源列表
             sku_price_map = {}
+            source_api_map = {}
             if existing_docs:
                 for doc in existing_docs:
-                    sku_price = doc.get("sku_info", {}).get("price")
+                    pid = str(doc.get("product_id"))
+                    sku_price = doc.get("sku_info", {}).get("price") if isinstance(doc.get("sku_info"), dict) else None
                     if sku_price is not None:
-                        sku_price_map[str(doc["product_id"])] = sku_price
+                        sku_price_map[pid] = sku_price
 
-            # 4. 拦截并覆写爬虫刚抓取到的 activity_price
-            if sku_price_map:
-                for record in records:
-                    pid = str(record.get("product_id"))
-                    if pid in sku_price_map:
-                        # 强行覆盖：用 SKU 价格替换爬虫价格
-                        record["activity_price"] = sku_price_map[pid]
-                        # 可选打标，方便日后排查这是被保护的数据
-                        record["_price_protected"] = True
+                    old_source = doc.get("_source_api")
+                    if old_source:
+                        if isinstance(old_source, list):
+                            source_api_map[pid] = [item for item in old_source if item]
+                        elif isinstance(old_source, str):
+                            source_api_map[pid] = [old_source]
+                        else:
+                            source_api_map[pid] = [str(old_source)]
+
+            # 4. 拦截并覆写爬虫刚抓取到的 activity_price，同时安全合并追加 _source_api
+            for record in records:
+                pid = str(record.get("product_id"))
+                if pid in sku_price_map:
+                    # 强行覆盖：用 SKU 价格替换爬虫价格
+                    record["activity_price"] = sku_price_map[pid]
+                    # 可选打标，方便日后排查这是被保护的数据
+                    record["_price_protected"] = True
+
+                # 处理 _source_api 来源追加与去重
+                if "_source_api" in record and record["_source_api"] is not None:
+                    current_source = record["_source_api"]
+                    if isinstance(current_source, list):
+                        new_sources = [str(s) for s in current_source if s]
+                    elif isinstance(current_source, str):
+                        new_sources = [current_source] if current_source else []
+                    else:
+                        new_sources = [str(current_source)]
+
+                    existing_sources = source_api_map.get(pid, [])
+                    # 合并并保序去重
+                    combined_sources = list(dict.fromkeys(existing_sources + new_sources))
+                    record["_source_api"] = combined_sources
+                    # 同步刷新 map，确保批次内多条同 product_id 记录能持续累加
+                    source_api_map[pid] = combined_sources
 
     except Exception as e:
-        logger.error("[安全更新/拦截异常] 价格对账查询失败，退回直接入库模式 | 错误: %s", e)
+        logger.error("[安全更新/拦截异常] 价格对账或来源合并查询失败，退回直接入库模式 | 错误: %s", e)
 
     # 5. 原样调用底层的 update 批量更新入库
     return product_manager.update(records)
+
+
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
 # ==========================================
@@ -350,7 +390,7 @@ def web_search_intercept_task():
         "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
         "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
     ]
-    search_keywords = ["可乐"]
+    search_keywords = ["可乐", "康师傅方便面", "统一方便面", "康师傅桶装方便面", "统一桶装方便面"]
 
     # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
     stats_file_path = Path("keyword_intercept_stats.json")
@@ -396,7 +436,6 @@ def web_search_intercept_task():
             for idx, k in enumerate(pending_keywords, 1):
                 print(f"  {idx:02d}. {k}")
             print("=" * 50 + "\n")
-
 
             # 只有在有关键字需要搜索时才连接数据库
             if pending_keywords:
@@ -483,29 +522,29 @@ def web_search_intercept_task():
 def api_search_task():
     """后台任务：通过 API 搜索指定关键词商品并入库，每轮等待 24 小时"""
     keywords = [
-    # 基础水饮与酒水 (20个)
-    "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
-    "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
-    
-    # 休闲零食 (20个)
-    "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋", 
-    "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
-    
-    # 饱腹代餐与速食 (10个)
-    "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
-    
-    # 厨房粮油与生鲜调味 (20个)
-    "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
-    "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
-    
-    # 家庭日用与清洁 (15个)
-    "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液", 
-    "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
-    
-    # 个人护理与日化 (15个)
-    "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
-    "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
-]
+        # 基础水饮与酒水 (20个)
+        "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
+        "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
+
+        # 休闲零食 (20个)
+        "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋",
+        "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
+
+        # 饱腹代餐与速食 (10个)
+        "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
+
+        # 厨房粮油与生鲜调味 (20个)
+        "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
+        "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
+
+        # 家庭日用与清洁 (15个)
+        "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液",
+        "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
+
+        # 个人护理与日化 (15个)
+        "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
+        "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
+    ]
     pdd_client_id = get_config("myself_pdd_client_id")
     pdd_client_secret = get_config("myself_pdd_client_secret")
     pdd_pid = get_config("myself_pdd_pid")
@@ -570,13 +609,13 @@ def normalize_goods(item, tab_name):
         return None
     record = {"platform": GLOBAL_CONFIG["platform"], "product_id": str(goods_id).strip(), "category": tab_name}
     for source, target in (
-        ("goods_name", "name"), ("brand_name", "brand"), ("sales_tip", "sales_tip"), ("hd_thumb_url", "image_url"),
+            ("goods_name", "name"), ("brand_name", "brand"), ("sales_tip", "sales_tip"), ("hd_thumb_url", "image_url"),
     ):
         if source in item:
             record[target] = item[source]
     for source, target in (
-        ("origin_price", "original_price"), ("activity_price", "activity_price"),
-        ("group_order_price_reduce", "saved_price"),
+            ("origin_price", "original_price"), ("activity_price", "activity_price"),
+            ("group_order_price_reduce", "saved_price"),
     ):
         if source in item:
             record[target] = (item[source] or 0) / 100
@@ -609,6 +648,7 @@ def check_risk_control(page):
         # : 原规则在检测异常时按未命中处理；页面关闭或 DOM 异常可能漏报风控。
         logger.warning("[风控/检测] 无法读取提示文案，沿用未命中结果 | 错误: [%s] | 排查: [页面状态、文案节点]", exc)
         return False
+
 
 def check_logged_out(page):
     """【新增功能】检测页面是否已重定向至登录页或呈现登录文案"""
@@ -688,6 +728,7 @@ def get_tab_list(user_data_dir):
             logger.warning("[导航/失败] 读取分类失败，重新申请账号 | 账号: [%s] | 错误: [%s] "
                            "| 排查: [网络、导航节点、脚本执行]", account_name, exc)
             return None
+
 
 def clear_popups(page):
     """按图片、按钮、ESC、遮罩的原有顺序关闭弹窗；保留失败后继续采集的容错。"""
@@ -910,6 +951,7 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                 stop_reason)
     return "SUCCESS", stats
 
+
 def run_collection_rounds(account_pool, product_manager):
     """账号池负责冷却和落盘；分类含 index/name，跨尝试累计 scrolls/requests/new/update。"""
     round_count = 0
@@ -947,8 +989,9 @@ def run_collection_rounds(account_pool, product_manager):
             round_stats.append({"tab_name": tab["name"], "status": status, **totals})
         totals = {key: sum(item[key] for item in round_stats) for key in STAT_KEYS}
         successful = sum(item["status"] == "SUCCESS" for item in round_stats)
-        details = "; ".join(f"{item['tab_name']}[状态={item['status']}, 滑动/响应={item['scrolls']}/{item['requests']}, "
-                            f"新增/更新={item['new']}/{item['update']}]" for item in round_stats)
+        details = "; ".join(
+            f"{item['tab_name']}[状态={item['status']}, 滑动/响应={item['scrolls']}/{item['requests']}, "
+            f"新增/更新={item['new']}/{item['update']}]" for item in round_stats)
         logger.info("[调度/轮次完成] 分类遍历结束，进入下一轮 | 轮次: [%d] | 成功/跳过: [%d/%d] "
                     "| 滑动/响应: [%d/%d] | 新增/更新: [%d/%d] | 耗时: [%.1f 秒] | 分类明细: [%s]",
                     round_count, successful, len(round_stats) - successful, totals["scrolls"], totals["requests"],
@@ -963,7 +1006,8 @@ def main_controller():
         if not accounts:
             logger.error("❌ [系统/启动失败] 未配置采集账号 | 配置项: [pdd_browser_data_list] | 排查: [浏览器目录列表]")
             return
-        with AccountPool(accounts, GLOBAL_CONFIG["account_status_file"]) as account_pool, closing(gen_db_object()) as db_instance:
+        with AccountPool(accounts, GLOBAL_CONFIG["account_status_file"]) as account_pool, closing(
+                gen_db_object()) as db_instance:
             db_instance.ping()
             product_manager = ProductManager(db_instance)
             logger.info("[系统/就绪] 商品数据库与本地账号池已就绪 | 配置账号: [%d] | 账号文件: [%s]",
@@ -986,7 +1030,8 @@ def playwright_task():
     if not accounts:
         logger.error("❌ [系统/启动失败] 未配置采集账号 | 配置项: [pdd_browser_data_list] | 排查: [浏览器目录列表]")
         return
-    with AccountPool(accounts, GLOBAL_CONFIG["account_status_file"]) as account_pool, closing(gen_db_object()) as db_instance:
+    with AccountPool(accounts, GLOBAL_CONFIG["account_status_file"]) as account_pool, closing(
+            gen_db_object()) as db_instance:
         db_instance.ping()
         product_manager = ProductManager(db_instance)
         logger.info("[系统/就绪] 商品数据库与本地账号池已就绪 | 配置账号: [%d] | 账号文件: [%s]",
@@ -1025,7 +1070,6 @@ def api_recommend_task():
     pdd_client_id = get_config("myself_pdd_client_id")
     pdd_client_secret = get_config("myself_pdd_client_secret")
     pdd_pid = get_config("myself_pdd_pid")
-
 
     # 定义要遍历的频道 (1:今日热销, 5:实时热销, 6:实时收益, 4:猜你喜欢)
     target_channels = [1, 5, 6, 4]
@@ -1084,7 +1128,7 @@ def api_recommend_task():
                                 "platform": GLOBAL_CONFIG["platform"],
                                 "product_id": str(goods_id).strip(),
                                 "category": item.get("category_name") or category_name,
-                                "_source_api": "api_recommend",  # 【要求实现】来源强行覆盖为 api_recommend
+                                "_source_api": ["api_recommend"],  # 【核心修改】：列表格式存储来源
                                 "name": item.get("goods_name", ""),
                                 "brand": item.get("brand_name", ""),
                                 "sales_tip": str(item.get("sales_tip", "")),
@@ -1113,7 +1157,6 @@ def api_recommend_task():
         time.sleep(24 * 3600)
 
 
-
 if __name__ == "__main__":
 
     # 配置基础日志 (将其提取到最外层，共享给所有线程)
@@ -1124,7 +1167,7 @@ if __name__ == "__main__":
         playwright_task,
         # api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
-        web_search_intercept_task    # 【新增】：UI 关键词拦截搜索任务
+        web_search_intercept_task  # 【新增】：UI 关键词拦截搜索任务
     ]
 
     threads = []
