@@ -570,7 +570,7 @@ if __name__ == "__main__":
         try:
             target_category_list = [
                 "可乐",
-                "蟑螂",
+                "方便面",
             ]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
