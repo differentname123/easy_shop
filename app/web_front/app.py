@@ -128,7 +128,9 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         if sku_info and (need_reformat is False or need_reformat == "false"):
             is_suspicious = 1
         # ==============================================================
-
+        _source_api = product.get("_source_api", "group")
+        if "group" in _source_api:
+            _source_api = "group"
         products.append({
             "name": product.get("name"),
             "product_id": product.get("product_id") or product_url,
@@ -146,7 +148,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "is_suspicious": is_suspicious,
             # "updated_at": product.get("updated_at"),
             # 新增：来源字段，如果不存在则默认赋值为 "group"
-            "_source_api": product.get("_source_api") or "group"
+            "_source_api": _source_api
         })
 
     # 计算匹配分数
