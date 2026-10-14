@@ -131,6 +131,8 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         _source_api = product.get("_source_api", "group")
         if "group" in _source_api:
             _source_api = "group"
+        else:
+            _source_api = "no_group"
         products.append({
             "name": product.get("name"),
             "product_id": product.get("product_id") or product_url,
