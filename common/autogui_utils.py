@@ -569,9 +569,10 @@ if __name__ == "__main__":
     while True:
         try:
             target_category_list = [
-                "可乐",
-                "马桶",
-                "方便面",
+                "袜子",
+                "维生素"
+                # "马桶",
+                # "方便面",
             ]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
