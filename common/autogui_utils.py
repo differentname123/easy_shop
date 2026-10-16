@@ -568,25 +568,26 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 if __name__ == "__main__":
     while True:
         try:
+            # 每个子列表代表一组规则，必须同时包含该子列表内的所有关键词
             target_category_list = [
-                "袜子",
-                "维生素"
-                # "马桶",
-                # "方便面",
+                ["美瞳", "月抛", "博士伦"],  # 既包含 美瞳，又包含 月抛
+                # ["美瞳", "日抛"],     # 可以按需扩展其他组合
+                # ["方便面", "酸辣"],
             ]
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
             results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"},
                                                   projection={"product_id": 1, "name": 1, "sku_info": 1, "_id": 0})
-            # 过滤出 item.get("name") 包含 target_category_list 中任意一个关键词的商品
+
+            # 过滤逻辑：
+            # 1. 满足任意一组规则（该组内所有关键词都在商品名中）
+            # 2. sku_info 为空
             filtered_results = [
                 item for item in results
-                if any(keyword in item.get("name", "") for keyword in target_category_list)
-            ]
-            # 过滤出 sku_info 是空的商品
-            filtered_results = [
-                item for item in filtered_results
-                if not item.get("sku_info")
+                if not item.get("sku_info") and any(
+                    all(keyword in item.get("name", "") for keyword in keywords_group)
+                    for keywords_group in target_category_list
+                )
             ]
 
             need_sku_product_id_list = [item["product_id"] for item in filtered_results]
