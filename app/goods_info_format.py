@@ -718,10 +718,15 @@ def run_sku_round(product_manager):
     SKU信息提取的核心业务逻辑，作为调度循环的一轮执行。（增加并行度：5）
     """
     started = time.monotonic()
+    SKU_MAX_RETRIES = 3
 
-    # 1. 查库: 查询【没有】sku_info 字段的数据
+    # 1. 查库: 查询【没有】sku_info 字段且未达到最大重试次数的数据
     query = {
-        "sku_info": {"$exists": False}
+        "sku_info": {"$exists": False},
+        "$or": [
+            {"sku_retry_count": {"$exists": False}},
+            {"sku_retry_count": {"$lt": SKU_MAX_RETRIES}},
+        ],
     }
     # ⚠️ 修复点1：projection 中增加 "platform": 1
     products = product_manager.query(query, projection={"_id": 1, "product_id": 1, "platform": 1})
@@ -761,23 +766,57 @@ def run_sku_round(product_manager):
     def process_batch(batch, batch_counts):
         expected_filenames = [p.name for p in batch]
         try:
-            result = generate_content(prompt=prompt_text, preset_model_group="low", file_paths=batch)
+            pending_files = list(batch)
+            final_results = {}
+            final_item_errors = {}
+            last_batch_error = ""
 
-            if result.get("status") != "✅ 成功":
-                error_detail = "；".join(str(e) for e in (result.get("error_history", []) or []))
-                logger.error("❌ [SKU提取/批次失败] 模型调用失败 | 原因: %s", error_detail)
-                batch_counts["failed"] += len(batch)
-                return
+            for attempt in range(1, LLM_MAX_RETRIES + 1):
+                if not pending_files:
+                    break
+                current_expected = [p.name for p in pending_files]
+                try:
+                    result = generate_content(prompt=prompt_text, preset_model_group="low", file_paths=pending_files)
 
-            content = result.get("content", "")
-            parsed_obj = string_to_object(content)
+                    if result.get("status") != "✅ 成功":
+                        error_detail = "；".join(str(e) for e in (result.get("error_history", []) or []))
+                        raise RuntimeError(error_detail or result.get("content") or "模型调用失败")
 
-            valid, results, item_errors, batch_error = check_sku_info(parsed_obj, expected_filenames)
+                    content = result.get("content", "")
+                    parsed_obj = string_to_object(content)
 
-            if not valid and not results:
-                logger.error("❌ [SKU提取/批次失败] %s | 详情: %s", batch_error, item_errors)
-                batch_counts["failed"] += len(batch)
-                return
+                    valid, results, item_errors, batch_error = check_sku_info(parsed_obj, current_expected)
+
+                    if results:
+                        final_results.update(results)
+                        for fname in results:
+                            final_item_errors.pop(fname, None)
+
+                    for fname, err in item_errors.items():
+                        final_item_errors[fname] = err
+
+                    pending_files = [p for p in pending_files if p.name not in final_results]
+                    if not pending_files:
+                        break
+
+                    raise ValueError(f"{batch_error or '部分商品SKU提取或校验未通过'} | 详情: {item_errors}")
+
+                except Exception as exc:
+                    last_batch_error = f"尝试 {attempt}/{LLM_MAX_RETRIES}: {type(exc).__name__}: {exc}"
+                    if attempt < LLM_MAX_RETRIES:
+                        delay = 2 ** attempt
+                        logger.warning(
+                            "⚠️ [SKU提取/重试] 模型调用或校验未通过 | 待处理: [%d/%d] | 首个文件: [%s] "
+                            "| 尝试: [%d/%d] | 等待: [%d 秒] | 原因: [%s]",
+                            len(pending_files), len(batch), current_expected[0],
+                            attempt, LLM_MAX_RETRIES, delay, " ".join(last_batch_error.split())[:400]
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(
+                            "❌ [SKU提取/批次失败] 已达最大重试次数 | 仍失败数量: [%d/%d] | 原因: [%s]",
+                            len(pending_files), len(batch), " ".join(last_batch_error.split())[:400]
+                        )
 
             # 4. 遍历处理结果，更新回数据库
             for file_path in batch:
@@ -788,8 +827,8 @@ def run_sku_round(product_manager):
                 if not product:
                     continue
 
-                if filename in results:
-                    sku_info = results[filename]
+                if filename in final_results:
+                    sku_info = final_results[filename]
 
                     # ⚠️ 修复点2：更新字典中带上底层的必填项 platform 和 product_id
                     update_data = {
@@ -798,12 +837,15 @@ def run_sku_round(product_manager):
                         "need_reformat": True,
                         "sku_info": sku_info,
                         "activity_price": sku_info["price"],
+                        "sku_status": "success",
+                        "sku_error": "",
                         "sku_updated_at": datetime.now(timezone.utc),
                     }
 
                     saved = product_manager.update(
                         update_data,
                         condition={"_id": product["_id"]},
+                        increments={"sku_retry_count": 0},
                         upsert=False
                     )
 
@@ -812,8 +854,28 @@ def run_sku_round(product_manager):
                     else:
                         batch_counts["skipped"] += 1
                 else:
-                    batch_counts["failed"] += 1
-                    logger.warning("⚠️ [SKU提取/单品失败] 文件: %s | 原因: %s", filename, item_errors.get(filename))
+                    error_reason = final_item_errors.get(filename) or last_batch_error or "未知SKU提取错误"
+                    logger.warning("⚠️ [SKU提取/单品失败] 文件: %s | 原因: %s", filename, error_reason)
+
+                    update_data = {
+                        "platform": product["platform"],
+                        "product_id": product["product_id"],
+                        "sku_status": "failed",
+                        "sku_error": error_reason,
+                        "sku_updated_at": datetime.now(timezone.utc),
+                    }
+
+                    saved = product_manager.update(
+                        update_data,
+                        condition={"_id": product["_id"]},
+                        increments={"sku_retry_count": 1},
+                        upsert=False
+                    )
+
+                    if saved["update"]:
+                        batch_counts["failed"] += 1
+                    else:
+                        batch_counts["skipped"] += 1
 
         except Exception as exc:
             logger.exception("❌ [SKU提取/批次异常] 批次执行报错 | 首个文件: [%s] | 原因: %s", expected_filenames[0],

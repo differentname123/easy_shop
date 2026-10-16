@@ -147,8 +147,8 @@ def string_to_object(input_str: str):
         raise TypeError(f"输入必须是字符串，但收到了 {type(input_str).__name__}。")
 
     def _create_error_message(reason: str) -> str:
-        preview = (input_str[:50] + '...') if len(input_str) > 50 else input_str
-        return f"{reason} | 输入内容预览: '{preview}'"
+        preview = (input_str[:500] + '...') if len(input_str) > 500 else input_str
+        return f"{reason} | 输入内容预览: '\n\n{preview}\n\n'"
 
     # 1. 智能提取：在字符串中寻找对象边界
     first_bracket = input_str.find('[')
