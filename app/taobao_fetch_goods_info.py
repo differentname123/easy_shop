@@ -329,8 +329,8 @@ def search_taobao_goods_by_keyword(
 
 
 if __name__ == "__main__":
-    keyword = "前行者F61无线键盘鼠标套装电竞游戏专用笔记本电脑办公蓝牙小型"
+    keyword = "可乐"
     logger.info(f"=== 正在搜索关键词: 【{keyword}】 ===")
     # 建议先测试指定条数（如 500 条），因为 desire_count=0 会连续翻满 100 页（约需 5~10 分钟）
-    items = search_items(keyword, desire_count=500)
+    items = search_items(keyword, desire_count=10)
     logger.info(f"=== 搜索结果数量: {len(items)} ===")
