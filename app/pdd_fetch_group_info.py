@@ -17,6 +17,7 @@ from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 
 from app.pdd_utils import search_pdd_goods_by_keyword, get_pdd_recommend_goods
+from app.taobao_fetch_goods_info import search_taobao_goods_by_keyword
 from common.playwright_utils import launch_persistent_context, search_goods_and_intercept
 from common.common_utils import get_config, read_json, save_json, setup_logger
 from common.mongo_db.mongo_base import gen_db_object
@@ -51,7 +52,134 @@ import threading  # 请确保在文件顶部添加此导入
 class StorageError(RuntimeError):
     """商品写入或回执处理失败必须终止采集，不能误当成页面问题换号。"""
 
+# ==========================================
+# 新增：淘宝联盟 API 数据清洗模块
+# ==========================================
+def _safe_float(val, default=0.0):
+    """安全将字符串或数值转为 float，处理空串或 None"""
+    if val is None or val == "":
+        return default
+    try:
+        return round(float(val), 2)
+    except (ValueError, TypeError):
+        return default
 
+
+def _normalize_url(url_str):
+    """补全淘宝返回的 // 相对协议链接"""
+    if not url_str or not isinstance(url_str, str):
+        return ""
+    url_str = url_str.strip()
+    if url_str.startswith("//"):
+        return f"https:{url_str}"
+    return url_str
+
+
+def normalize_taobao_goods(item, default_category, source_api="taobao_api_search"):
+    """
+    清洗淘宝联盟 (taobao.tbk.dg.material.optional.upgrade) 返回的嵌套商品数据，
+    将其转换为与 ProductManager.update 及其他任务一致的数据库文档格式。
+    """
+    if not isinstance(item, dict):
+        return None
+
+    item_id = item.get("item_id")
+    if type(item_id) not in (str, int) or not str(item_id).strip():
+        return None
+
+    # 规范化 _source_api 为列表结构
+    if isinstance(source_api, list):
+        api_list = [s for s in source_api if s]
+    elif isinstance(source_api, (tuple, set)):
+        api_list = [s for s in source_api if s]
+    elif source_api:
+        api_list = [str(source_api)]
+    else:
+        api_list = ["taobao_api_search"]
+
+    basic = item.get("item_basic_info") or {}
+    price_info = item.get("price_promotion_info") or {}
+    publish = item.get("publish_info") or {}
+    income_info = publish.get("income_info") or {}
+
+    # 1. 基础信息提取
+    category = (
+        basic.get("category_name")
+        or basic.get("level_one_category_name")
+        or default_category
+    )
+    title = basic.get("title") or basic.get("short_title") or ""
+    # 品牌名若为空，使用店铺名兜底（与 normalize_intercept_goods 保持一致）
+    brand = basic.get("brand_name") or basic.get("shop_title") or ""
+    sales_tip = (
+        basic.get("annual_vol")
+        or (f"已售{basic.get('tk_total_sales')}" if basic.get("tk_total_sales") else "")
+        or str(basic.get("volume", ""))
+    )
+    image_url = _normalize_url(basic.get("pict_url") or basic.get("white_image") or "")
+
+    # 2. 价格计算（淘宝 API 返回单位直接为“元”）
+    reserve_price = _safe_float(price_info.get("reserve_price"))
+    zk_final_price = _safe_float(price_info.get("zk_final_price"))
+    final_promo_price = _safe_float(price_info.get("final_promotion_price"))
+    predict_price = _safe_float(price_info.get("predict_rounding_up_price"))
+
+    # 原价优先取折扣前在售价 zk_final_price（若无则取吊牌原价 reserve_price）
+    original_price = zk_final_price if zk_final_price > 0 else reserve_price
+    # 活动到手价优先取券后价 final_promotion_price（若无则取 zk_final_price）
+    activity_price = final_promo_price if final_promo_price > 0 else original_price
+
+    # 计算优惠立省金额 saved_price
+    if original_price > activity_price > 0:
+        saved_price = round(original_price - activity_price, 2)
+    else:
+        # 备选：从促销路径列表中累加优惠金额
+        promo_paths = (
+            price_info.get("final_promotion_path_list", {})
+            .get("final_promotion_path_map_data", [])
+        )
+        saved_price = round(
+            sum(_safe_float(p.get("promotion_fee")) for p in promo_paths if isinstance(p, dict)),
+            2,
+        )
+
+    # 3. 推广链接与佣金信息提取
+    coupon_share_url = _normalize_url(publish.get("coupon_share_url", ""))
+    click_url = _normalize_url(publish.get("click_url", ""))
+    # 优先使用二合一领券推广链接，无券时回退至普通推广长链
+    promotion_url = coupon_share_url or click_url
+
+    est_commission = _safe_float(income_info.get("commission_amount"))
+    commission_rate = _safe_float(
+        income_info.get("commission_rate") or publish.get("income_rate")
+    )
+
+    record = {
+        "platform": "taobao",  # 显式标记为 taobao 平台
+        "product_id": str(item_id).strip(),
+        "category": category,
+        "_source_api": api_list,
+        "name": title,
+        "brand": brand,
+        "sales_tip": str(sales_tip),
+        "image_url": image_url,
+        "original_price": original_price,
+        "activity_price": activity_price,
+        "saved_price": saved_price,
+        "promotion_url": promotion_url,
+        " product_url": click_url or promotion_url,
+        "promotion_info": {
+            "promotion_rate": commission_rate,
+            "estimated_commission": est_commission,
+            "has_mall_coupon": bool(coupon_share_url),
+            "predict_rounding_up_price": predict_price,
+            "shop_title": basic.get("shop_title", ""),
+        },
+    }
+    # 修正键名（去除多余空格）
+    record["product_url"] = record.pop(" product_url")
+
+    return record
 class AccountPool:
     """accounts 为目录列表；JSON 形貌为 {平台: {绝对目录: ISO 时间字符串 或 状态字符串}}。
     整个调度期间持有操作系统文件锁；临时文件原子替换，避免多进程抢号和半写文件。
@@ -180,7 +308,107 @@ class AccountPool:
             logger.info("[调度/等待] 暂无可用账号 | 任务: [%s] | 再次检查: [%d 秒后]", task_name, wait_seconds)
             time.sleep(wait_seconds)
 
+# ==========================================
+# 新增：淘宝联盟 API 搜索并行任务模块
+# ==========================================
+def taobao_api_search_task():
+    """后台任务：通过淘宝联盟 API 搜索指定关键词商品并入库，每轮等待 24 小时"""
+    default_keywords = [
+        # 基础水饮与酒水
+        "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
+        "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
+        # 休闲零食
+        "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋",
+        "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
+        # 饱腹代餐与速食
+        "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
+        # 厨房粮油与生鲜调味
+        "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
+        "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
+        # 家庭日用与清洁
+        "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液",
+        "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
+        # 个人护理与日化
+        "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
+        "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
+    ]
 
+    taobao_app_key = get_config("myself_taobao_app_key")
+    taobao_app_secret = get_config("myself_taobao_app_secret")
+    taobao_pid = get_config("myself_taobao_pid")
+    monitored_file = Path(r"W:\project\python_project\easy_shop\app\web_front\monitored_products.json")
+
+    while True:
+        logger.info("[淘宝API任务/轮次开始] 开始执行淘宝联盟 API 数据拉取...")
+
+        # 优先尝试读取前端监控词配置，若不存在或为空则回退到内置词表
+        keywords = default_keywords
+        if monitored_file.exists():
+            try:
+                monitored_products = read_json(str(monitored_file)) or {}
+                monitored_keys = [k for k, v in monitored_products.items() if isinstance(v, dict) and v.get("is_monitoring")]
+                if monitored_keys:
+                    keywords = monitored_keys
+                    logger.info("[淘宝API任务/配置] 已从监控配置加载 %d 个关键词", len(keywords))
+            except Exception as cfg_exc:
+                logger.warning("[淘宝API任务/配置] 读取监控词文件失败，沿用默认词表 | 错误: [%s]", cfg_exc)
+
+        try:
+            with closing(gen_db_object()) as db_instance:
+                db_instance.ping()
+                product_manager = ProductManager(db_instance)
+
+                for keyword in keywords:
+                    logger.info("[淘宝API任务/搜索] 正在拉取关键词: [%s]", keyword)
+                    try:
+                        result = search_taobao_goods_by_keyword(
+                            search_key=keyword,
+                            limit_count=0,  # 0 表示拉取全部可用页，也可按需设为如 200
+                            app_key=taobao_app_key,
+                            app_secret=taobao_app_secret,
+                            adzone_id=taobao_pid,
+                        )
+
+                        if not result or result.get("status") != "success":
+                            logger.warning(
+                                "[淘宝API任务/失败] 搜索未成功 | 关键词: [%s] | 错误: [%s]",
+                                keyword,
+                                result.get("error") if isinstance(result, dict) else result,
+                            )
+                            time.sleep(3)
+                            continue
+
+                        records = []
+                        now = datetime.now(timezone.utc)
+                        for item in result.get("data", []):
+                            record = normalize_taobao_goods(item, keyword)
+                            if record is not None:
+                                record["updated_at"] = now
+                                records.append(record)
+
+                        if records:
+                            counts = safe_batch_update(product_manager, records)
+                            logger.info(
+                                "[淘宝API任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
+                                keyword,
+                                len(records),
+                                counts.get("new", 0),
+                                counts.get("update", 0),
+                            )
+                        else:
+                            logger.info("[淘宝API任务/空数据] 关键词: [%s] | 未解析到有效商品", keyword)
+
+                    except Exception as exc:
+                        logger.error("[淘宝API任务/异常] 搜索或入库异常 | 关键词: [%s] | 错误: [%s]", keyword, exc)
+
+                    # 每个关键词查询之间停顿，防止触发淘宝 TOP 流控
+                    time.sleep(3)
+
+        except Exception as exc:
+            logger.error("[淘宝API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
+
+        logger.info("[淘宝API任务/轮次结束] 本轮淘宝联盟拉取完成，休眠 24 小时...")
+        time.sleep(24 * 3600)
 # ==========================================
 # 新增：API 数据清洗模块
 # ==========================================
@@ -1168,6 +1396,8 @@ if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
         playwright_task,
+        taobao_api_search_task,  # 【新增】：淘宝联盟 API 关键词搜索任务
+
         # api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
         web_search_intercept_task  # 【新增】：UI 关键词拦截搜索任务
