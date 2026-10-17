@@ -52,11 +52,16 @@ import threading  # 请确保在文件顶部添加此导入
 class StorageError(RuntimeError):
     """商品写入或回执处理失败必须终止采集，不能误当成页面问题换号。"""
 
-# ==========================================
-# 新增：淘宝联盟 API 数据清洗模块
-# ==========================================
+
+import hashlib
+import re
+
+# 专门用于从淘金币、88VIP等促销ID前缀中精准剥离出纯数字商品ID（num_iid）的正则
+_TAOBAO_NUM_IID_PATTERN = re.compile(r"^(\d{10,15})(?:coin|vip|f|\d)*", re.IGNORECASE)
+
+
 def _safe_float(val, default=0.0):
-    """安全将字符串或数值转为 float，处理空串或 None"""
+    """安全将字符串或数值转为 float"""
     if val is None or val == "":
         return default
     try:
@@ -75,16 +80,65 @@ def _normalize_url(url_str):
     return url_str
 
 
+def _extract_pure_digital_product_id(item: dict) -> tuple[str, str]:
+    """
+    核心：不使用动态变化的 item_id，强制从促销 ID 或其他恒定字段中提取纯数字商品 ID (num_iid)。
+    返回: (pure_digital_product_id, fallback_url)
+    """
+    price_info = item.get("price_promotion_info") or {}
+
+    # 1. 遍历所有促销列表（final_promotion_path_map_data, more_promotion_map_data）
+    promo_lists = [
+        price_info.get("final_promotion_path_list", {}).get("final_promotion_path_map_data", []),
+        price_info.get("more_promotion_list", {}).get("more_promotion_map_data", []),
+    ]
+    for p_list in promo_lists:
+        if not isinstance(p_list, list):
+            continue
+        for promo in p_list:
+            if not isinstance(promo, dict):
+                continue
+            promo_id = str(promo.get("promotion_id") or "").strip()
+            # 尝试匹配前缀的 10~15 位纯数字商品 ID
+            match = _TAOBAO_NUM_IID_PATTERN.match(promo_id)
+            if match:
+                num_iid = match.group(1)
+                if len(num_iid) >= 8:  # 确保是合法的淘宝商品数字ID长度
+                    return num_iid, f"https://item.taobao.com/item.htm?id={num_iid}"
+
+    # 2. 备用策略：尝试从 click_url 或 coupon_share_url 的参数中正则匹配 id=XXXXXX
+    publish = item.get("publish_info") or {}
+    for url_key in ("click_url", "coupon_share_url"):
+        raw_url = str(publish.get(url_key) or "")
+        id_match = re.search(r"[?&]id=(\d{8,15})", raw_url)
+        if id_match:
+            num_iid = id_match.group(1)
+            return num_iid, f"https://item.taobao.com/item.htm?id={num_iid}"
+
+    # 3. 终极兜底：如果实在找不到纯数字 ID，用 seller_id + title 的 MD5 生成唯一指纹（确保入库不崩，但它是稳定的）
+    basic = item.get("item_basic_info") or {}
+    seller_id = str(basic.get("seller_id") or "").strip()
+    title = str(basic.get("title") or "").strip()
+    if seller_id and title:
+        raw_key = f"tb_digital_{seller_id}_{title}"
+        hash_id = "tb_" + hashlib.md5(raw_key.encode("utf-8")).hexdigest()[:16]
+        return hash_id, ""
+
+    return "", ""
+
+
 def normalize_taobao_goods(item, default_category, source_api="taobao_api_search"):
     """
-    清洗淘宝联盟 (taobao.tbk.dg.material.optional.upgrade) 返回的嵌套商品数据，
-    将其转换为与 ProductManager.update 及其他任务一致的数据库文档格式。
+    清洗淘宝联盟返回的数据：
+    1. 严禁使用动态变化的 item_id。
+    2. 强制提取或映射为恒定不变的纯数字商品 ID 作为 product_id。
     """
     if not isinstance(item, dict):
         return None
 
-    item_id = item.get("item_id")
-    if type(item_id) not in (str, int) or not str(item_id).strip():
+    # 强制获取纯数字商品 ID
+    product_id, fallback_url = _extract_pure_digital_product_id(item)
+    if not product_id:
         return None
 
     # 规范化 _source_api 为列表结构
@@ -102,38 +156,33 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
     publish = item.get("publish_info") or {}
     income_info = publish.get("income_info") or {}
 
-    # 1. 基础信息提取
+    # 基础信息提取
     category = (
-        basic.get("category_name")
-        or basic.get("level_one_category_name")
-        or default_category
+            basic.get("category_name")
+            or basic.get("level_one_category_name")
+            or default_category
     )
     title = basic.get("title") or basic.get("short_title") or ""
-    # 品牌名若为空，使用店铺名兜底（与 normalize_intercept_goods 保持一致）
     brand = basic.get("brand_name") or basic.get("shop_title") or ""
     sales_tip = (
-        basic.get("annual_vol")
-        or (f"已售{basic.get('tk_total_sales')}" if basic.get("tk_total_sales") else "")
-        or str(basic.get("volume", ""))
+            basic.get("annual_vol")
+            or (f"已售{basic.get('tk_total_sales')}" if basic.get("tk_total_sales") else "")
+            or str(basic.get("volume", ""))
     )
     image_url = _normalize_url(basic.get("pict_url") or basic.get("white_image") or "")
-
-    # 2. 价格计算（淘宝 API 返回单位直接为“元”）
+    item_id = str(item.get("item_id") or "").strip()  # 仅用于日志或调试，绝不作为 product_id
+    # 价格计算
     reserve_price = _safe_float(price_info.get("reserve_price"))
     zk_final_price = _safe_float(price_info.get("zk_final_price"))
     final_promo_price = _safe_float(price_info.get("final_promotion_price"))
     predict_price = _safe_float(price_info.get("predict_rounding_up_price"))
 
-    # 原价优先取折扣前在售价 zk_final_price（若无则取吊牌原价 reserve_price）
     original_price = zk_final_price if zk_final_price > 0 else reserve_price
-    # 活动到手价优先取券后价 final_promotion_price（若无则取 zk_final_price）
     activity_price = final_promo_price if final_promo_price > 0 else original_price
 
-    # 计算优惠立省金额 saved_price
     if original_price > activity_price > 0:
         saved_price = round(original_price - activity_price, 2)
     else:
-        # 备选：从促销路径列表中累加优惠金额
         promo_paths = (
             price_info.get("final_promotion_path_list", {})
             .get("final_promotion_path_map_data", [])
@@ -143,20 +192,21 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
             2,
         )
 
-    # 3. 推广链接与佣金信息提取
+    # 推广链接
     coupon_share_url = _normalize_url(publish.get("coupon_share_url", ""))
     click_url = _normalize_url(publish.get("click_url", ""))
-    # 优先使用二合一领券推广链接，无券时回退至普通推广长链
-    promotion_url = coupon_share_url or click_url
+    promotion_url = coupon_share_url or click_url or fallback_url
+    product_url = fallback_url or click_url or promotion_url
 
     est_commission = _safe_float(income_info.get("commission_amount"))
     commission_rate = _safe_float(
         income_info.get("commission_rate") or publish.get("income_rate")
     )
 
-    record = {
-        "platform": "taobao",  # 显式标记为 taobao 平台
-        "product_id": str(item_id).strip(),
+    return {
+        "platform": "taobao",
+        "product_id": product_id,  # 确保这里拿到的是纯数字 ID 或恒定指纹，绝对不是原生的动态 item_id
+        "item_id":item_id,
         "category": category,
         "_source_api": api_list,
         "name": title,
@@ -167,7 +217,7 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
         "activity_price": activity_price,
         "saved_price": saved_price,
         "promotion_url": promotion_url,
-        " product_url": click_url or promotion_url,
+        "product_url": product_url,
         "promotion_info": {
             "promotion_rate": commission_rate,
             "estimated_commission": est_commission,
@@ -176,10 +226,6 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
             "shop_title": basic.get("shop_title", ""),
         },
     }
-    # 修正键名（去除多余空格）
-    record["product_url"] = record.pop(" product_url")
-
-    return record
 class AccountPool:
     """accounts 为目录列表；JSON 形貌为 {平台: {绝对目录: ISO 时间字符串 或 状态字符串}}。
     整个调度期间持有操作系统文件锁；临时文件原子替换，避免多进程抢号和半写文件。

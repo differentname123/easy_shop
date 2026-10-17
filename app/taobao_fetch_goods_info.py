@@ -329,7 +329,7 @@ def search_taobao_goods_by_keyword(
 
 
 if __name__ == "__main__":
-    keyword = "可乐"
+    keyword = "可口可乐300ml*12瓶迷你装碳酸饮料雪碧芬达果粒橙可乐汽水整件"
     logger.info(f"=== 正在搜索关键词: 【{keyword}】 ===")
     # 建议先测试指定条数（如 500 条），因为 desire_count=0 会连续翻满 100 页（约需 5~10 分钟）
     items = search_items(keyword, desire_count=10)
