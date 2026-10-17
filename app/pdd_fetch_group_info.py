@@ -363,7 +363,7 @@ def taobao_api_search_task():
                     try:
                         result = search_taobao_goods_by_keyword(
                             search_key=keyword,
-                            limit_count=0,  # 0 表示拉取全部可用页，也可按需设为如 200
+                            limit_count=500,  # 0 表示拉取全部可用页，也可按需设为如 200
                             app_key=taobao_app_key,
                             app_secret=taobao_app_secret,
                             adzone_id=taobao_pid,
