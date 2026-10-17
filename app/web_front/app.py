@@ -20,6 +20,7 @@ import uvicorn
 
 # 假设你的 common 模块在这个路径下可用
 from common.common_utils import setup_logger
+from common.goods_common_utils import gen_goods_segment_info
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 
@@ -147,6 +148,18 @@ def api_submit_feedback(req: FeedbackRequest):
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     target_kw = (keyword or "").strip().lower()
 
+    # 1. 调用分词工具获取分词词列表
+    words = gen_goods_segment_info(name=keyword)
+
+    # 对分词结果进行清洗与大小写统一，过滤空字符
+    search_terms = []
+    if isinstance(words, (list, tuple, set)):
+        search_terms = [str(w).strip().lower() for w in words if str(w).strip()]
+
+    # 兜底保障：若分词结果为空但原始关键字非空，则降级使用原始关键字
+    if not search_terms and target_kw:
+        search_terms = [target_kw]
+
     # 读取已反馈有误的商品列表，用于后续过滤
     with feedback_file_lock:
         feedback_data = _load_feedback_data_unsafe()
@@ -157,91 +170,76 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         sort=[("updated_at", -1)], limit=limit,
     )
 
-    # 提取前端展示和计算所需的字段 (增加了过滤 product_url 为空的数据及已反馈商品)
+    # 提取前端展示和计算所需的字段 (过滤 product_url 为空的数据及已反馈商品)
     products = []
     for product in raw_products:
-        # 优先使用 promotion_url，没有才使用 product_url
         product_url = product.get("promotion_url") or product.get("product_url")
 
-        # 新增：如果 product_url 为空的数据就不要返回了
         if not product_url:
             continue
 
         product_id = str(product.get("product_id") or product_url)
-        # 新增：过滤掉在反馈列表中的商品
         if product_id in feedback_data:
             continue
 
         original_price = product.get("original_price")
         activity_price = product.get("activity_price", 999999)
-        # 默认是正常状态 (0)
         is_suspicious = 0
 
-        # ============== 新增需求逻辑：计算比值并标记可疑商品 ==============
-        # 提取有效的价格用于判断
+        # 计算比值并标记可疑商品
         if original_price is not None and activity_price != 999999 and activity_price > 0:
             try:
-                # 确保转换为数值类型进行比较与计算
                 orig_p = float(original_price)
                 act_p = float(activity_price)
 
-                # 如果 activity_price 大于 original_price，那么 original_price 要乘10
                 if act_p > orig_p:
                     orig_p *= 10
 
-                # 计算 original_price 和 activity_price 的比值
                 ratio = orig_p / act_p
-                # 比值大于3时标记为可疑 (-1)
                 if ratio > 3:
                     is_suspicious = -1
 
-                # 将计算后的价格更新回 original_price，供后续赋值展示
                 original_price = orig_p
             except (ValueError, TypeError):
-                # 若价格字段转换抛出异常，为了容错，选择跳过当前价格验证流程
                 pass
 
-        # 如果 sku_info 存在且不为空，而且 need_reformat 字段为 false 那么就应该是 已人工确定 (1) 的状态
         sku_info = product.get("sku_info")
         need_reformat = product.get("need_reformat")
         if sku_info and (need_reformat is False or need_reformat == "false"):
             is_suspicious = 1
-        # ==============================================================
+
         _source_api = product.get("_source_api", "group")
         if "group" in _source_api:
             _source_api = "group"
         else:
             _source_api = "no_group"
+
         products.append({
             "name": product.get("name"),
             "product_id": product_id,
             "platform": product.get("platform"),
             "image_url": product.get("image_url"),
             "product_url": product_url,
-            # 新增：判断是否有佣金 (存在 promotion_url 即为有佣金)
             "has_commission": bool(product.get("promotion_url")),
             "original_price": original_price,
             "saved_price": product.get("saved_price") or 0,
-            # "sales_tip": product.get("sales_tip"),
             "brand": product.get("brand"),
             "format_info": product.get("format_info"),
             "activity_price": activity_price,
             "is_suspicious": is_suspicious,
-            # "updated_at": product.get("updated_at"),
-            # 新增：来源字段，如果不存在则默认赋值为 "group"
             "_source_api": _source_api
         })
 
-    # 直接使用商品名判断搜索关键字是否在里面（不再使用实体匹配）
-    if target_kw:
+    # 2. 搜索过滤：商品名称必须包含分词列表中的每一个元素 (AND 关系)
+    if search_terms:
         filtered_products = [
             p for p in products
-            if target_kw in (p.get("name") or "").lower()
+            if (p_name := (p.get("name") or "").lower()) and all(term in p_name for term in search_terms)
         ]
     else:
         filtered_products = []
 
-    logger.info(f"过滤后的商品数量: {len(filtered_products)}")
+    logger.info(f"搜索词：[{keyword}]，分词项：{search_terms}，过滤后的商品数量: {len(filtered_products)}")
 
     # 构建单位到类别、以及单位到基数乘数的反向查找字典
     unit_to_category = {}
@@ -264,7 +262,6 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     # 找到每个类别下，商品数量最多的单位作为统一后的目标单位
     category_target_unit = {}
     for category, counts in category_unit_counts.items():
-        # 按频次最高选取单位
         target_unit = max(counts.items(), key=lambda x: x[1])[0]
         category_target_unit[category] = target_unit
 
@@ -278,14 +275,13 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         if category and category in category_target_unit:
             target_unit = category_target_unit[category]
             if base_unit != target_unit:
-                # 执行单位转换计算：当前值 (原单位倍率 / 目标单位倍率)
                 orig_multiplier = unit_to_multiplier[base_unit]
                 target_multiplier = unit_to_multiplier[target_unit]
                 total_value = total_value * (orig_multiplier / target_multiplier)
                 base_unit = target_unit
                 product["format_info"]["pricing_basis"]["total_value"] = total_value
 
-        # 性价比计算：单位价格买到的量，例如 "克/元"
+        # 性价比计算
         price = product["activity_price"]
         product["cost_performance_score"] = total_value / price if price > 0 else 0
         product["base_unit"] = base_unit
@@ -294,16 +290,16 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             grouped_products[base_unit] = []
         grouped_products[base_unit].append(product)
 
-    # 按照 base_unit 分组，收集所有的商品以支持前端的多维度筛选
+    # 按照 base_unit 分组收集
     final_results = []
     for base_unit, unit_products in grouped_products.items():
         unit_products.sort(key=lambda x: x["cost_performance_score"], reverse=True)
-        final_results.extend(unit_products)  # 去掉了原有的 [:3] 限制
+        final_results.extend(unit_products)
 
-    # 整体再按性价比分值排个序返回
+    # 整体按性价比分值降序排列
     final_results.sort(key=lambda x: x["cost_performance_score"], reverse=True)
 
-    # ========== 核心修改：动态统计并生成过滤维度 ==========
+    # 动态统计并生成过滤维度
     attribute_stats = {}
     for product in final_results:
         keywords = product.get("format_info", {}).get("decision_keywords", [])
@@ -321,7 +317,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             attribute_stats[attr_name]["score"] += score
             attribute_stats[attr_name]["values"].add(attr_val)
 
-    # 1. 过滤掉仅有1个值的属性（没有筛选意义）
+    # 过滤掉仅有1个值的属性
     valid_attributes = []
     for attr_name, stats in attribute_stats.items():
         if len(stats["values"]) > 1:
@@ -331,12 +327,11 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 "options": list(stats["values"])
             })
 
-    # 2. 根据得分降序排列，取前5个最能影响决策的关键词进行筛选
+    # 根据得分降序排列，取前5个筛选维度
     valid_attributes.sort(key=lambda x: x["score"], reverse=True)
     top_filters = valid_attributes[:5]
-    # ===================================================
 
-    # 计算结束后再精简响应，避免影响匹配、单位换算和筛选维度统计
+    # 精简响应结构
     response_products = []
     for product in final_results:
         format_info = product.get("format_info") or {}
@@ -380,7 +375,6 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             for item in top_filters
         ]
     }
-
 
 # ============== 新增：商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")

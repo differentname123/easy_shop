@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from contextlib import closing
 
 from common.auto_captcha import solve_pdd_captcha
+from common.goods_common_utils import gen_goods_segment_info
 # 确保你的文件中已经导入了下面这两个模块
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
@@ -581,7 +582,11 @@ if __name__ == "__main__":
             search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
 
             # 将 search_keywords 转换为 target_category_list 的格式，每个关键词作为一个单独的列表
-            target_category_list = [[keyword] for keyword in search_keywords]
+            target_category_list = []
+            for search_keyword in search_keywords:
+                words = gen_goods_segment_info(name=search_keyword)
+                target_category_list.append(words)
+
             print(target_category_list)
 
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
