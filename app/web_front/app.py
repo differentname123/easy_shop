@@ -77,8 +77,7 @@ sku_unit_base_mapping = {
 
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
-    # 构建搜索实体
-    target_entity_info_list = [{"name": keyword, "score": 10}]
+    target_kw = (keyword or "").strip().lower()
 
     # 从数据库获取近期数据
     raw_products = product_manager.query(
@@ -156,23 +155,14 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "_source_api": _source_api
         })
 
-    # 计算匹配分数
-    for simple_product in products:
-        core_entities = simple_product.get("format_info", {}).get("core_entities", [])
-        match_score = 0
-        for target_entity in target_entity_info_list:
-            for core_entity in core_entities:
-                core_name = core_entity.get("name", "")
-                target_name = target_entity.get("name", "")
-                if core_name and target_name and (
-                        core_name.lower() in target_name.lower() or target_name.lower() in core_name.lower()):
-                    match_score += target_entity.get("score", 0) + core_entity.get("score", 0)
-
-        simple_product["match_score"] = match_score
-
-    # 过滤并排序
-    filtered_products = [p for p in products if p["match_score"] >= min_match_score]
-    filtered_products.sort(key=lambda x: x["match_score"], reverse=True)
+    # 直接使用商品名判断搜索关键字是否在里面（不再使用实体匹配）
+    if target_kw:
+        filtered_products = [
+            p for p in products
+            if target_kw in (p.get("name") or "").lower()
+        ]
+    else:
+        filtered_products = []
 
     logger.info(f"过滤后的商品数量: {len(filtered_products)}")
 
@@ -360,8 +350,8 @@ def _save_monitor_data_unsafe(data: dict):
 
 
 def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hours: int = 72) -> dict:
-    """一次性查询 72 小时内更新的有效商品，并统计每个监控词匹配的数量"""
-    counts = {kw: 0 for kw in keywords}
+    """一次性查询 72 小时内更新的有效商品，通过商品名直接匹配，统计总数量及已人工确定的数量"""
+    counts = {kw: {"total": 0, "confirmed": 0} for kw in keywords}
     if not keywords:
         return counts
 
@@ -370,46 +360,57 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
         sort=[("updated_at", -1)], limit=0,
     )
 
-    valid_core_entities_list = []
+    valid_products_info = []
     for product in raw_products:
         product_url = product.get("promotion_url") or product.get("product_url")
         if not product_url:
             continue
-        core_entities = (product.get("format_info") or {}).get("core_entities") or []
-        if core_entities:
-            valid_core_entities_list.append(core_entities)
+        product_name = (product.get("name") or "").lower()
+        if not product_name:
+            continue
+
+        sku_info = product.get("sku_info")
+        need_reformat = product.get("need_reformat")
+        is_confirmed = bool(sku_info and (need_reformat is False or need_reformat == "false"))
+
+        valid_products_info.append((product_name, is_confirmed))
 
     for kw in keywords:
-        target_lower = kw.lower()
-        matched_count = 0
-        for core_entities in valid_core_entities_list:
-            match_score = 0
-            for core_entity in core_entities:
-                core_name = core_entity.get("name", "")
-                if core_name and target_lower and (
-                        core_name.lower() in target_lower or target_lower in core_name.lower()):
-                    match_score += 10 + core_entity.get("score", 0)
-            if match_score >= min_match_score:
-                matched_count += 1
-        counts[kw] = matched_count
+        target_lower = (kw or "").strip().lower()
+        if not target_lower:
+            continue
+        matched_total = 0
+        matched_confirmed = 0
+        for product_name, is_confirmed in valid_products_info:
+            if target_lower in product_name:
+                matched_total += 1
+                if is_confirmed:
+                    matched_confirmed += 1
+        counts[kw] = {
+            "total": matched_total,
+            "confirmed": matched_confirmed
+        }
 
     return counts
 
 
 def build_monitor_response(data: dict) -> dict:
-    """组装监控响应数据（包含 72 小时数据库商品数量）"""
+    """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量）"""
     active_keywords = [kw for kw, info in data.items() if info.get("is_monitoring", False)]
     counts_map = count_monitored_products_72h(active_keywords, min_match_score=10, hours=72)
 
     active_list = []
     inactive_list = []
     for kw, info in data.items():
+        is_mon = bool(info.get("is_monitoring", False))
+        kw_counts = counts_map.get(kw, {"total": 0, "confirmed": 0}) if is_mon else {"total": 0, "confirmed": 0}
         item = {
             "keyword": kw,
-            "is_monitoring": bool(info.get("is_monitoring", False)),
+            "is_monitoring": is_mon,
             "added_at": info.get("added_at"),
             "cancelled_at": info.get("cancelled_at"),
-            "count_72h": counts_map.get(kw, 0) if info.get("is_monitoring", False) else 0
+            "count_72h": kw_counts["total"],
+            "confirmed_count_72h": kw_counts["confirmed"]
         }
         if item["is_monitoring"]:
             active_list.append(item)

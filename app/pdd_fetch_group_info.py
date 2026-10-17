@@ -391,12 +391,13 @@ def web_search_intercept_task():
         "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
     ]
     search_keywords = ["可乐"]
-    monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
-    search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
+
 
     # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
     stats_file_path = Path("keyword_intercept_stats.json")
     while True:
+        monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
+        search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
         logger.info("[UI拦截任务/轮次开始] 开始执行 UI 搜索数据拦截...")
         try:
             # 1. 读取历史记录字典

@@ -334,7 +334,7 @@ def handle_pdd_captcha(page):
     debug_dir = "debug_captcha"
     os.makedirs(debug_dir, exist_ok=True)
 
-    for attempt in range(1, 6):
+    for attempt in range(1, 10):
         try:
             if not slider_bg_img.is_visible():
                 logger.info("[风控/对抗] ✅ 滑块消退 | 结果: [验证成功]")

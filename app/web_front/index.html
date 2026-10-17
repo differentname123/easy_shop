@@ -28,11 +28,11 @@
                             500: '#71717a', 600: '#52525b', 700: '#3f3f46', 800: '#27272a', 900: '#18181b',
                         },
                         brand: {
-                            50: '#eef2ff', 100: '#e0e7ff', 500: '#6366f1', 600: '#4f46e5', 900: '#312e81'
+                            50: '#eef2ff', 100: '#e0e7ff', 200: '#c7d2fe', 300: '#a5b4fc', 400: '#818cf8',
+                            500: '#6366f1', 600: '#4f46e5', 700: '#4338ca', 900: '#312e81'
                         },
                         accent: {
-                            500: '#10b981',
-                            600: '#059669'
+                            50: '#ecfdf5', 100: '#d1fae5', 500: '#10b981', 600: '#059669', 700: '#047857'
                         }
                     },
                     boxShadow: {
@@ -364,26 +364,26 @@
         <div class="mb-6 glass-panel rounded-3xl p-5 sm:p-6 shadow-sm border border-zinc-200">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
                 <div>
-                    <h2 class="text-xl font-bold text-zinc-900 flex items-center gap-2">
-                        <span>📡 商品监控管理中心</span>
+                    <h2 class="text-xl font-bold text-zinc-900 flex items-center gap-2 flex-wrap">
+                        <span>📡 商品监控（自动抓价 + 人工核实）</span>
                         <span class="px-2.5 py-0.5 text-xs font-bold bg-brand-50 text-brand-600 rounded-full border border-brand-200 num-font">
                             {{ monitoredList.length }} 项监控中
                         </span>
                     </h2>
-                    <p class="text-sm text-zinc-500 mt-1 font-medium">
-                        上传需要监控的商品关键词（如“可乐”、“插座”），实时统计近 72 小时内入库更新的商品数量
+                    <p class="text-sm text-zinc-600 mt-1.5 font-medium leading-relaxed">
+                        添加您关注的商品后，系统会在后台自动拉取最新商品数据，再由人工逐一核对规格与真实单价。
                     </p>
                 </div>
                 <button
                         @click="fetchMonitors"
                         :disabled="monitorLoading"
-                        class="self-start sm:self-auto px-3.5 py-2 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-700 hover:border-brand-500 hover:text-brand-600 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                        class="self-start sm:self-auto px-3.5 py-2 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-700 hover:border-brand-500 hover:text-brand-600 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50 flex-shrink-0"
                 >
                     <svg class="w-3.5 h-3.5" :class="monitorLoading ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                     </svg>
-                    {{ monitorLoading ? '刷新中...' : '刷新数量' }}
+                    {{ monitorLoading ? '刷新中...' : '刷新数据' }}
                 </button>
             </div>
 
@@ -391,7 +391,7 @@
                 <input
                         v-model="newMonitorKeyword"
                         type="text"
-                        placeholder="输入想监控的商品，如：可乐、插座（支持空格或逗号分隔批量上传）"
+                        placeholder="输入想买的商品名称，如：可乐、插座（支持用空格或逗号一次添加多个）"
                         class="flex-1 bg-white border-2 border-zinc-200 rounded-2xl px-4 py-3 text-sm font-medium outline-none focus:border-brand-500 transition-all placeholder-zinc-400 shadow-sm"
                 >
                 <button
@@ -408,90 +408,68 @@
         <div v-if="monitorLoading && monitoredList.length === 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div v-for="i in 6" :key="i" class="bg-white rounded-2xl p-4 border border-zinc-100 shadow-sm">
                 <div class="h-5 w-1/2 skeleton-pulse rounded mb-3"></div>
-                <div class="h-8 w-1/3 skeleton-pulse rounded mb-3"></div>
-                <div class="h-4 w-2/3 skeleton-pulse rounded"></div>
+                <div class="h-12 w-full skeleton-pulse rounded mb-3"></div>
+                <div class="h-8 w-full skeleton-pulse rounded"></div>
             </div>
         </div>
 
-        <!-- 当前监控商品列表 -->
+        <!-- 当前监控商品列表（聚焦核心数量与人工核实进度，去除运维时间和已取消列表） -->
         <div v-else>
             <div v-if="monitoredList.length === 0" class="bg-white rounded-3xl p-12 text-center border border-zinc-200/80 shadow-sm">
                 <div class="w-14 h-14 bg-zinc-100 rounded-full flex items-center justify-center mx-auto mb-3">
                     <span class="text-2xl">📦</span>
                 </div>
                 <h3 class="text-base font-bold text-zinc-900 mb-1">暂无正在监控的商品</h3>
-                <p class="text-xs text-zinc-500">在上方输入框中添加如“可乐”、“插座”即可开始监控</p>
+                <p class="text-xs text-zinc-500">在上方输入框添加商品（如“可乐”、“插座”），后台将自动拉取商品并由人工核实单价</p>
             </div>
 
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div
                         v-for="item in monitoredList"
                         :key="item.keyword"
-                        class="product-card bg-white rounded-2xl p-4 border border-zinc-200 shadow-sm flex flex-col justify-between gap-4"
+                        class="product-card bg-white rounded-2xl p-4 border border-zinc-200 shadow-sm flex flex-col justify-between gap-3.5"
                 >
-                    <div class="flex items-start justify-between gap-2">
-                        <div>
-                            <div class="flex items-center gap-2">
-                                <h3 class="text-base font-extrabold text-zinc-900">{{ item.keyword }}</h3>
-                                <span class="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[10px] font-bold">
-                                    监控中
-                                </span>
-                            </div>
-                            <p class="text-[11px] text-zinc-400 mt-1 num-font">
-                                添加时间：{{ item.added_at || '-' }}
-                            </p>
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 min-w-0">
+                            <h3 class="text-lg font-extrabold text-zinc-900 truncate">{{ item.keyword }}</h3>
+                            <span class="flex-shrink-0 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[11px] font-bold">
+                                监控中
+                            </span>
                         </div>
 
                         <button
                                 @click="removeMonitorItem(item.keyword)"
-                                class="text-xs font-semibold text-red-500 hover:text-red-700 hover:bg-red-50 px-2.5 py-1 rounded-lg transition-colors"
-                                title="取消对该商品的监控"
+                                class="flex-shrink-0 text-xs font-semibold text-zinc-400 hover:text-red-600 hover:bg-red-50 px-2.5 py-1 rounded-lg transition-colors"
+                                title="停止监控该商品"
                         >
-                            删除监控
+                            移除
                         </button>
                     </div>
 
-                    <div class="bg-brand-50/60 border border-brand-100 rounded-xl p-3 flex items-center justify-between">
-                        <div>
-                            <p class="text-[11px] font-semibold text-brand-600/80">72小时内更新商品数</p>
+                    <!-- 核心数据区：并列展示后台拉取商品总数与已人工确定数量 -->
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <div class="bg-brand-50/60 border border-brand-100 rounded-xl p-3">
+                            <p class="text-[11px] font-semibold text-brand-600/80">后台已拉取商品</p>
                             <p class="text-2xl font-extrabold text-brand-600 num-font mt-0.5">
-                                {{ item.count_72h }}
-                                <span class="text-xs font-medium text-brand-600/70">条</span>
+                                {{ item.count_72h || 0 }}
+                                <span class="text-xs font-medium text-brand-600/70">件</span>
                             </p>
                         </div>
-                        <button
-                                @click="jumpToSearch(item.keyword)"
-                                class="px-3 py-1.5 bg-white text-brand-600 border border-brand-200 rounded-lg text-xs font-bold hover:bg-brand-600 hover:text-white transition-colors shadow-sm"
-                        >
-                            查看精算 →
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- 已取消监控的历史记录展示 -->
-        <div v-if="monitorHistoryList.length > 0" class="mt-8">
-            <h3 class="text-sm font-bold text-zinc-500 mb-3 px-1">已取消监控的商品记录 ({{ monitorHistoryList.length }})</h3>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                <div
-                        v-for="item in monitorHistoryList"
-                        :key="item.keyword"
-                        class="bg-zinc-100/80 rounded-2xl p-3.5 border border-zinc-200/70 flex items-center justify-between gap-3"
-                >
-                    <div class="min-w-0">
-                        <div class="flex items-center gap-2">
-                            <span class="text-sm font-bold text-zinc-600 truncate">{{ item.keyword }}</span>
-                            <span class="px-1.5 py-0.5 bg-zinc-200 text-zinc-600 rounded text-[10px] font-medium">已停止</span>
+                        <div class="bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3">
+                            <p class="text-[11px] font-semibold text-emerald-700">已人工确定</p>
+                            <p class="text-2xl font-extrabold text-emerald-600 num-font mt-0.5">
+                                {{ item.confirmed_count_72h || 0 }}
+                                <span class="text-xs font-medium text-emerald-600/80">件</span>
+                            </p>
                         </div>
-                        <p class="text-[10px] text-zinc-400 num-font mt-1">添加：{{ item.added_at || '-' }}</p>
-                        <p class="text-[10px] text-zinc-400 num-font">取消：{{ item.cancelled_at || '-' }}</p>
                     </div>
+
                     <button
-                            @click="restoreMonitorItem(item.keyword)"
-                            class="flex-shrink-0 px-3 py-1.5 bg-white border border-zinc-300 text-zinc-700 rounded-xl text-xs font-bold hover:border-brand-500 hover:text-brand-600 transition-colors shadow-sm"
+                            @click="jumpToSearch(item.keyword)"
+                            class="w-full py-2.5 bg-zinc-900 text-white rounded-xl text-xs font-bold hover:bg-brand-600 active:scale-[0.99] transition-all shadow-sm flex items-center justify-center gap-1"
                     >
-                        恢复监控
+                        <span>查看比价结果</span>
+                        <span>→</span>
                     </button>
                 </div>
             </div>
@@ -688,75 +666,108 @@
         </div>
     </main>
 
-    <!-- ============ 沉浸式详情抽屉 ============ -->
+    <!-- ============ 沉浸式详情抽屉（适配手机端大图、完整关键文字及返回手势拦截） ============ -->
     <Teleport to="body">
-        <div v-if="selectedProduct" class="fixed inset-0 bg-zinc-900/40 backdrop-blur-sm z-50 transition-opacity" @click="closeDetail"></div>
+        <div v-if="selectedProduct" class="fixed inset-0 bg-zinc-900/50 backdrop-blur-sm z-50 transition-opacity" @click="closeDetail()"></div>
 
         <Transition name="drawer">
             <div v-if="selectedProduct"
-                 class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[90vh] flex flex-col"
+                 class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[92vh] max-w-2xl mx-auto flex flex-col"
                  style="padding-bottom: var(--sab);">
 
-                <div class="w-full flex justify-center pt-3 pb-2 cursor-pointer" @click="closeDetail">
-                    <div class="w-10 h-1.5 bg-zinc-200 rounded-full"></div>
+                <!-- 顶部下拉关闭条与返回关闭按钮 -->
+                <div class="w-full flex items-center justify-between px-5 pt-3 pb-2 border-b border-zinc-100">
+                    <button @click="closeDetail()" type="button" class="flex items-center gap-1 text-xs font-bold text-zinc-500 hover:text-zinc-900 py-1 px-2 -ml-2 rounded-lg active:bg-zinc-100">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/>
+                        </svg>
+                        <span>返回列表</span>
+                    </button>
+                    <div class="w-10 h-1.5 bg-zinc-200 rounded-full cursor-pointer" @click="closeDetail()"></div>
+                    <div class="w-14"></div>
                 </div>
 
-                <div class="flex-1 overflow-y-auto px-5 pb-24 no-scrollbar">
-                    <div class="flex gap-4 mb-6">
-                        <img :src="selectedProduct.image_url" class="w-24 h-24 rounded-2xl object-cover border border-zinc-100 shadow-sm">
-                        <div class="flex-1 pt-1">
-                            <span class="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold text-white mb-2 shadow-sm" :style="{ backgroundColor: getPlatformColor(selectedProduct.platform) }">
+                <div class="flex-1 overflow-y-auto px-5 pt-3 pb-28 no-scrollbar">
+                    <!-- 放大展示的商品主图区域 -->
+                    <div class="w-full h-64 sm:h-72 rounded-2xl bg-zinc-50 border border-zinc-100 mb-4 flex items-center justify-center overflow-hidden relative p-2">
+                        <img :src="selectedProduct.image_url" :alt="selectedProduct.name" class="w-full h-full object-contain mix-blend-multiply">
+                        <div class="absolute top-3 left-3 flex flex-wrap gap-1.5">
+                            <span class="px-2.5 py-1 rounded-lg text-xs font-bold text-white shadow-sm" :style="{ backgroundColor: getPlatformColor(selectedProduct.platform) }">
                                 {{ getPlatformName(selectedProduct.platform) }}
                             </span>
                             <span v-if="selectedProduct.is_suspicious === -1"
                                   title="原价与活动价的比值大于 3"
-                                  class="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 mb-2 ml-2">
-                                可疑
+                                  class="px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300 shadow-sm">
+                                价格可疑
                             </span>
                             <span v-else-if="selectedProduct.is_suspicious === 1"
                                   title="已人工确定"
-                                  class="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 mb-2 ml-2">
-                                已人工确定
+                                  class="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500 text-white shadow-sm">
+                                ✓ 已人工确定
                             </span>
-                            <h2 class="text-base font-bold text-zinc-900 leading-snug line-clamp-3">{{ selectedProduct.name }}</h2>
                         </div>
                     </div>
 
-                    <!-- 核心区域：AI 精算报告 -->
+                    <!-- 完整突出的商品名称与核心标签 -->
+                    <div class="mb-5">
+                        <h2 class="text-lg sm:text-xl font-extrabold text-zinc-900 leading-snug select-all">
+                            {{ selectedProduct.name }}
+                        </h2>
+                    </div>
+
+                    <!-- 核心区域：AI 精算报告（修复单价发黑不显示问题，高亮单价与关键数值） -->
                     <div class="bg-zinc-900 rounded-3xl p-5 mb-6 text-white relative overflow-hidden shadow-float">
-                        <div class="absolute -right-10 -top-10 w-32 h-32 bg-brand-500 rounded-full blur-3xl opacity-40"></div>
-                        <div class="flex items-center gap-2 mb-4 relative z-10">
-                            <svg class="w-4 h-4 text-brand-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                            </svg>
-                            <span class="text-xs font-bold tracking-widest text-zinc-300">AI 精算报告</span>
+                        <div class="absolute -right-10 -top-10 w-32 h-32 bg-brand-500 rounded-full blur-3xl opacity-30"></div>
+                        <div class="flex items-center justify-between mb-4 relative z-10">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                </svg>
+                                <span class="text-xs font-bold tracking-widest text-zinc-200">单价精算明细</span>
+                            </div>
+                            <span v-if="getCompareIndicator(selectedProduct)"
+                                  class="text-xs font-bold px-2 py-0.5 rounded-md"
+                                  :class="getCompareIndicator(selectedProduct).better ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-red-500/20 text-red-300 border border-red-500/30'">
+                                {{ getCompareIndicator(selectedProduct).text }}
+                            </span>
                         </div>
+
                         <div class="flex flex-col gap-3 relative z-10">
-                            <div class="flex justify-between items-center bg-white/10 rounded-xl p-3 backdrop-blur-md">
-                                <span class="text-sm text-zinc-400">预估到手总价</span>
-                                <span class="text-xl font-bold num-font">¥{{ selectedProduct.activity_price.toFixed(2) }}</span>
-                            </div>
-                            <div class="flex justify-center -my-2 z-20">
-                                <div class="w-6 h-6 rounded-full bg-zinc-800 border-2 border-zinc-900 flex items-center justify-center text-zinc-400 text-sm font-bold">÷</div>
-                            </div>
-                            <div class="flex justify-between items-center bg-white/10 rounded-xl p-3 backdrop-blur-md">
-                                <span class="text-sm text-zinc-400">AI 提取实际总容量</span>
+                            <!-- 突出显示：折算真实单价 -->
+                            <div class="bg-white/10 border border-white/15 rounded-2xl p-4 flex justify-between items-center backdrop-blur-md">
+                                <div>
+                                    <span class="text-sm font-bold text-amber-300 block">折算真实单价</span>
+                                    <span class="text-[11px] text-zinc-300 mt-0.5 block">到手总价 ÷ 实际总量</span>
+                                </div>
                                 <div class="text-right">
-                                    <span class="text-lg font-bold num-font">{{ getTotalValue(selectedProduct) }}</span>
-                                    <span class="text-xs text-zinc-400 ml-1">{{ selectedProduct.base_unit }}</span>
-                                    <div class="text-[10px] text-zinc-500 mt-0.5">
-                                        (<span v-for="(struct, i) in getPricingStructure(selectedProduct)" :key="i">
-                                            {{ struct.value }}{{ struct.unit }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
-                                        </span>)
-                                    </div>
+                                    <span class="text-3xl sm:text-4xl font-extrabold text-amber-400 num-font">¥{{ getUnitPrice(selectedProduct) }}</span>
+                                    <span class="text-sm font-bold text-zinc-200 ml-1">/{{ selectedProduct.base_unit }}</span>
                                 </div>
                             </div>
-                            <div class="h-px bg-white/10 my-1"></div>
-                            <div class="flex justify-between items-end">
-                                <div class="pb-1"><span class="text-xs text-brand-400 font-medium">折算真实单价</span></div>
-                                <div class="text-right">
-                                    <span class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-brand-300 to-brand-100 num-font">¥{{ getUnitPrice(selectedProduct) }}</span>
-                                    <span class="text-sm text-zinc-400">/{{ selectedProduct.base_unit }}</span>
+
+                            <!-- 关键计算拆解：到手总价 & 提取总量 -->
+                            <div class="grid grid-cols-2 gap-2.5">
+                                <div class="bg-white/5 border border-white/10 rounded-xl p-3">
+                                    <span class="text-xs text-zinc-400 block mb-1">预估到手总价</span>
+                                    <div class="flex items-baseline gap-1.5">
+                                        <span class="text-xl font-extrabold text-white num-font">¥{{ selectedProduct.activity_price.toFixed(2) }}</span>
+                                        <span v-if="selectedProduct.original_price > selectedProduct.activity_price" class="text-xs text-zinc-400 line-through num-font">
+                                            ¥{{ selectedProduct.original_price }}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div class="bg-white/5 border border-white/10 rounded-xl p-3">
+                                    <span class="text-xs text-zinc-400 block mb-1">核定实际总量</span>
+                                    <div>
+                                        <span class="text-xl font-extrabold text-white num-font">{{ getTotalValue(selectedProduct) }}</span>
+                                        <span class="text-xs font-bold text-zinc-300 ml-1">{{ selectedProduct.base_unit }}</span>
+                                    </div>
+                                    <div v-if="getPricingStructure(selectedProduct).length > 0" class="text-[11px] text-zinc-300 mt-0.5 font-medium">
+                                        规格: <span v-for="(struct, i) in getPricingStructure(selectedProduct)" :key="i">
+                                            {{ struct.value }}{{ struct.unit }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -764,15 +775,15 @@
 
                     <!-- 规格参数透明化 -->
                     <div class="mb-6">
-                        <h3 class="text-sm font-bold text-zinc-900 mb-3 px-1">AI 识别规格</h3>
+                        <h3 class="text-sm font-bold text-zinc-900 mb-3 px-1">关键规格信息</h3>
                         <div class="flex flex-wrap gap-2">
-                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name" class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
-                                <span class="text-xs text-zinc-500 mr-2">{{ kw.attribute_name }}</span>
-                                <span class="text-sm font-bold text-zinc-800">{{ kw.attribute_value }}</span>
-                            </div>
-                            <div v-if="selectedProduct.brand" class="flex items-center bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2">
+                            <div v-if="selectedProduct.brand" class="flex items-center bg-zinc-100 border border-zinc-200 rounded-xl px-3.5 py-2">
                                 <span class="text-xs text-zinc-500 mr-2">品牌</span>
-                                <span class="text-sm font-bold text-zinc-800">{{ selectedProduct.brand }}</span>
+                                <span class="text-sm font-extrabold text-zinc-900">{{ selectedProduct.brand }}</span>
+                            </div>
+                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name" class="flex items-center bg-zinc-100 border border-zinc-200 rounded-xl px-3.5 py-2">
+                                <span class="text-xs text-zinc-500 mr-2">{{ kw.attribute_name }}</span>
+                                <span class="text-sm font-extrabold text-zinc-900">{{ kw.attribute_value }}</span>
                             </div>
                         </div>
                     </div>
@@ -786,7 +797,7 @@
                     </div>
                 </div>
 
-                <div class="absolute bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-zinc-100 flex flex-col items-center" style="padding-bottom: calc(0.5rem + var(--sab));">
+                <div class="absolute bottom-0 left-0 right-0 p-4 bg-white/95 backdrop-blur-md border-t border-zinc-100 flex flex-col items-center" style="padding-bottom: calc(0.5rem + var(--sab));">
                     <a :href="selectedProduct.product_url" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center w-full py-3 bg-gradient-to-r from-zinc-900 to-zinc-800 text-white rounded-2xl shadow-float hover:from-zinc-800 hover:to-zinc-700 active:scale-[0.98] transition-all relative overflow-hidden">
                         <div class="flex items-center font-bold text-base">
                             直达 {{ getPlatformName(selectedProduct.platform) }} 领券购买
@@ -893,10 +904,12 @@
             }
 
             const switchView = (viewName) => {
+                if (currentView.value === viewName) return
                 currentView.value = viewName
                 showHeader.value = true
                 window.scrollTo({ top: 0, behavior: 'smooth' })
                 if (viewName === 'monitor') {
+                    window.history.pushState({ view: 'monitor' }, '')
                     fetchMonitors()
                 }
             }
@@ -1162,13 +1175,31 @@
                 window.scrollTo({ top: 0, behavior: 'smooth' })
             }
 
+            // ======== 移动端友好的详情打开与返回键拦截逻辑 ========
             const openDetail = (item) => {
                 selectedProduct.value = item
                 document.body.style.overflow = 'hidden'
+                // 推入浏览器历史栈，使手机左滑返回/物理返回键仅关闭详情抽屉而不跳出网页
+                window.history.pushState({ detailModal: true }, '')
             }
-            const closeDetail = () => {
+
+            const closeDetail = (fromPopState = false) => {
+                if (!selectedProduct.value) return
                 selectedProduct.value = null
                 document.body.style.overflow = ''
+                // 如果是用户点击遮罩或返回按钮关闭，则同步回退刚刚压入的 history 记录
+                if (fromPopState !== true && window.history.state && window.history.state.detailModal) {
+                    window.history.back()
+                }
+            }
+
+            const handlePopState = () => {
+                if (selectedProduct.value) {
+                    closeDetail(true)
+                } else if (currentView.value === 'monitor') {
+                    currentView.value = 'search'
+                    showHeader.value = true
+                }
             }
 
             onMounted(() => {
@@ -1179,7 +1210,7 @@
                     search()
                 }
 
-                // ======== 挂载滚动监听和 Header 尺寸监听 ========
+                // ======== 挂载滚动监听、返回键监听和 Header 尺寸监听 ========
                 if (headerRef.value) {
                     headerHeight.value = headerRef.value.offsetHeight
                     // 监听 Header 内部高度变化 (下拉选项呈现后重置高度，解决内容遮挡)
@@ -1191,10 +1222,12 @@
                     resizeObserver.observe(headerRef.value)
                 }
                 window.addEventListener('scroll', handleScroll, { passive: true })
+                window.addEventListener('popstate', handlePopState)
             })
 
             onUnmounted(() => {
                 window.removeEventListener('scroll', handleScroll)
+                window.removeEventListener('popstate', handlePopState)
                 if (resizeObserver && headerRef.value) {
                     resizeObserver.unobserve(headerRef.value)
                 }
