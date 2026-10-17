@@ -605,4 +605,4 @@ if __name__ == "__main__":
             batch_runner(need_sku_product_id_list)
         except Exception as e:
             log(f"[FATAL] 💥 主程序异常退出: {str(e)}")
-        time.sleep(3600)
+        time.sleep(600)

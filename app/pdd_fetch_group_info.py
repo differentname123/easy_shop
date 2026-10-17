@@ -515,7 +515,7 @@ def web_search_intercept_task():
             logger.error("[UI拦截任务/全局异常] 数据库连接或执行时发生严重错误 | 错误: [%s]", exc)
 
         logger.info("[UI拦截任务/轮次结束] 本轮 UI 拦截拉取完成，休眠 24 小时...")
-        time.sleep(1 * 3600)
+        time.sleep(1 * 600)
 
 
 # ==========================================
