@@ -390,7 +390,9 @@ def web_search_intercept_task():
         "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
         "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
     ]
-    search_keywords = ["可乐", "金边虎皮兰","虎皮兰"]
+    search_keywords = ["可乐"]
+    monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
+    search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
 
     # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
     stats_file_path = Path("keyword_intercept_stats.json")

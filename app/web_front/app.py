@@ -9,10 +9,13 @@
 
 """
 import os
+import json
+import threading
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import uvicorn
 
 # 假设你的 common 模块在这个路径下可用
@@ -208,7 +211,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         if category and category in category_target_unit:
             target_unit = category_target_unit[category]
             if base_unit != target_unit:
-                # 执行单位转换计算：当前值 * (原单位倍率 / 目标单位倍率)
+                # 执行单位转换计算：当前值 (原单位倍率 / 目标单位倍率)
                 orig_multiplier = unit_to_multiplier[base_unit]
                 target_multiplier = unit_to_multiplier[target_unit]
                 total_value = total_value * (orig_multiplier / target_multiplier)
@@ -312,8 +315,193 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     }
 
 
+# ============== 新增：商品监控本地 JSON 安全维护与统计逻辑 ==============
+MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
+monitor_file_lock = threading.Lock()
+
+
+class MonitorRequest(BaseModel):
+    keyword: str
+
+
+def _load_monitor_data_unsafe() -> dict:
+    """内部读取监控 JSON 文件（调用方需持有锁）"""
+    if not os.path.exists(MONITOR_FILE_PATH):
+        return {}
+    try:
+        with open(MONITOR_FILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return {}
+            data = json.loads(content)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.error(f"读取监控文件失败: {e}")
+        return {}
+
+
+def _save_monitor_data_unsafe(data: dict):
+    """内部原子写入监控 JSON 文件（调用方需持有锁，使用临时文件替换保障安全）"""
+    temp_path = f"{MONITOR_FILE_PATH}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, MONITOR_FILE_PATH)
+    except Exception as e:
+        logger.error(f"写入监控文件失败: {e}")
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise e
+
+
+def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hours: int = 72) -> dict:
+    """一次性查询 72 小时内更新的有效商品，并统计每个监控词匹配的数量"""
+    counts = {kw: 0 for kw in keywords}
+    if not keywords:
+        return counts
+
+    raw_products = product_manager.query(
+        {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
+        sort=[("updated_at", -1)], limit=0,
+    )
+
+    valid_core_entities_list = []
+    for product in raw_products:
+        product_url = product.get("promotion_url") or product.get("product_url")
+        if not product_url:
+            continue
+        core_entities = (product.get("format_info") or {}).get("core_entities") or []
+        if core_entities:
+            valid_core_entities_list.append(core_entities)
+
+    for kw in keywords:
+        target_lower = kw.lower()
+        matched_count = 0
+        for core_entities in valid_core_entities_list:
+            match_score = 0
+            for core_entity in core_entities:
+                core_name = core_entity.get("name", "")
+                if core_name and target_lower and (
+                        core_name.lower() in target_lower or target_lower in core_name.lower()):
+                    match_score += 10 + core_entity.get("score", 0)
+            if match_score >= min_match_score:
+                matched_count += 1
+        counts[kw] = matched_count
+
+    return counts
+
+
+def build_monitor_response(data: dict) -> dict:
+    """组装监控响应数据（包含 72 小时数据库商品数量）"""
+    active_keywords = [kw for kw, info in data.items() if info.get("is_monitoring", False)]
+    counts_map = count_monitored_products_72h(active_keywords, min_match_score=10, hours=72)
+
+    active_list = []
+    inactive_list = []
+    for kw, info in data.items():
+        item = {
+            "keyword": kw,
+            "is_monitoring": bool(info.get("is_monitoring", False)),
+            "added_at": info.get("added_at"),
+            "cancelled_at": info.get("cancelled_at"),
+            "count_72h": counts_map.get(kw, 0) if info.get("is_monitoring", False) else 0
+        }
+        if item["is_monitoring"]:
+            active_list.append(item)
+        else:
+            inactive_list.append(item)
+
+    # 按时间倒序排列
+    active_list.sort(key=lambda x: x.get("added_at") or "", reverse=True)
+    inactive_list.sort(key=lambda x: x.get("cancelled_at") or "", reverse=True)
+
+    return {
+        "monitored": active_list,
+        "history": inactive_list
+    }
+
+
+@app.get("/api/monitor")
+def api_get_monitors():
+    with monitor_file_lock:
+        data = _load_monitor_data_unsafe()
+    result = build_monitor_response(data)
+    return {
+        "status": "success",
+        "data": result["monitored"],
+        "history": result["history"]
+    }
+
+
+@app.post("/api/monitor")
+def api_add_monitor(req: MonitorRequest):
+    raw_input = (req.keyword or "").strip()
+    if not raw_input:
+        raise HTTPException(status_code=400, detail="商品名称不能为空")
+
+    # 支持单个商品或用逗号、顿号、空格、换行分隔的批量商品上传
+    import re
+    keywords = [k.strip() for k in re.split(r"[\s,，、;；\n]+", raw_input) if k.strip()]
+    if not keywords:
+        raise HTTPException(status_code=400, detail="未解析到有效的商品名称")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with monitor_file_lock:
+        data = _load_monitor_data_unsafe()
+        for kw in keywords:
+            data[kw] = {
+                "is_monitoring": True,
+                "added_at": now_str,
+                "cancelled_at": None
+            }
+        _save_monitor_data_unsafe(data)
+
+    logger.info(f"新增监控商品: {keywords}")
+    result = build_monitor_response(data)
+    return {
+        "status": "success",
+        "data": result["monitored"],
+        "history": result["history"]
+    }
+
+
+@app.delete("/api/monitor")
+def api_delete_monitor(keyword: str):
+    kw = (keyword or "").strip()
+    if not kw:
+        raise HTTPException(status_code=400, detail="商品名称不能为空")
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with monitor_file_lock:
+        data = _load_monitor_data_unsafe()
+        if kw in data:
+            data[kw]["is_monitoring"] = False
+            data[kw]["cancelled_at"] = now_str
+        else:
+            data[kw] = {
+                "is_monitoring": False,
+                "added_at": None,
+                "cancelled_at": now_str
+            }
+        _save_monitor_data_unsafe(data)
+
+    logger.info(f"取消监控商品: [{kw}]")
+    result = build_monitor_response(data)
+    return {
+        "status": "success",
+        "data": result["monitored"],
+        "history": result["history"]
+    }
+# =====================================================================
+
+
 # 1. 搜索 API 接口
-# 修改 1. 搜索 API 接口
+# 修改搜索 API 接口
 @app.get("/api/search")
 def api_search(keyword: str = "方便面", hours: int = 72):
     # 【新增这一行】：此时 keyword 已经是解码后的中文 "可乐"
@@ -329,6 +517,12 @@ def api_search(keyword: str = "方便面", hours: int = 72):
 # 2. 网页路由配置
 @app.get("/", response_class=HTMLResponse)
 def read_index():
+    with open("index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/monitor", response_class=HTMLResponse)
+def read_monitor_page():
     with open("index.html", "r", encoding="utf-8") as f:
         return f.read()
 

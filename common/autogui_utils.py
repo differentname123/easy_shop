@@ -570,13 +570,20 @@ if __name__ == "__main__":
         try:
             # 每个子列表代表一组规则，必须同时包含该子列表内的所有关键词
             target_category_list = [
-                ["薯片","乐事"],  # 既包含 美瞳，又包含 月抛
-                ["薯片","好丽友"],  # 既包含 美瞳，又包含 月抛
-                ["薯片", "盼盼", "家庭号"],  # 既包含 美瞳，又包含 月抛
-                ["虎皮兰"]
+                # ["薯片","乐事"],  # 既包含 美瞳，又包含 月抛
+                # ["薯片","好丽友"],  # 既包含 美瞳，又包含 月抛
+                # ["薯片", "盼盼", "家庭号"],  # 既包含 美瞳，又包含 月抛
+                ["可乐"]
 
                 # ["方便面", "酸辣"],
             ]
+            monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
+            search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
+
+            # 将 search_keywords 转换为 target_category_list 的格式，每个关键词作为一个单独的列表
+            target_category_list = [[keyword] for keyword in search_keywords]
+            print(target_category_list)
+
             need_sku_product_id_list = read_json("mihoutao_sku_product_id.json")
 
             results = get_data_updated_within_24h(limit=0, extra_query={"format_status": "success"},
