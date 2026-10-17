@@ -713,9 +713,10 @@ if __name__ == "__main__":
         r"W:\project\python_project\easy_shop\common\results_success\186093409916.png"
 
     ]
-    prompt_text = read_file_to_str(r"W:\project\python_project\easy_shop\prompt\商品SKU提取.txt")
+    prompt_text = read_file_to_str(r"W:\project\python_project\easy_shop\prompt\商品分词.txt")
+    name = "小方块火锅底料批发"
+    prompt = f"{prompt_text}\n{name}"
 
-
-    result = generate_content(prompt=prompt_text, model="gemma-4-31b-it", file_paths=file_paths)
+    result = generate_content(prompt=prompt, model="qwen/qwen3.8-27b")
     print()
 
