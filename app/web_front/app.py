@@ -75,9 +75,81 @@ sku_unit_base_mapping = {
     }
 }
 
+# ============== 新增：商品错误反馈本地 JSON 安全维护逻辑 ==============
+FEEDBACK_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_products.json")
+feedback_file_lock = threading.Lock()
+
+
+class FeedbackRequest(BaseModel):
+    product_id: str
+    name: str
+    content: str = ""
+
+
+def _load_feedback_data_unsafe() -> dict:
+    """内部读取反馈 JSON 文件（调用方需持有锁）"""
+    if not os.path.exists(FEEDBACK_FILE_PATH):
+        return {}
+    try:
+        with open(FEEDBACK_FILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return {}
+            data = json.loads(content)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.error(f"读取反馈文件失败: {e}")
+        return {}
+
+
+def _save_feedback_data_unsafe(data: dict):
+    """内部原子写入反馈 JSON 文件（调用方需持有锁，使用临时文件替换保障安全）"""
+    temp_path = f"{FEEDBACK_FILE_PATH}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, FEEDBACK_FILE_PATH)
+    except Exception as e:
+        logger.error(f"写入反馈文件失败: {e}")
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise e
+
+
+@app.post("/api/feedback")
+def api_submit_feedback(req: FeedbackRequest):
+    pid = str(req.product_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="商品ID不能为空")
+
+    beijing_tz = timezone(timedelta(hours=8))
+    now_beijing_str = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+    with feedback_file_lock:
+        data = _load_feedback_data_unsafe()
+        data[pid] = {
+            "feedback_time": now_beijing_str,
+            "name": (req.name or "").strip(),
+            "content": (req.content or "").strip()
+        }
+        _save_feedback_data_unsafe(data)
+
+    logger.info(f"记录商品反馈: product_id=[{pid}], name=[{req.name}], content=[{req.content}]")
+    return {"status": "success"}
+# =====================================================================
+
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     target_kw = (keyword or "").strip().lower()
+
+    # 读取已反馈有误的商品列表，用于后续过滤
+    with feedback_file_lock:
+        feedback_data = _load_feedback_data_unsafe()
 
     # 从数据库获取近期数据
     raw_products = product_manager.query(
@@ -85,7 +157,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         sort=[("updated_at", -1)], limit=limit,
     )
 
-    # 提取前端展示和计算所需的字段 (增加了过滤 product_url 为空的数据)
+    # 提取前端展示和计算所需的字段 (增加了过滤 product_url 为空的数据及已反馈商品)
     products = []
     for product in raw_products:
         # 优先使用 promotion_url，没有才使用 product_url
@@ -93,6 +165,11 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
         # 新增：如果 product_url 为空的数据就不要返回了
         if not product_url:
+            continue
+
+        product_id = str(product.get("product_id") or product_url)
+        # 新增：过滤掉在反馈列表中的商品
+        if product_id in feedback_data:
             continue
 
         original_price = product.get("original_price")
@@ -137,7 +214,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             _source_api = "no_group"
         products.append({
             "name": product.get("name"),
-            "product_id": product.get("product_id") or product_url,
+            "product_id": product_id,
             "platform": product.get("platform"),
             "image_url": product.get("image_url"),
             "product_url": product_url,

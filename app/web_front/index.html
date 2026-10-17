@@ -666,17 +666,17 @@
         </div>
     </main>
 
-    <!-- ============ 沉浸式详情抽屉（适配手机端大图、完整关键文字及返回手势拦截） ============ -->
+    <!-- ============ 沉浸式详情抽屉（修复底部按钮重叠、增加商品错误反馈功能） ============ -->
     <Teleport to="body">
         <div v-if="selectedProduct" class="fixed inset-0 bg-zinc-900/50 backdrop-blur-sm z-50 transition-opacity" @click="closeDetail()"></div>
 
         <Transition name="drawer">
             <div v-if="selectedProduct"
-                 class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[92vh] max-w-2xl mx-auto flex flex-col"
+                 class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[92vh] max-w-2xl mx-auto flex flex-col overflow-hidden"
                  style="padding-bottom: var(--sab);">
 
                 <!-- 顶部下拉关闭条与返回关闭按钮 -->
-                <div class="w-full flex items-center justify-between px-5 pt-3 pb-2 border-b border-zinc-100">
+                <div class="w-full flex-shrink-0 flex items-center justify-between px-5 pt-3 pb-2 border-b border-zinc-100 bg-white z-20">
                     <button @click="closeDetail()" type="button" class="flex items-center gap-1 text-xs font-bold text-zinc-500 hover:text-zinc-900 py-1 px-2 -ml-2 rounded-lg active:bg-zinc-100">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/>
@@ -687,7 +687,8 @@
                     <div class="w-14"></div>
                 </div>
 
-                <div class="flex-1 overflow-y-auto px-5 pt-3 pb-28 no-scrollbar">
+                <!-- 中间独立滚动内容区（与底部直达按钮物理隔离，彻底杜绝重叠透底） -->
+                <div class="flex-1 overflow-y-auto px-5 pt-3 pb-6 no-scrollbar">
                     <!-- 放大展示的商品主图区域 -->
                     <div class="w-full h-64 sm:h-72 rounded-2xl bg-zinc-50 border border-zinc-100 mb-4 flex items-center justify-center overflow-hidden relative p-2">
                         <img :src="selectedProduct.image_url" :alt="selectedProduct.name" class="w-full h-full object-contain mix-blend-multiply">
@@ -715,7 +716,7 @@
                         </h2>
                     </div>
 
-                    <!-- 核心区域：AI 精算报告（修复单价发黑不显示问题，高亮单价与关键数值） -->
+                    <!-- 核心区域：AI 精算报告 -->
                     <div class="bg-zinc-900 rounded-3xl p-5 mb-6 text-white relative overflow-hidden shadow-float">
                         <div class="absolute -right-10 -top-10 w-32 h-32 bg-brand-500 rounded-full blur-3xl opacity-30"></div>
                         <div class="flex items-center justify-between mb-4 relative z-10">
@@ -788,16 +789,64 @@
                         </div>
                     </div>
 
-                    <div v-if="selectedProduct.saved_price > 0" class="bg-accent-50 rounded-2xl p-4 border border-accent-100 flex items-center justify-between">
+                    <div v-if="selectedProduct.saved_price > 0" class="bg-accent-50 rounded-2xl p-4 border border-accent-100 flex items-center justify-between mb-6">
                         <div>
                             <p class="text-xs text-accent-700 font-bold mb-0.5">联盟专属优惠</p>
                             <p class="text-[10px] text-accent-600/80">结合各项优惠为您省下</p>
                         </div>
                         <div class="text-xl font-extrabold text-accent-600 num-font">¥{{ selectedProduct.saved_price.toFixed(2) }}</div>
                     </div>
+
+                    <!-- 新增：商品信息有误反馈区域（置于详情最底部） -->
+                    <div class="pt-2 border-t border-zinc-100">
+                        <div v-if="feedbackSuccess" class="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 text-center text-xs font-bold text-emerald-700">
+                            ✓ 已收到您的反馈，该商品已从列表中移除
+                        </div>
+
+                        <div v-else-if="!showFeedbackForm" class="flex justify-center">
+                            <button
+                                    type="button"
+                                    @click="showFeedbackForm = true"
+                                    class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-zinc-500 hover:text-red-600 hover:bg-red-50 border border-zinc-200/80 hover:border-red-200 transition-all"
+                            >
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                                </svg>
+                                <span>商品信息有误？点击反馈</span>
+                            </button>
+                        </div>
+
+                        <div v-else class="bg-zinc-50 border border-zinc-200 rounded-2xl p-4">
+                            <p class="text-xs font-bold text-zinc-800 mb-2">反馈商品信息有误（提交后将不再展示该商品）</p>
+                            <textarea
+                                    v-model="feedbackContent"
+                                    rows="2"
+                                    placeholder="选填：请简单说明哪里有误（如规格提取错误、价格不符等），也可留空直接提交"
+                                    class="w-full bg-white border border-zinc-200 rounded-xl p-2.5 text-xs text-zinc-800 outline-none focus:border-brand-500 transition-all placeholder-zinc-400 mb-3 resize-none"
+                            ></textarea>
+                            <div class="flex justify-end gap-2">
+                                <button
+                                        type="button"
+                                        @click="showFeedbackForm = false; feedbackContent = ''"
+                                        class="px-3.5 py-1.5 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-600 hover:bg-zinc-100 transition-colors"
+                                >
+                                    取消
+                                </button>
+                                <button
+                                        type="button"
+                                        :disabled="feedbackSubmitting"
+                                        @click="submitFeedback"
+                                        class="px-4 py-1.5 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-700 active:scale-95 transition-all disabled:opacity-50"
+                                >
+                                    {{ feedbackSubmitting ? '提交中...' : '确认提交' }}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="absolute bottom-0 left-0 right-0 p-4 bg-white/95 backdrop-blur-md border-t border-zinc-100 flex flex-col items-center" style="padding-bottom: calc(0.5rem + var(--sab));">
+                <!-- 底部独立固底按钮栏（纯白不透明背景 + 物理隔离不重叠） -->
+                <div class="flex-shrink-0 p-4 bg-white border-t border-zinc-200/80 flex flex-col items-center relative z-30">
                     <a :href="selectedProduct.product_url" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center w-full py-3 bg-gradient-to-r from-zinc-900 to-zinc-800 text-white rounded-2xl shadow-float hover:from-zinc-800 hover:to-zinc-700 active:scale-[0.98] transition-all relative overflow-hidden">
                         <div class="flex items-center font-bold text-base">
                             直达 {{ getPlatformName(selectedProduct.platform) }} 领券购买
@@ -981,6 +1030,44 @@
             const hasSearched = ref(false)
             const selectedProduct = ref(null)
             const searchInputRef = ref(null)
+
+            // ======== 新增：商品错误反馈状态与提交逻辑 ========
+            const showFeedbackForm = ref(false)
+            const feedbackContent = ref('')
+            const feedbackSubmitting = ref(false)
+            const feedbackSuccess = ref(false)
+
+            const submitFeedback = async () => {
+                if (!selectedProduct.value || feedbackSubmitting.value) return
+                const targetPid = String(selectedProduct.value.product_id || '')
+                const targetName = selectedProduct.value.name || ''
+                feedbackSubmitting.value = true
+                try {
+                    const response = await fetch('/api/feedback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            product_id: targetPid,
+                            name: targetName,
+                            content: feedbackContent.value.trim()
+                        })
+                    })
+                    const res = await response.json()
+                    if (res.status === 'success') {
+                        feedbackSuccess.value = true
+                        // 从当前前端商品列表中同步过滤掉该商品
+                        products.value = products.value.filter(p => String(p.product_id) !== targetPid)
+                        setTimeout(() => {
+                            closeDetail()
+                        }, 600)
+                    }
+                } catch (e) {
+                    console.error('Submit Feedback Error', e)
+                } finally {
+                    feedbackSubmitting.value = false
+                }
+            }
+            // ================================================
 
             const sortBy = ref('value')
             const sortOptions = [
@@ -1177,6 +1264,10 @@
 
             // ======== 移动端友好的详情打开与返回键拦截逻辑 ========
             const openDetail = (item) => {
+                showFeedbackForm.value = false
+                feedbackContent.value = ''
+                feedbackSubmitting.value = false
+                feedbackSuccess.value = false
                 selectedProduct.value = item
                 document.body.style.overflow = 'hidden'
                 // 推入浏览器历史栈，使手机左滑返回/物理返回键仅关闭详情抽屉而不跳出网页
@@ -1186,6 +1277,10 @@
             const closeDetail = (fromPopState = false) => {
                 if (!selectedProduct.value) return
                 selectedProduct.value = null
+                showFeedbackForm.value = false
+                feedbackContent.value = ''
+                feedbackSubmitting.value = false
+                feedbackSuccess.value = false
                 document.body.style.overflow = ''
                 // 如果是用户点击遮罩或返回按钮关闭，则同步回退刚刚压入的 history 记录
                 if (fromPopState !== true && window.history.state && window.history.state.detailModal) {
@@ -1240,7 +1335,9 @@
                 fetchMonitors, addMonitorItem, removeMonitorItem, restoreMonitorItem,
                 switchView, jumpToSearch,
                 keyword, currentKeyword, products, loading, hasSearched,
-                selectedProduct, searchInputRef, sortBy, sortOptions, hotKeywords,
+                selectedProduct, searchInputRef,
+                showFeedbackForm, feedbackContent, feedbackSubmitting, feedbackSuccess, submitFeedback,
+                sortBy, sortOptions, hotKeywords,
                 placeholderText, sortedProducts, stats,
                 nameKeywordFilter, // 暴露给模板
                 availableUnits, activeUnitFilter, activeCommissionFilter,
