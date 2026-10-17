@@ -20,11 +20,12 @@ import uvicorn
 
 # 假设你的 common 模块在这个路径下可用
 from common.common_utils import setup_logger
+logger = setup_logger(app_name="goods_search")
+
 from common.goods_common_utils import gen_goods_segment_info
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 
-logger = setup_logger(app_name="goods_search")
 
 db_instance = gen_db_object()
 db_instance.ping()
