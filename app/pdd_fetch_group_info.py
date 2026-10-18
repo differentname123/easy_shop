@@ -24,7 +24,7 @@ from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 
 USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
-
+USER_DATA_DIR_LIST = [r"W:\temp\biance_pdd_myself", r"W:\temp\biance_pdd_mama"]
 logger = setup_logger("pdd_scraper")
 
 GLOBAL_CONFIG = {
@@ -514,21 +514,34 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
 # ==========================================
 # 修改：UI 拦截数据清洗模块 (新增 url 与 dict 结构)
 # ==========================================
-def normalize_intercept_goods(item, default_category):
+# ==========================================
+# 修改：UI 拦截数据清洗模块 (新增 source_account 与类型安全防护)
+# ==========================================
+def normalize_intercept_goods(item, default_category, source_account=""):
     """
     清洗 search_goods_and_intercept 返回的混合商品数据（API Json + Excel 融合字段）。
-    将其转为与数据库已有格式保持一致，并新增推广链接与佣金详情集合。
+    将其转为与数据库已有格式保持一致，新增推广链接、佣金详情集合以及来源账户字段。
     """
+    if not isinstance(item, dict):
+        return None
+
     # 兼容处理商品ID的取值（API字段 或 Excel融合字段）
     goods_id = item.get("goodsId") or item.get("商品ID")
     if type(goods_id) not in (str, int) or not str(goods_id).strip():
         return None
 
+    # 规范化账户名称（若传入的是完整路径，提取目录名如 biance_pdd_myself）
+    clean_account = ""
+    if source_account and str(source_account).strip():
+        raw_acc = str(source_account).strip()
+        clean_account = os.path.basename(os.path.normpath(raw_acc)) or raw_acc
+
     record = {
         "platform": GLOBAL_CONFIG["platform"],
         "product_id": str(goods_id).strip(),
         "category": item.get("categoryName") or default_category,
-        "_source_api": ["web_intercept"]  # 【核心修改】：列表格式标识数据来源为 UI 拦截
+        "_source_api": ["web_intercept"],  # 列表格式标识数据来源为 UI 拦截
+        "source_account": clean_account,   # 【新增】：标识该商品数据及推广链接来源于哪个账户
     }
 
     # 基础字段映射 (从驼峰或中文表头字段 -> 数据库字段)
@@ -537,31 +550,273 @@ def normalize_intercept_goods(item, default_category):
     record["sales_tip"] = str(item.get("salesTip", ""))
     record["image_url"] = item.get("goodsImageUrl") or item.get("goodsThumbnailUrl", "")
 
-    # 价格字段映射 (千分位 -> 元)
-    record["original_price"] = (item.get("goodsMarkPrice") or 0) / 100
-    record["activity_price"] = (item.get("minGroupPrice") or 0) / 1000
-    record["saved_price"] = (item.get("couponDiscount") or 0) / 1000
+    # 价格字段安全映射 (分/千分位 -> 元，使用 _safe_float 防止字符串相除报错)
+    record["original_price"] = round(_safe_float(item.get("goodsMarkPrice")) / 100, 2)
+    record["activity_price"] = round(_safe_float(item.get("minGroupPrice")) / 1000, 2)
+    record["saved_price"] = round(_safe_float(item.get("couponDiscount")) / 1000, 2)
 
-    # ================= 新增要求映射 =================
     # 1. 提取短链接为 promotion_url
-    record["promotion_url"] = item.get("短链接", "")
+    record["promotion_url"] = str(item.get("短链接") or "").strip()
 
     # 2. 安全提取并计算估算的佣金(元)，去除多余的字符串
     try:
         commission_str = str(item.get("佣金(元)", "0")).replace("元", "").strip()
-        est_commission = float(commission_str) if commission_str else 0.0
+        est_commission = _safe_float(commission_str, default=0.0)
     except Exception:
         est_commission = 0.0
 
     # 3. 组装 promotion_info 字典结构
     record["promotion_info"] = {
-        "promotion_rate": item.get("promotionRate", 0),
+        "promotion_rate": _safe_float(item.get("promotionRate"), default=0.0),
         "estimated_commission": est_commission,
-        "has_mall_coupon": item.get("hasCoupon", False)
+        "has_mall_coupon": bool(item.get("hasCoupon", False)),
     }
 
     return record
 
+
+# ==========================================
+# 修改：UI 拦截搜索任务模块 (支持 USER_DATA_DIR_LIST 严格顺序容灾切换与来源账户落库)
+# ==========================================
+def web_search_intercept_task():
+    """后台任务：利用 Playwright 拦截指定关键词的商品流数据，严格按 USER_DATA_DIR_LIST 顺序使用与切换账户"""
+    default_keywords = [
+        "猕猴桃", "蒜", "冲牙器",
+        # 基础水饮与酒水
+        "可乐", "牛奶", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
+        "奶茶", "豆奶", "苏打水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
+        # 休闲零食
+        "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋",
+        "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
+        # 饱腹代餐与速食
+        "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
+        # 厨房粮油与生鲜调味
+        "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
+        "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
+        # 家庭日用与清洁
+        "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液",
+        "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
+        # 个人护理与日化
+        "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
+        "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
+    ]
+
+    stats_file_path = Path("keyword_intercept_stats.json")
+    monitored_file = Path(r"W:\project\python_project\easy_shop\app\web_front\monitored_products.json")
+    bj_tz = timezone(timedelta(hours=8))
+
+    # 单个账户连续失败多少次后在本轮临时标记为失效（防止死磕已掉线/风控账户）
+    max_consecutive_failures_per_account = 2
+
+    while True:
+        logger.info("[UI拦截任务/轮次开始] 开始执行 UI 搜索数据拦截...")
+
+        # 0. 严格按照列表顺序初始化并校验可用账户目录列表
+        raw_account_list = (
+            USER_DATA_DIR_LIST
+            if isinstance(USER_DATA_DIR_LIST, (list, tuple)) and USER_DATA_DIR_LIST
+            else [USER_DATA_DIR]
+        )
+        # 保序去重，过滤空字符串
+        account_list = list(dict.fromkeys(
+            str(acc).strip() for acc in raw_account_list if isinstance(acc, str) and acc.strip()
+        ))
+        if not account_list:
+            logger.error("❌ [UI拦截任务/配置错误] USER_DATA_DIR_LIST 与 USER_DATA_DIR 均为空，等待 60 秒后重试...")
+            time.sleep(60)
+            continue
+
+        # 1. 健壮读取待搜索关键词（优先读取监控配置，异常或为空时回退到默认词表）
+        search_keywords = default_keywords
+        if monitored_file.exists():
+            try:
+                monitored_products = read_json(str(monitored_file))
+                if isinstance(monitored_products, dict):
+                    monitored_keys = [
+                        k for k, v in monitored_products.items()
+                        if isinstance(v, dict) and v.get("is_monitoring")
+                    ]
+                    if monitored_keys:
+                        search_keywords = monitored_keys
+                        logger.info("[UI拦截任务/配置] 已从监控配置加载 %d 个关键词", len(search_keywords))
+            except Exception as cfg_exc:
+                logger.warning("[UI拦截任务/配置] 读取监控词文件失败，沿用默认词表 | 错误: [%s]", cfg_exc)
+
+        try:
+            # 2. 健壮读取本地历史状态字典
+            try:
+                current_stats = read_json(str(stats_file_path))
+                if not isinstance(current_stats, dict):
+                    current_stats = {}
+            except Exception as stat_exc:
+                logger.warning("[UI拦截任务/状态] 读取历史状态文件异常，重置为空字典 | 错误: [%s]", stat_exc)
+                current_stats = {}
+
+            # 3. 过滤 12 小时内已成功搜索 (count > 0) 的关键字
+            now_bj = datetime.now(bj_tz)
+            pending_keywords = []
+            for keyword in search_keywords:
+                stat = current_stats.get(keyword)
+                if isinstance(stat, dict) and stat.get("count", 0) > 0:
+                    last_time_str = stat.get("last_time")
+                    if last_time_str:
+                        try:
+                            last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=bj_tz)
+                            if (now_bj - last_time).total_seconds() < 12 * 3600:
+                                continue
+                        except ValueError:
+                            pass
+                pending_keywords.append(keyword)
+
+            # 4. 对剩余的待搜关键字进行排序：(是否出现过(未出现为0，已出现为1), 上次拉取的个数(默认0))
+            pending_keywords.sort(key=lambda k: (
+                1 if k in current_stats else 0,
+                current_stats.get(k, {}).get("count", 0) if isinstance(current_stats.get(k), dict) else 0
+            ))
+
+            logger.info("\n" + "=" * 50)
+            logger.info("🎯 [UI拦截任务] 过滤后本轮需搜索的关键字顺序 (共 %d 个):", len(pending_keywords))
+            for idx, k in enumerate(pending_keywords, 1):
+                print(f"  {idx:02d}. {k}")
+            print("=" * 50 + "\n")
+
+            if not pending_keywords:
+                logger.info("[UI拦截任务/待命] 所有关键词均在 12 小时冷却期内，跳过本轮执行")
+            else:
+                # 记录本轮各账户连续失败次数与临时失效状态
+                account_fail_streaks = {acc: 0 for acc in account_list}
+                invalid_accounts_in_round = set()
+
+                with closing(gen_db_object()) as db_instance:
+                    db_instance.ping()
+                    product_manager = ProductManager(db_instance)
+
+                    for keyword in pending_keywords:
+                        logger.info("[UI拦截任务/搜索] 正在执行关键字: [%s] 的搜索拦截...", keyword)
+                        item_count = 0
+                        used_account_name = ""
+
+                        # 若所有账户均被标记为本轮失效，则重置失效集合，重新按列表顺序从头尝试
+                        if len(invalid_accounts_in_round) >= len(account_list):
+                            logger.warning("[UI拦截任务/重置账户池] 列表中所有账户均已触发失效标记，重置状态并按原列表顺序重新尝试")
+                            invalid_accounts_in_round.clear()
+                            account_fail_streaks = {acc: 0 for acc in account_list}
+
+                        # 严格按照 USER_DATA_DIR_LIST 的顺序构建本次尝试队列：
+                        # 优先按原顺序排入健康账户，已被标记失效的账户仅作为末尾兜底
+                        ordered_candidates = (
+                            [acc for acc in account_list if acc not in invalid_accounts_in_round]
+                            + [acc for acc in account_list if acc in invalid_accounts_in_round]
+                        )
+
+                        for attempt_idx, account_dir in enumerate(ordered_candidates, 1):
+                            account_name = os.path.basename(os.path.normpath(account_dir)) or account_dir
+                            logger.info(
+                                "[UI拦截任务/尝试账户] 关键词: [%s] | 顺位尝试: [%d/%d] | 账户: [%s]",
+                                keyword, attempt_idx, len(ordered_candidates), account_name
+                            )
+
+                            try:
+                                intercept_result = search_goods_and_intercept(
+                                    search_key_list=[keyword],
+                                    user_data_dir=account_dir,
+                                    debug=False
+                                )
+
+                                item_list = []
+                                if isinstance(intercept_result, dict) and keyword in intercept_result:
+                                    data = intercept_result[keyword]
+                                    item_list = data.get("goodsList", []) if isinstance(data, dict) else (data or [])
+
+                                records = []
+                                if item_list and isinstance(item_list, list):
+                                    now_utc = datetime.now(timezone.utc)
+                                    for item in item_list:
+                                        record = normalize_intercept_goods(
+                                            item,
+                                            default_category=keyword,
+                                            source_account=account_name
+                                        )
+                                        if record is not None:
+                                            record["updated_at"] = now_utc
+                                            records.append(record)
+
+                                if records:
+                                    item_count = len(records)
+                                    used_account_name = account_name
+                                    # 抓取成功，清零该账户的连续失败计数并移出失效集合
+                                    account_fail_streaks[account_dir] = 0
+                                    invalid_accounts_in_round.discard(account_dir)
+
+                                    counts = safe_batch_update(product_manager, records)
+                                    logger.info(
+                                        "[UI拦截任务/入库成功] 关键词: [%s] | 来源账户: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
+                                        keyword, account_name, item_count, counts.get("new", 0), counts.get("update", 0)
+                                    )
+                                    # 当前账户已成功获取商品，立即跳出账户循环，处理下一个关键词
+                                    break
+                                else:
+                                    logger.warning(
+                                        "[UI拦截任务/账户无数据] 关键词: [%s] | 账户: [%s] 未拦截到有效商品",
+                                        keyword, account_name
+                                    )
+
+                            except Exception as inner_exc:
+                                logger.error(
+                                    "[UI拦截任务/账户异常] 关键词: [%s] | 账户: [%s] 执行拦截或入库出错 | 错误: [%s]",
+                                    keyword, account_name, inner_exc
+                                )
+
+                            # 走到这里说明当前账户本次获取失败
+                            account_fail_streaks[account_dir] = account_fail_streaks.get(account_dir, 0) + 1
+                            if account_fail_streaks[account_dir] >= max_consecutive_failures_per_account:
+                                invalid_accounts_in_round.add(account_dir)
+                                logger.warning(
+                                    "⚠️ [UI拦截任务/账户降级] 账户 [%s] 已连续失败 %d 次，本轮后续关键词将优先顺延使用列表中的下一个账户",
+                                    account_name, account_fail_streaks[account_dir]
+                                )
+
+                            # 若列表中还有下一个候选账户，短暂间隔后切换下一个账户重试该关键词
+                            if attempt_idx < len(ordered_candidates):
+                                next_acc_name = os.path.basename(os.path.normpath(ordered_candidates[attempt_idx]))
+                                logger.info(
+                                    "🔄 [UI拦截任务/切换账户] 关键词: [%s] | 准备切换至列表下一个账户: [%s] ...",
+                                    keyword, next_acc_name
+                                )
+                                time.sleep(2)
+
+                        # 5. 更新本地关键字记录字典并落盘（额外记录本次成功的 source_account 便于排查）
+                        current_stats[keyword] = {
+                            "last_time": datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S"),
+                            "count": item_count,
+                            "source_account": used_account_name,
+                        }
+                        try:
+                            stats_file_path.parent.mkdir(parents=True, exist_ok=True)
+                            save_json(str(stats_file_path), current_stats)
+                        except Exception as save_exc:
+                            logger.error("[UI拦截任务/状态落盘失败] 无法写入状态文件 [%s] | 错误: [%s]", stats_file_path, save_exc)
+
+                        # 6. 仅当列表中所有账户都尝试完毕且数量仍为 0 时，才触发深度冷却休眠
+                        if item_count == 0:
+                            print("\n" + "❗" * 45)
+                            print(f"🚨🚨🚨 醒目警报: 关键字 [{keyword}] 遍历全部 {len(account_list)} 个账户后抓取数量仍为 0！🚨🚨🚨")
+                            print("⏳ 触发全局风控或限流保护，强制等待 2 分钟 (120秒) 后继续...")
+                            print("❗" * 45 + "\n")
+                            logger.warning(
+                                "[UI拦截任务/冷却保护] 关键字: [%s] 所有账户均未获取到数据，开始深度休眠 120 秒",
+                                keyword
+                            )
+                            time.sleep(120)
+                        else:
+                            # 正常获取数据，每次搜索间短暂停顿防反爬
+                            time.sleep(3)
+
+        except Exception as exc:
+            logger.error("[UI拦截任务/全局异常] 数据库连接或执行时发生严重错误 | 错误: [%s]", exc)
+
+        logger.info("[UI拦截任务/轮次结束] 本轮 UI 拦截拉取完成，休眠 10 分钟后进行下一轮检查...")
+        time.sleep(1 * 600)
 
 def safe_batch_update(product_manager, records):
     """
@@ -641,158 +896,6 @@ def safe_batch_update(product_manager, records):
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
 # ==========================================
-def web_search_intercept_task():
-    """后台任务：利用 Playwright 拦截指定关键词的商品流数据，每轮等待 24 小时"""
-    search_keywords = [
-        "猕猴桃", "蒜",
-        "冲牙器",
-
-        # 基础水饮与酒水
-        "可乐", "牛奶", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
-        "奶茶", "豆奶", "苏打水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
-        # 休闲零食
-        "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋",
-        "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
-        # 饱腹代餐与速食
-        "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
-        # 厨房粮油与生鲜调味
-        "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
-        "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
-        # 家庭日用与清洁
-        "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液",
-        "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
-        # 个人护理与日化
-        "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
-        "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
-    ]
-    search_keywords = ["可乐"]
-
-
-    # 状态记录文件路径，与账号 JSON 放在同一 data 目录下
-    stats_file_path = Path("keyword_intercept_stats.json")
-    while True:
-        monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
-        search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
-        logger.info("[UI拦截任务/轮次开始] 开始执行 UI 搜索数据拦截...")
-        try:
-            # 1. 读取历史记录字典
-            current_stats = read_json(str(stats_file_path)) or {}
-
-            # 2. 统一过滤 24 小时内已成功搜索的关键字
-            bj_tz = timezone(timedelta(hours=8))
-            now_bj = datetime.now(bj_tz)
-
-            pending_keywords = []
-            for keyword in search_keywords:
-                stat = current_stats.get(keyword)
-                # 只有当记录存在，且上次抓取数量大于 0 (即成功记录) 时才进行时间校验
-                if stat and stat.get("count", 0) > 0:
-                    last_time_str = stat.get("last_time")
-                    if last_time_str:
-                        try:
-                            # 解析保存的北京时间字符串
-                            last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=bj_tz)
-                            # 如果距离上次成功搜索小于 12 小时，则跳过
-                            if (now_bj - last_time).total_seconds() < 12 * 3600:
-                                continue
-                        except ValueError:
-                            # 若时间格式解析异常，则不跳过该关键字
-                            pass
-
-                pending_keywords.append(keyword)
-
-            # 3. 对剩余的待搜关键字进行排序
-            # 排序规则：(是否出现过(未出现为0，已出现为1), 上次拉取的个数(默认0))
-            pending_keywords.sort(key=lambda k: (
-                1 if k in current_stats else 0,
-                current_stats.get(k, {}).get("count", 0)
-            ))
-
-            # 4. 打印最终需要搜索的关键字列表和顺序
-            logger.info("\n" + "=" * 50)
-            logger.info(f"🎯 [UI拦截任务] 过滤后本轮需搜索的关键字顺序 (共 {len(pending_keywords)} 个):")
-            for idx, k in enumerate(pending_keywords, 1):
-                print(f"  {idx:02d}. {k}")
-            print("=" * 50 + "\n")
-
-            # 只有在有关键字需要搜索时才连接数据库
-            if pending_keywords:
-                # 在最外层建立数据库连接，避免内层循环反复重连
-                with closing(gen_db_object()) as db_instance:
-                    db_instance.ping()
-                    product_manager = ProductManager(db_instance)
-
-                    # 遍历排序后的关键词列表
-                    for keyword in pending_keywords:
-                        logger.info(f"[UI拦截任务/搜索] 正在执行关键字: [{keyword}] 的搜索拦截...")
-                        item_count = 0  # 记录本次拉取的商品数量
-
-                        try:
-                            # 包装成单元素列表传入
-                            intercept_result = search_goods_and_intercept(
-                                search_key_list=[keyword],
-                                user_data_dir=USER_DATA_DIR,
-                                debug=False
-                            )
-
-                            if intercept_result and keyword in intercept_result:
-                                data = intercept_result[keyword]
-
-                                # 适配新数据结构，提取字典内部的 goodsList
-                                if isinstance(data, dict):
-                                    item_list = data.get("goodsList", [])
-                                else:
-                                    item_list = data
-
-                                if not item_list:
-                                    logger.info("[UI拦截任务/空数据] 关键词: [%s] | 未拦截到商品", keyword)
-                                else:
-                                    records = []
-                                    now = datetime.now(timezone.utc)
-                                    for item in item_list:
-                                        record = normalize_intercept_goods(item, keyword)
-                                        if record is not None:
-                                            record["updated_at"] = now
-                                            records.append(record)
-
-                                    if records:
-                                        item_count = len(records)
-                                        counts = safe_batch_update(product_manager, records)
-                                        logger.info("[UI拦截任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
-                                                    keyword, item_count, counts.get("new", 0), counts.get("update", 0))
-                            else:
-                                logger.warning("[UI拦截任务/失败] 关键词: [%s] 拦截工具未返回有效数据", keyword)
-
-                        except Exception as inner_exc:
-                            logger.error("[UI拦截任务/单次异常] 执行关键词 [%s] 拦截或落库时发生错误 | 错误: [%s]",
-                                         keyword, inner_exc)
-
-                        # 更新本地关键字记录字典并落盘 (无论成功失败都更新，若失败则 count 为 0，下次不会被跳过)
-                        current_stats[keyword] = {
-                            "last_time": datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S"),  # 北京时间
-                            "count": item_count
-                        }
-                        stats_file_path.parent.mkdir(parents=True, exist_ok=True)
-                        save_json(str(stats_file_path), current_stats)
-
-                        # 判断本次是否为0，触发冷却预警或正常休眠
-                        if item_count == 0:
-                            print("\n" + "❗" * 45)
-                            print(f"🚨🚨🚨 醒目警报: 关键字 [{keyword}] 本次抓取数量为 0！🚨🚨🚨")
-                            print("⏳ 触发风控或限流保护，强制等待 2 分钟 (120秒) 后继续...")
-                            print("❗" * 45 + "\n")
-                            logger.warning("[UI拦截任务/冷却保护] 关键字: [%s] 数量为0，开始深度休眠 120 秒", keyword)
-                            time.sleep(120)
-                        else:
-                            # 正常数据，给每次搜索独立操作间增加喘息时间，防反爬
-                            time.sleep(3)
-
-        except Exception as exc:
-            logger.error("[UI拦截任务/全局异常] 数据库连接或执行时发生严重错误 | 错误: [%s]", exc)
-
-        logger.info("[UI拦截任务/轮次结束] 本轮 UI 拦截拉取完成，休眠 24 小时...")
-        time.sleep(1 * 600)
-
 
 # ==========================================
 # 新增：API 并行任务模块

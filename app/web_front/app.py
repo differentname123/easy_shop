@@ -451,10 +451,23 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
         target_lower = (kw or "").strip().lower()
         if not target_lower:
             continue
+
+        # 1. 调用分词工具获取分词词列表
+        words = gen_goods_segment_info(name=kw)
+
+        # 对分词结果进行清洗与大小写统一，过滤空字符
+        search_terms = []
+        if isinstance(words, (list, tuple, set)):
+            search_terms = [str(w).strip().lower() for w in words if str(w).strip()]
+
+        # 兜底保障：若分词结果为空但原始关键字非空，则降级使用原始关键字
+        if not search_terms and target_lower:
+            search_terms = [target_lower]
+
         matched_total = 0
         matched_confirmed = 0
         for product_name, is_confirmed in valid_products_info:
-            if target_lower in product_name:
+            if all(term in product_name for term in search_terms):
                 matched_total += 1
                 if is_confirmed:
                     matched_confirmed += 1
