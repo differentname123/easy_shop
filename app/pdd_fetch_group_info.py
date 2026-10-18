@@ -552,8 +552,14 @@ def normalize_intercept_goods(item, default_category, source_account=""):
 
     # 价格字段安全映射 (分/千分位 -> 元，使用 _safe_float 防止字符串相除报错)
     record["original_price"] = round(_safe_float(item.get("goodsMarkPrice")) / 100, 2)
-    record["activity_price"] = round(_safe_float(item.get("minGroupPrice")) / 1000, 2)
-    record["saved_price"] = round(_safe_float(item.get("couponDiscount")) / 1000, 2)
+
+    # 1. 先分别算出未扣券的拼团价和优惠券金额
+    raw_group_price = round(_safe_float(item.get("minGroupPrice")) / 1000, 2)
+    saved_price = round(_safe_float(item.get("couponDiscount")) / 1000, 2)
+
+    record["saved_price"] = saved_price
+    # 2. 【核心修改】：实际到手价 = 拼团价 - 优惠券 (使用 max(0.0, ...) 防御异常负数)
+    record["activity_price"] = round(max(0.0, raw_group_price - saved_price), 2)
 
     # 1. 提取短链接为 promotion_url
     record["promotion_url"] = str(item.get("短链接") or "").strip()
