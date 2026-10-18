@@ -514,17 +514,30 @@ def convert_external_pdd_url(client_id, client_secret, pid, source_url, uid=None
 
 if __name__ == "__main__":
     # 配置信息读取
-    pdd_client_id = get_config("nana_pdd_client_id")
-    pdd_client_secret = get_config("nana_pdd_client_secret")
-    pdd_pid = get_config("nana_pdd_pid")
-    # 生成推广链接
-    data = generate_goods_promotion_url(
-        client_id=pdd_client_id,
-        client_secret=pdd_client_secret,
-        pid=pdd_pid,
-        goods_sign='E9L2aS_F_49tSR-hwfDBRxSudPR7NgLPyQ_JVhvjLwXu',  # 替换为实际的 goods_sign
-        uid=None  # 确保 uid 为 None，避免风控问题
-    )
+    pdd_client_id = get_config("myself_pdd_client_id")
+    pdd_client_secret = get_config("myself_pdd_client_secret")
+    pdd_pid = get_config("myself_pdd_pid")
+
+    # # 通过 goods_sign 生成推广链接
+    # data = generate_goods_promotion_url(
+    #     client_id=pdd_client_id,
+    #     client_secret=pdd_client_secret,
+    #     pid=pdd_pid,
+    #     goods_sign='E9L2aS_F_49tSR-hwfDBRxSudPR7NgLPyQ_JVhvjLwXu',  # 替换为实际的 goods_sign
+    #     uid=None  # 确保 uid 为 None，避免风控问题
+    # )
+    #
+    # # 转换它人的链接
+    # other_link = "https://mobile.yangkeduo.com/duo_coupon_landing.html?goods_id=498657894908&pid=44888625_318694466&goods_sign=E9L21nAdX2htQ03xwvbBR2HxO1U08GCk_JiWYLbUgG&cpsSign=CC_261018_44888625_318694466_117f3924d39072f437e721223a7e9e06&_x_ddjb_act=%7B%22st%22%3A%221%22%7D&duoduo_type=2"
+    # convert_result = convert_external_pdd_url(
+    #     client_id=pdd_client_id,
+    #     client_secret=pdd_client_secret,
+    #     pid=pdd_pid,
+    #     source_url=other_link,
+    #     uid=None  # 确保 uid 为 None，避免风控问题
+    # )
+    #
+    # print()
 
 
     # # ==================================================================================================
@@ -617,8 +630,8 @@ if __name__ == "__main__":
     #     logger.error(f"❌ 生成备案链接失败，请检查网络或应用权限：{auth_res['error_msg']}")
 
 
-    test_keyword = "电脑手柄 游戏手柄"
-    test_limit = 500
+    test_keyword = "无线游戏手柄"
+    test_limit = 100
     logger.info(f"======== 🚀 开始测试关键词搜索 | 关键词: [{test_keyword}] | 限制获取: [{test_limit}条] ========")
 
     search_result = search_pdd_goods_by_keyword(
