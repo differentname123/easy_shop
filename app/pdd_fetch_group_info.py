@@ -797,9 +797,12 @@ def web_search_intercept_task():
 # ==========================================
 # 新增：API 并行任务模块
 # ==========================================
+# ==========================================
+# 修改：API 并行任务模块（支持本地 JSON 状态与 12 小时冷却跳过）
+# ==========================================
 def api_search_task():
-    """后台任务：通过 API 搜索指定关键词商品并入库，每轮等待 24 小时"""
-    keywords = [
+    """后台任务：通过 API 搜索指定关键词商品并入库，维护本地状态，跳过 12 小时内已成功搜索的关键词"""
+    default_keywords = [
         # 基础水饮与酒水 (20个)
         "可乐", "牛奶", "矿泉水", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
         "奶茶", "豆奶", "苏打水", "纯净水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
@@ -823,62 +826,134 @@ def api_search_task():
         "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
         "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
     ]
+
     pdd_client_id = get_config("myself_pdd_client_id")
     pdd_client_secret = get_config("myself_pdd_client_secret")
     pdd_pid = get_config("myself_pdd_pid")
 
+    # 本地 API 搜索状态记录文件
+    stats_file_path = Path("keyword_api_search_stats.json")
+    monitored_file = Path(r"W:\project\python_project\easy_shop\app\web_front\monitored_products.json")
+    bj_tz = timezone(timedelta(hours=8))
+
     while True:
-        logger.info("[API任务/轮次开始] 开始执行 API 数据拉取...")
-        monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
-        keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
+        logger.info("[API任务/轮次开始] 开始执行 API 数据拉取流程...")
+
+        # 1. 加载待搜索的关键词（优先使用监控文件中的关键词）
+        search_keywords = default_keywords
+        if monitored_file.exists():
+            try:
+                monitored_products = read_json(str(monitored_file)) or {}
+                monitored_keys = [
+                    k for k, v in monitored_products.items()
+                    if isinstance(v, dict) and v.get("is_monitoring")
+                ]
+                if monitored_keys:
+                    search_keywords = monitored_keys
+                    logger.info("[API任务/配置] 已从监控配置中加载 %d 个有效监控词", len(search_keywords))
+            except Exception as e:
+                logger.warning("[API任务/配置] 读取监控配置文件失败，退回默认词表 | 错误: [%s]", e)
+
         try:
-            # 每次拉取建立独立的数据库连接（由于等待时间长达24h，保持长连接易引发断联报错）
-            with closing(gen_db_object()) as db_instance:
-                db_instance.ping()
-                product_manager = ProductManager(db_instance)
+            # 2. 读取本地历史状态 JSON
+            current_stats = read_json(str(stats_file_path)) or {}
+            now_bj = datetime.now(bj_tz)
 
-                for keyword in keywords:
-                    logger.info("[API任务/搜索] 正在拉取关键词: [%s]", keyword)
-                    try:
-                        result = search_pdd_goods_by_keyword(
-                            client_id=pdd_client_id,
-                            client_secret=pdd_client_secret,
-                            pid=pdd_pid,
-                            search_key=keyword,
-                            limit_count=500  # 可根据需求调整拉取数量
-                        )
+            # 3. 过滤 12 小时内已成功搜索 (count > 0) 的关键词
+            pending_keywords = []
+            for keyword in search_keywords:
+                stat = current_stats.get(keyword)
+                if stat and stat.get("count", 0) > 0:
+                    last_time_str = stat.get("last_time")
+                    if last_time_str:
+                        try:
+                            last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=bj_tz)
+                            # 如果距离上次成功搜索小于 12 小时，则跳过
+                            if (now_bj - last_time).total_seconds() < 12 * 3600:
+                                continue
+                        except ValueError:
+                            # 格式异常则不跳过
+                            pass
 
-                        if not result or result.get("status") != "success":
-                            logger.warning("[API任务/失败] 搜索未成功 | 关键词: [%s] | 响应: [%s]", keyword, result)
-                            continue
+                pending_keywords.append(keyword)
 
-                        records = []
-                        now = datetime.now(timezone.utc)
-                        for item in result.get("data", []):
-                            record = normalize_api_goods(item, keyword)
-                            if record is not None:
-                                record["updated_at"] = now
-                                records.append(record)
+            # 4. 排序：未拉取过的排前面，拉取商品数少的排前面
+            pending_keywords.sort(key=lambda k: (
+                1 if k in current_stats else 0,
+                current_stats.get(k, {}).get("count", 0)
+            ))
 
-                        if records:
-                            counts = safe_batch_update(product_manager, records)
-                            logger.info("[API任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
-                                        keyword, len(records), counts.get("new", 0), counts.get("update", 0))
-                        else:
-                            logger.info("[API任务/空数据] 关键词: [%s] | 未解析到有效商品", keyword)
+            logger.info("\n" + "=" * 50)
+            logger.info("🎯 [API任务] 过滤后本轮需执行 API 搜索的关键词 (共 %d 个):", len(pending_keywords))
+            for idx, k in enumerate(pending_keywords, 1):
+                print(f"  {idx:02d}. {k}")
+            print("=" * 50 + "\n")
 
-                    except Exception as exc:
-                        logger.error("[API任务/异常] 搜索或入库异常 | 关键词: [%s] | 错误: [%s]", keyword, exc)
+            # 5. 若有待拉取的关键词，建立数据库连接进行拉取和入库
+            if pending_keywords:
+                with closing(gen_db_object()) as db_instance:
+                    db_instance.ping()
+                    product_manager = ProductManager(db_instance)
 
-                    # 避免并发打满，每个关键词查询之间短暂停顿
-                    time.sleep(5)
+                    for keyword in pending_keywords:
+                        logger.info("[API任务/搜索] 正在拉取关键词: [%s]", keyword)
+                        item_count = 0  # 记录本次拉取成功的有效商品数
+
+                        try:
+                            result = search_pdd_goods_by_keyword(
+                                client_id=pdd_client_id,
+                                client_secret=pdd_client_secret,
+                                pid=pdd_pid,
+                                search_key=keyword,
+                                limit_count=500  # 可根据需求调整拉取数量
+                            )
+
+                            if result and result.get("status") == "success":
+                                records = []
+                                now_utc = datetime.now(timezone.utc)
+                                for item in result.get("data", []):
+                                    record = normalize_api_goods(item, keyword)
+                                    if record is not None:
+                                        record["updated_at"] = now_utc
+                                        records.append(record)
+
+                                if records:
+                                    item_count = len(records)
+                                    counts = safe_batch_update(product_manager, records)
+                                    logger.info(
+                                        "[API任务/入库] 关键词: [%s] | 获取: [%d] | 新增/更新: [%d/%d]",
+                                        keyword, item_count, counts.get("new", 0), counts.get("update", 0)
+                                    )
+                                else:
+                                    logger.info("[API任务/空数据] 关键词: [%s] | 未解析到有效商品", keyword)
+                            else:
+                                logger.warning(
+                                    "[API任务/失败] 搜索未成功 | 关键词: [%s] | 响应: [%s]",
+                                    keyword, result.get("error") if isinstance(result, dict) else result
+                                )
+
+                        except Exception as exc:
+                            logger.error("[API任务/异常] 搜索或入库异常 | 关键词: [%s] | 错误: [%s]", keyword, exc)
+
+                        # 6. 更新本地状态并持久化（若失败则 count 为 0，不会被 12 小时规则跳过）
+                        current_stats[keyword] = {
+                            "last_time": datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S"),
+                            "count": item_count
+                        }
+                        stats_file_path.parent.mkdir(parents=True, exist_ok=True)
+                        save_json(str(stats_file_path), current_stats)
+
+                        # 避免频繁请求触发接口风控，关键词之间短暂停顿
+                        time.sleep(5)
+            else:
+                logger.info("[API任务/待命] 所有关键词均在 12 小时冷却期内，跳过本轮执行")
 
         except Exception as exc:
-            logger.error("[API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
+            logger.error("[API任务/数据库异常] 数据库连接或全局操作失败 | 错误: [%s]", exc)
 
-        logger.info("[API任务/轮次结束] 本轮 API 拉取完成，休眠 24 小时...")
-        time.sleep(24 * 3600)
-
+        # 调整为每 30 分钟轮询一次，保证冷却期过后的关键词能及时被拾起
+        logger.info("[API任务/轮次结束] 本轮处理完成，休眠 30 分钟后检查冷却到期的关键词...")
+        time.sleep(30 * 60)
 
 def normalize_goods(item, tab_name):
     """item 核心键为 goods_id，价格来源为 origin_price/activity_price/group_order_price_reduce（分）。
