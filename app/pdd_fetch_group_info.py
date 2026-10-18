@@ -490,6 +490,7 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
 
     # 基础字段映射 (从 API 字段 -> 数据库字段)
     for source, target in (
+            ("goods_sign", "goods_sign"),  # 【新增】保留拼多多 goods_sign 供后续转链或查详情使用
             ("goods_name", "name"),
             ("brand_name", "brand"),
             ("sales_tip", "sales_tip"),
@@ -691,7 +692,7 @@ def web_search_intercept_task():
                         try:
                             # 解析保存的北京时间字符串
                             last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=bj_tz)
-                            # 如果距离上次成功搜索小于 24 小时，则跳过
+                            # 如果距离上次成功搜索小于 12 小时，则跳过
                             if (now_bj - last_time).total_seconds() < 12 * 3600:
                                 continue
                         except ValueError:
@@ -828,6 +829,8 @@ def api_search_task():
 
     while True:
         logger.info("[API任务/轮次开始] 开始执行 API 数据拉取...")
+        monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
+        keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
         try:
             # 每次拉取建立独立的数据库连接（由于等待时间长达24h，保持长连接易引发断联报错）
             with closing(gen_db_object()) as db_instance:
@@ -842,7 +845,7 @@ def api_search_task():
                             client_secret=pdd_client_secret,
                             pid=pdd_pid,
                             search_key=keyword,
-                            limit_count=0  # 可根据需求调整拉取数量
+                            limit_count=500  # 可根据需求调整拉取数量
                         )
 
                         if not result or result.get("status") != "success":
@@ -1444,7 +1447,7 @@ if __name__ == "__main__":
         playwright_task,
         # taobao_api_search_task,  # 【新增】：淘宝联盟 API 关键词搜索任务
 
-        # api_search_task,
+        api_search_task,
         # api_recommend_task,         # 商品推荐 API 任务
         web_search_intercept_task  # 【新增】：UI 关键词拦截搜索任务
     ]

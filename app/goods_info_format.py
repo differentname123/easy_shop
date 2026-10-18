@@ -15,8 +15,7 @@ from pathlib import Path
 import multiprocessing
 from common.common_utils import read_file_to_str, setup_logger, string_to_object, get_config
 logger = setup_logger(app_name="goods_format")
-from app.pdd_utils import batch_convert_pdd_urls, verify_and_convert_pdd_goods
-
+from app.pdd_utils import batch_convert_pdd_urls, verify_and_convert_pdd_goods, generate_goods_promotion_url
 
 from common.model_api import generate_content
 from common.mongo_db.mongo_base import gen_db_object
@@ -378,9 +377,10 @@ def run_format_round(product_manager):
 
 
 def pending_promotion_query():
-    """新采集商品尚无 promotion_* 相关推广链接字段，或转链失败但未达到尝试上限。"""
+    """查询没有推广链接、goods_sign 存在且重试未达上限的待转链商品。"""
     return {
-        "promotion_status": {"$ne": "success"},
+        "promotion_url": {"$exists": False},
+        "goods_sign": {"$exists": True},
         "$or": [
             {"promotion_retry_count": {"$exists": False}},
             {"promotion_retry_count": {"$lt": PROMOTION_MAX_RETRIES}},
@@ -389,33 +389,20 @@ def pending_promotion_query():
 
 
 def run_promotion_round(product_manager):
-    pdd_client_id = get_config("nana_pdd_client_id")
-    pdd_client_secret = get_config("nana_pdd_client_secret")
-    pdd_pid = get_config("nana_pdd_pid")
+    pdd_client_id = get_config("myself_pdd_client_id")
+    pdd_client_secret = get_config("myself_pdd_client_secret")
+    pdd_pid = get_config("myself_pdd_pid")
     pdd_custom_parameters = None
     """一次查询待转链商品候选，批量并行处理与 DB 更新。返回 {success, failed, skipped} 统计。"""
     started = time.monotonic()
 
-    # ================= 核心修改点 =================
-    # 动态构建包含 _source_api 约束的查询条件。
-    # 为了防止与原 pending_promotion_query 里的 "$or" 发生键冲突，采用 "$and" 嵌套的方式。
-    def get_strict_promotion_query():
-        query = pending_promotion_query()
-        original_or = query.pop("$or", [])
-        # 强制要求 _source_api 为 "group" 或字段本身不存在
-        query["$and"] = [
-            {"$or": original_or},
-            {"$or": [{"_source_api": "group"}, {"_source_api": {"$exists": False}}]}
-        ]
-        return query
+    # 直接使用最新的查询条件，不处理任何历史旧数据兼容
+    strict_query_condition = pending_promotion_query()
 
-    strict_query_condition = get_strict_promotion_query()
-    # ==============================================
-
-    # 根据要求，拉取 product_url 及必要的基础字段
+    # 拉取 goods_sign 及必要的基础字段
     products = product_manager.query(
         strict_query_condition,
-        projection={"_id": 1, "platform": 1, "product_id": 1, "product_url": 1}
+        projection={"_id": 1, "platform": 1, "product_id": 1, "goods_sign": 1}
     )
     counts = dict.fromkeys(COUNT_KEYS, 0)
 
@@ -432,51 +419,40 @@ def run_promotion_round(product_manager):
 
     # 提取单次处理逻辑，供线程池并发调用
     def process_promotion(index, product):
-        product_url = product.get("product_url")
+        goods_sign = product.get("goods_sign")
         product_id = product.get("product_id")
-        promotion_info = None
 
-        # 兜底：如果没有 url 字段，直接标记失败
-        if not product_url:
+        # 兜底校验 goods_sign
+        if not goods_sign:
             status = "failed"
-            error = "product_url 为空"
+            error = "goods_sign 为空"
             short_url = ""
         else:
-            # 调取洗链功能，网络请求交由各线程独立阻塞
-            item_result = verify_and_convert_pdd_goods(
+            # 直接调用 generate_goods_promotion_url 生成推广链接
+            item_result = generate_goods_promotion_url(
                 client_id=pdd_client_id,
                 client_secret=pdd_client_secret,
                 pid=pdd_pid,
-                original_url=product_url,
-                goods_id=product_id,
+                goods_sign=goods_sign,
+                uid=None  # 确保 uid 为 None，避免风控问题
             )
 
-            # 判断顶层状态与转链信息(convert_info)状态
-            if item_result.get("status") == "success" and item_result.get("convert_info", {}).get(
-                    "status") == "success":
+            # 判断接口返回状态与数据
+            if item_result.get("status") == "success" and item_result.get("data"):
                 status = "success"
-                short_url = item_result["convert_info"].get("h5_jump_url", "")
-
-                # 提取推广信息
-                goods_info = item_result.get("goods_info", {})
-                promotion_info = {
-                    "promotion_rate": goods_info.get("promotion_rate"),
-                    "estimated_commission": goods_info.get("estimated_commission"),
-                    "has_mall_coupon": goods_info.get("has_mall_coupon")
-                }
-
+                res_data = item_result["data"]
+                # 优先获取 short_url，备选 mobile_short_url
+                short_url = res_data.get("short_url") or res_data.get("mobile_short_url", "")
                 error = ""
                 # 在日志中加入进度参数，打印当前索引和总数
-                logger.info("[转链调度/成功] 商品转链成功 | 进度: [%d/%d] | product_id: [%s] ", index, total_products,
-                            product_id)
+                logger.info("[转链调度/成功] 商品转链成功 | 进度: [%d/%d] | product_id: [%s] ", index, total_products, product_id)
             else:
                 status = "failed"
                 short_url = ""
-                # 兼容获取错误信息
-                error = item_result.get("msg") or item_result.get("error_msg", "未知转链错误")
+                error = item_result.get("msg") or item_result.get("error_msg", "未知生成推广链接错误")
 
-        # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束以及更严谨的规则校验）
-        condition = get_strict_promotion_query()
+        # 构造更新的 condition（为了防止在处理期间被别人修改，带上_id约束以及规则校验）
+        condition = pending_promotion_query()
         condition["_id"] = product["_id"]
 
         # 构造需要写入 DB 的数据
@@ -490,8 +466,6 @@ def run_promotion_round(product_manager):
 
         if status == "success":
             db_update_data["promotion_url"] = short_url
-            if promotion_info is not None:
-                db_update_data["promotion_info"] = promotion_info
 
         # 将结果写回 DB，若失败累加 promotion_retry_count
         saved = product_manager.update(
@@ -537,8 +511,7 @@ def run_promotion_round(product_manager):
                 counts["failed"] += 1
                 error_msg = f"并行处理异常: {type(exc).__name__}: {exc}"
                 failure_details.append(f"{product_id}: {error_msg[:240]}")
-                logger.exception("❌ [转链调度/单品异常] 线程执行出错 | product_id: [%s] | 原因: [%s]", product_id,
-                                 error_msg)
+                logger.exception("❌ [转链调度/单品异常] 线程执行出错 | product_id: [%s] | 原因: [%s]", product_id, error_msg)
 
     # 打印本轮统计日志
     failed, skipped = counts["failed"], counts["skipped"]
@@ -923,7 +896,7 @@ if __name__ == "__main__":
     tasks = [
         sku_task,
         format_task,
-        # promotion_task
+        promotion_task
     ]
 
     threads = []
