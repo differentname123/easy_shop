@@ -127,10 +127,15 @@ def locate_slider_by_ocr(window_rect):
     }
     ocr_results, img_cv = ocr_detect_region(window_monitor)
 
-    # 1. 找包含"滑动"关键字的滑块提示文本（兼容"向右滑动"/"拖动滑块"等文案）
-    track_pos = find_text_position(ocr_results, "滑动")
+    # 1. 找包含"滑动"或"拖动"关键字的滑块提示文本
+    track_pos = None
+    for keyword in ["滑动", "拖动", "滑块"]:
+        track_pos = find_text_position(ocr_results, keyword)
+        if track_pos:
+            break
+
     if not track_pos:
-        print("[ERROR] OCR未识别到包含'滑动'关键字的滑块提示文本")
+        print("[ERROR] OCR未识别到包含'滑动/拖动'关键字的滑块提示文本")
         return None
 
     _, track_center_y_rel, track_bbox_rel = track_pos
@@ -157,7 +162,20 @@ def locate_slider_by_ocr(window_rect):
                 start_pos_rel = (center_x, center_y)
     if not start_pos_rel:
         print("[ERROR] OCR未识别到'滑动'区域左侧的滑块按钮区域('》')")
-        return None
+        # return None
+
+    # 【新增兜底】：如果 OCR 没识别出图标（绝大多数情况）
+    if not start_pos_rel:
+        track_h = track_bbox_rel[3] - track_bbox_rel[1]  # 提示文字高度
+        # 圆形滑块的高度通常与提示文字高度相当或略大，中心Y与提示文本Y中心一致
+        # 滑块中心X通常在文字框左边缘向左偏移 1.0 ~ 1.5 倍文字高度的距离
+        btn_radius = int(track_h * 1.1)  # 估算滑块按钮半径/偏移量
+        est_center_x = track_bbox_rel[0] - btn_radius
+        est_center_y = (track_bbox_rel[1] + track_bbox_rel[3]) // 2
+
+        start_pos_rel = (est_center_x, est_center_y)
+        print(f"[INFO] OCR未直接识别到滑块图标，已通过文本位置推算滑块中心: {start_pos_rel}")
+
     start_x = start_pos_rel[0] + win_left  # 转屏幕绝对坐标
     start_y = start_pos_rel[1] + win_top
 
@@ -429,6 +447,55 @@ def smooth_draw_path(points):
 
     print("✅ 路径绘制完成")
     return True
+
+
+def save_path_debug_image(img_cv, norm_points, save_path="debug_path_captcha.png"):
+    """
+    将大模型识别出的路径关键点绘制在验证码图片上，用于调试
+    :param img_cv: cv2格式的验证码原图
+    :param norm_points: 大模型返回的归一化坐标点列表 [(x1,y1), (x2,y2), ...]
+    :param save_path: 调试图片保存路径
+    """
+    debug_img = img_cv.copy()
+    h, w = debug_img.shape[:2]
+
+    # 关键点不足的情况
+    if len(norm_points) < 2:
+        cv2.putText(debug_img, "No valid path points", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.imwrite(save_path, debug_img)
+        print(f"⚠️ 关键点不足，已保存debug图: {save_path}")
+        return
+
+    # 归一化坐标 → 图片像素坐标
+    pixel_points = []
+    for nx, ny in norm_points:
+        px = int(nx * w)
+        py = int(ny * h)
+        pixel_points.append((px, py))
+
+    # 1. 绘制路径连线（蓝色粗线）
+    pts = np.array(pixel_points, np.int32)
+    cv2.polylines(debug_img, [pts], False, (255, 0, 0), 3)
+
+    # 2. 绘制每个关键点（黄色实心圆 + 序号）
+    for i, (px, py) in enumerate(pixel_points):
+        cv2.circle(debug_img, (px, py), 6, (0, 255, 255), -1)
+        cv2.putText(debug_img, str(i + 1), (px + 8, py - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+
+    # 3. 单独标记起点（绿色框）和终点（红色框）
+    cv2.circle(debug_img, pixel_points[0], 10, (0, 255, 0), 2)
+    cv2.putText(debug_img, "Start", (pixel_points[0][0] + 12, pixel_points[0][1] + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    cv2.circle(debug_img, pixel_points[-1], 10, (0, 0, 255), 2)
+    cv2.putText(debug_img, "End", (pixel_points[-1][0] + 12, pixel_points[-1][1] + 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    cv2.imwrite(save_path, debug_img)
+    print(f"✅ 路径调试图已保存: {save_path} (共{len(pixel_points)}个关键点)")
+
+
 def llm_recognize_path_captcha(image_path):
     """
     调用多模态大模型识别路径验证码，返回归一化坐标关键点列表
@@ -440,11 +507,28 @@ def llm_recognize_path_captcha(image_path):
         return []
 
     prompt = (
-        "这是一张拼多多路径绘制验证码的截图，图中有一条浅色的连续箭头路径。"
-        "请沿着路径从起点到终点的顺序，提取路径上所有关键转折点的坐标。"
-        "坐标采用归一化格式：x和y均为0到1之间的浮点数，图片左上角为(0,0)，右下角为(1,1)。"
-        "**严格要求**：每行只输出一个点，格式为 x,y（英文逗号分隔），例如：0.12,0.85\n0.45,0.33\n..."
-        "禁止输出任何解释说明、序号、文字、标点或其他多余内容，只输出纯坐标点。"
+        """
+            你是一个精确定位专家。在画面中央的方形验证码图片中，有一条【浅色（或白色）的、有一定宽度的弯曲箭头路径】。
+            请沿着该路径的【几何中心线（中轴线）】，从起点到终点，顺次提取大约 6 到 9 个关键点的全局归一化坐标。
+            
+            【如何确定起点和终点】：
+            - 起点（第1个点）：该路径没有箭头、呈平整或圆钝状态的【尾部末端】。
+            - 沿途点（中间的点）：沿着该浅色路径的几何中心线，顺着它的弯曲走向，均匀采集。
+            - 终点（最后一个点）：该路径【带箭头、呈尖刺指向状态的末端】。
+            
+            【坐标计算规则】：
+            基于整张截图的全局坐标，左上角为 0,0，右下角为 1,1，取 0 到 1 之间的浮点数。请尽量确保点位精准落在路径的正中央。
+            
+            【严格输出要求】：
+            直接输出结果，每行一个点，格式为 x,y（英文逗号），禁止任何解释、序号、Markdown代码块、标点或多余文字。
+            例如：
+            0.25,0.45
+            0.34,0.52
+            0.45,0.55
+            0.55,0.54
+            0.64,0.48
+            0.71,0.38
+        """
     )
 
     max_retries = 2
@@ -503,52 +587,23 @@ def llm_recognize_path_captcha(image_path):
 
 def locate_path_captcha_by_ocr(window_rect):
     """
-    通过OCR定位路径验证码的图片区域（屏幕绝对坐标）
+    定位路径验证码的图片区域（屏幕绝对坐标）
+    固定截取窗口中间4/6区域：去除窗口上下各1/6高度
     :param window_rect: 拼多多窗口坐标 (left, top, right, bottom)
-    :return: monitor字典 {"left","top","width","height"} 或 None
+    :return: monitor字典 {"left","top","width","height"}
     """
     win_left, win_top, win_right, win_bottom = window_rect
-    window_monitor = {
-        "left": int(win_left),
-        "top": int(win_top),
-        "width": int(win_right - win_left),
-        "height": int(win_bottom - win_top)
-    }
-    ocr_results, img_cv = ocr_detect_region(window_monitor)
+    win_width = win_right - win_left
+    win_height = win_bottom - win_top
 
-    # 1. 定位"请绘制图中路径"文字，图片在其上方
-    path_text_pos = find_text_position(ocr_results, "请绘制图中路径")
-    if not path_text_pos:
-        print("[ERROR] OCR未识别到'请绘制图中路径'文字")
-        return None
-    _, _, path_text_bbox_rel = path_text_pos
-    path_text_top_rel = path_text_bbox_rel[1]
+    # 固定裁掉上下各1/6高度
+    top_cut = win_height / 6.0
+    bottom_cut = win_height * 5.0 / 6.0
 
-    # 2. 定位标题，图片在标题下方
-    title_pos = find_text_position(ocr_results, "拼多多安全验证")
-    if title_pos:
-        _, _, title_bbox_rel = title_pos
-        title_bottom_rel = title_bbox_rel[3]
-    else:
-        # 兜底用"安全验证"标题
-        title_pos = find_text_position(ocr_results, "安全验证")
-        if title_pos:
-            _, _, title_bbox_rel = title_pos
-            title_bottom_rel = title_bbox_rel[3]
-        else:
-            # 极端兜底：路径文字上方180像素作为图片高度
-            title_bottom_rel = max(0, path_text_top_rel - 180)
-
-    # 3. 计算图片左右边界（基于文字宽度适当扩展）
-    img_left_rel = max(0, path_text_bbox_rel[0] - 20)
-    img_right_rel = min(window_monitor["width"], path_text_bbox_rel[2] + 20)
-
-    img_top_rel = title_bottom_rel + 10
-    img_bottom_rel = path_text_top_rel - 10
-
-    if img_bottom_rel <= img_top_rel or img_right_rel <= img_left_rel:
-        print("[ERROR] 计算出的图片区域尺寸异常")
-        return None
+    img_top_rel = int(top_cut)
+    img_bottom_rel = int(bottom_cut)
+    img_left_rel = 0
+    img_right_rel = win_width
 
     # 转换为屏幕绝对坐标
     img_monitor = {
@@ -558,7 +613,7 @@ def locate_path_captcha_by_ocr(window_rect):
         "height": int(img_bottom_rel - img_top_rel)
     }
 
-    print(f"✅ 路径验证码图片区域定位成功: {img_monitor}")
+    print(f"✅ 路径验证码图片区域定位成功（固定中间4/6）: {img_monitor}")
     return img_monitor
 
 def check_captcha_exist(window_rect):
@@ -599,7 +654,7 @@ def check_captcha_exist(window_rect):
             return True, "path"
 
         # 3. 如果已经出现"滑动"关键字，说明已成功进入滑动验证界面
-        if find_text_position(ocr_results, "滑动") is not None:
+        if find_text_position(ocr_results, "滑动") is not None or find_text_position(ocr_results, "拖动") is not None:
             print("✅ 已检测到滑块验证界面，准备开始滑动验证...")
             return True, "slider"
 
@@ -763,7 +818,10 @@ def solve_pdd_captcha(max_retries=5):
                     time.sleep(1)
                     continue
                 return False
-
+            # ========== 新增：保存路径调试图 ==========
+            debug_img_path = f"temp_data/path_debug_{attempt}.png"
+            save_path_debug_image(img_cv, norm_points, debug_img_path)
+            # ========================================
             # 6. 归一化坐标转屏幕绝对坐标
             abs_points = []
             img_left = img_monitor["left"]
