@@ -244,7 +244,7 @@ def llm_recognize_best_match(image_paths):
             print(f"[INFO] 第 {attempt + 1} 次调用多模态大模型识别...")
             result = generate_content(
                 prompt=prompt,
-                model="gemini-web-3.6-flash-thinking-max",
+                model="gemini-web-3.5-flash-lite-thinking",
                 file_paths=image_paths
             )
             result = result.get("content")
@@ -349,7 +349,7 @@ def llm_recognize_math_captcha(image_path):
             print(f"[INFO] 第 {attempt + 1} 次调用大模型识别算术验证码...")
             result = generate_content(
                 prompt=prompt,
-                model="gemini-web-3.6-flash-thinking-max",
+                model="gemini-web-3.5-flash-lite-thinking",
                 file_paths=[image_path]
             )
             content = result.get("content") if isinstance(result, dict) else str(result)
@@ -376,15 +376,198 @@ def llm_recognize_math_captcha(image_path):
     print("[WARN] 大模型算术识别全部失败，兜底返回 '0'")
     return "0"
 
+def smooth_draw_path(points):
+    """
+    模拟鼠标平滑绘制路径：按下左键 -> 沿路径点插值移动 -> 松开左键
+    :param points: list - [(x1,y1), (x2,y2), ...] 屏幕绝对坐标点列表
+    :return: bool - 是否绘制完成
+    """
+    if len(points) < 2:
+        print("[ERROR] 路径点不足，无法绘制")
+        return False
+
+    # 移动到起点
+    start_x, start_y = points[0]
+    win32api.SetCursorPos((int(start_x), int(start_y)))
+    time.sleep(0.2)
+
+    # 按下左键
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.15)
+
+    try:
+        # 逐段插值绘制
+        for i in range(1, len(points)):
+            prev_x, prev_y = points[i-1]
+            curr_x, curr_y = points[i]
+
+            # 根据两点距离计算插值步数，保证平滑度
+            distance = ((curr_x - prev_x)**2 + (curr_y - prev_y)**2) ** 0.5
+            steps = max(5, int(distance / 3))  # 每3像素一步，最少5步
+
+            dx = (curr_x - prev_x) / steps
+            dy = (curr_y - prev_y) / steps
+
+            for step in range(1, steps + 1):
+                x = prev_x + dx * step
+                y = prev_y + dy * step
+                # 加入微小随机偏移，模拟人手抖动
+                y += random.uniform(-0.8, 0.8)
+                x += random.uniform(-0.5, 0.5)
+                win32api.SetCursorPos((int(x), int(y)))
+                time.sleep(random.uniform(0.008, 0.015))
+
+        # 终点停留
+        end_x, end_y = points[-1]
+        win32api.SetCursorPos((int(end_x), int(end_y)))
+        time.sleep(random.uniform(0.15, 0.3))
+
+    finally:
+        # 确保松开左键
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        time.sleep(0.1)
+
+    print("✅ 路径绘制完成")
+    return True
+def llm_recognize_path_captcha(image_path):
+    """
+    调用多模态大模型识别路径验证码，返回归一化坐标关键点列表
+    :param image_path: str - 验证码图片文件路径
+    :return: list - [(x1,y1), (x2,y2), ...] 归一化坐标(0~1)，识别失败返回空列表
+    """
+    if not os.path.exists(image_path):
+        print(f"[ERROR] 路径验证码图片不存在: {image_path}")
+        return []
+
+    prompt = (
+        "这是一张拼多多路径绘制验证码的截图，图中有一条浅色的连续箭头路径。"
+        "请沿着路径从起点到终点的顺序，提取路径上所有关键转折点的坐标。"
+        "坐标采用归一化格式：x和y均为0到1之间的浮点数，图片左上角为(0,0)，右下角为(1,1)。"
+        "**严格要求**：每行只输出一个点，格式为 x,y（英文逗号分隔），例如：0.12,0.85\n0.45,0.33\n..."
+        "禁止输出任何解释说明、序号、文字、标点或其他多余内容，只输出纯坐标点。"
+    )
+
+    max_retries = 2
+    points = []
+
+    for attempt in range(max_retries + 1):
+        try:
+            print(f"[INFO] 第 {attempt + 1} 次调用大模型识别路径验证码...")
+            result = generate_content(
+                prompt=prompt,
+                model="gemini-web-3.5-flash-lite-thinking",
+                file_paths=[image_path]
+            )
+            content = result.get("content") if isinstance(result, dict) else str(result)
+            if not content or not isinstance(content, str):
+                print(f"[WARN] 第 {attempt + 1} 次路径识别返回结果为空")
+                time.sleep(0.5)
+                continue
+
+            result_text = content.strip()
+            lines = result_text.splitlines()
+            # 逐行解析坐标
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if ',' in line:
+                    parts = line.split(',')
+                    if len(parts) == 2:
+                        try:
+                            x = float(parts[0].strip())
+                            y = float(parts[1].strip())
+                            # 校验归一化范围
+                            if 0 <= x <= 1 and 0 <= y <= 1:
+                                points.append((x, y))
+                        except ValueError:
+                            continue
+
+            if len(points) >= 2:  # 至少需要起点+终点
+                print(f"✅ 大模型路径识别成功，共提取 {len(points)} 个关键点")
+                return points
+            else:
+                print(f"[WARN] 第 {attempt + 1} 次识别有效点不足，仅{len(points)}个，重试...")
+                points = []
+                time.sleep(0.5)
+
+        except Exception as e:
+            print(f"[ERROR] 第 {attempt + 1} 次大模型路径识别调用异常: {str(e)}")
+            time.sleep(1.0)
+            continue
+
+    print("[WARN] 大模型路径识别全部失败，返回空列表")
+    return []
+
+
+
+def locate_path_captcha_by_ocr(window_rect):
+    """
+    通过OCR定位路径验证码的图片区域（屏幕绝对坐标）
+    :param window_rect: 拼多多窗口坐标 (left, top, right, bottom)
+    :return: monitor字典 {"left","top","width","height"} 或 None
+    """
+    win_left, win_top, win_right, win_bottom = window_rect
+    window_monitor = {
+        "left": int(win_left),
+        "top": int(win_top),
+        "width": int(win_right - win_left),
+        "height": int(win_bottom - win_top)
+    }
+    ocr_results, img_cv = ocr_detect_region(window_monitor)
+
+    # 1. 定位"请绘制图中路径"文字，图片在其上方
+    path_text_pos = find_text_position(ocr_results, "请绘制图中路径")
+    if not path_text_pos:
+        print("[ERROR] OCR未识别到'请绘制图中路径'文字")
+        return None
+    _, _, path_text_bbox_rel = path_text_pos
+    path_text_top_rel = path_text_bbox_rel[1]
+
+    # 2. 定位标题，图片在标题下方
+    title_pos = find_text_position(ocr_results, "拼多多安全验证")
+    if title_pos:
+        _, _, title_bbox_rel = title_pos
+        title_bottom_rel = title_bbox_rel[3]
+    else:
+        # 兜底用"安全验证"标题
+        title_pos = find_text_position(ocr_results, "安全验证")
+        if title_pos:
+            _, _, title_bbox_rel = title_pos
+            title_bottom_rel = title_bbox_rel[3]
+        else:
+            # 极端兜底：路径文字上方180像素作为图片高度
+            title_bottom_rel = max(0, path_text_top_rel - 180)
+
+    # 3. 计算图片左右边界（基于文字宽度适当扩展）
+    img_left_rel = max(0, path_text_bbox_rel[0] - 20)
+    img_right_rel = min(window_monitor["width"], path_text_bbox_rel[2] + 20)
+
+    img_top_rel = title_bottom_rel + 10
+    img_bottom_rel = path_text_top_rel - 10
+
+    if img_bottom_rel <= img_top_rel or img_right_rel <= img_left_rel:
+        print("[ERROR] 计算出的图片区域尺寸异常")
+        return None
+
+    # 转换为屏幕绝对坐标
+    img_monitor = {
+        "left": int(win_left + img_left_rel),
+        "top": int(win_top + img_top_rel),
+        "width": int(img_right_rel - img_left_rel),
+        "height": int(img_bottom_rel - img_top_rel)
+    }
+
+    print(f"✅ 路径验证码图片区域定位成功: {img_monitor}")
+    return img_monitor
 
 def check_captcha_exist(window_rect):
     """
-    【改造1】通过OCR判断验证码是否存在：
-    若遇到算术验证码("请输入计算结果" / "验证不成功，请重试")，
-    则自动截图保存 -> 调用大模型识别算术结果 -> 点击输入框 -> 输入结果 -> 点击确认，
+    通过OCR判断验证码是否存在及验证码类型
+    若遇到算术验证码，则自动截图保存 -> 调用大模型识别算术结果 -> 点击输入框 -> 输入结果 -> 点击确认，
     使其切换至滑动验证界面。
     :param window_rect: 拼多多窗口的坐标 (left, top, right, bottom) 屏幕绝对坐标
-    :return: bool
+    :return: (bool, str) - (是否存在验证码, 验证码类型: slider/math/path/unknown/none)
     """
     left, top, right, bottom = window_rect
     monitor = {
@@ -408,14 +591,19 @@ def check_captcha_exist(window_rect):
         # 1. 检测是否存在"安全验证"弹窗
         pos = find_text_position(ocr_results, "安全验证")
         if pos is None:
-            return False
+            return False, "none"
 
-        # 2. 如果已经出现"滑动"关键字，说明已成功进入滑动验证界面，直接放行
+        # 2. 检测是否为路径绘制验证码
+        if find_text_position(ocr_results, "请绘制图中路径") is not None:
+            print("🔄 检测到路径绘制验证码界面")
+            return True, "path"
+
+        # 3. 如果已经出现"滑动"关键字，说明已成功进入滑动验证界面
         if find_text_position(ocr_results, "滑动") is not None:
             print("✅ 已检测到滑块验证界面，准备开始滑动验证...")
-            return True
+            return True, "slider"
 
-        # 3. 检查是否处于算术验证阶段（兼容首次"请输入计算结果"及重试时的"验证不成功"/"请重试"）
+        # 4. 检查是否处于算术验证阶段
         input_pos = find_text_position(ocr_results, "请输入计算结果")
         retry_pos = find_text_position(ocr_results, "验证不成功") or find_text_position(ocr_results, "请重试")
         confirm_pos = find_text_position(ocr_results, "确认") or find_text_position(ocr_results, "确定")
@@ -431,19 +619,18 @@ def check_captcha_exist(window_rect):
             # (2) 调用大模型识别计算结果
             calc_answer = llm_recognize_math_captcha(math_img_path)
 
-            # (3) 确定输入框点击位置（优先用"请输入计算结果"，其次用缓存坐标或"验证不成功"位置，最后用"确认"按钮上方偏移）
+            # (3) 确定输入框点击位置
             if input_pos is not None:
                 cached_input_rel_pos = (input_pos[0], input_pos[1])
             elif cached_input_rel_pos is None:
                 if retry_pos is not None:
                     cached_input_rel_pos = (retry_pos[0], retry_pos[1])
                 elif confirm_pos is not None:
-                    # 输入框位于"确认"按钮正上方约 65 像素处
                     cached_input_rel_pos = (confirm_pos[0], max(0, confirm_pos[1] - 65))
 
             if cached_input_rel_pos is None:
                 print("[ERROR] 无法定位算术验证码输入框位置")
-                return False
+                return False, "unknown"
 
             input_x = int(left) + cached_input_rel_pos[0]
             input_y = int(top) + cached_input_rel_pos[1]
@@ -456,7 +643,7 @@ def check_captcha_exist(window_rect):
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             time.sleep(0.3)
 
-            # (4) 连续按 Backspace 和 Delete 彻底清空可能残留的上次输入内容
+            # (4) 清空输入框
             for _ in range(6):
                 win32api.keybd_event(win32con.VK_BACK, 0, 0, 0)
                 time.sleep(0.02)
@@ -466,10 +653,10 @@ def check_captcha_exist(window_rect):
                 win32api.keybd_event(win32con.VK_DELETE, 0, win32con.KEYEVENTF_KEYUP, 0)
             time.sleep(0.15)
 
-            # (5) 逐字符输入大模型计算出的结果（支持多位数及负数）
+            # (5) 输入计算结果
             for ch in str(calc_answer):
                 if ch == '-':
-                    vk_code = 0xBD  # 主键盘减号/负号 VK_OEM_MINUS
+                    vk_code = 0xBD
                 elif ch.isdigit():
                     vk_code = ord(ch)
                 else:
@@ -480,7 +667,7 @@ def check_captcha_exist(window_rect):
                 time.sleep(0.08)
             time.sleep(0.3)
 
-            # (6) 查找"确认"或"确定"按钮并点击
+            # (6) 点击确认按钮
             if confirm_pos is not None:
                 confirm_x = int(left) + confirm_pos[0]
                 confirm_y = int(top) + confirm_pos[1]
@@ -489,23 +676,28 @@ def check_captcha_exist(window_rect):
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
                 time.sleep(0.05)
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-                print(f"✅ 已输入计算结果 '{calc_answer}' 并点击确认按钮，等待切换至滑动验证...")
-                # 等待界面刷新切换为滑块验证码
+                print(f"✅ 已输入计算结果 '{calc_answer}' 并点击确认按钮，等待切换...")
                 time.sleep(1.5)
             else:
                 print("[ERROR] 识别到算术验证界面，但未找到'确认'/'确定'按钮")
-                return False
+                return False, "unknown"
         else:
-            # 既没有算术验证特征，存在"安全验证"，直接放行交给后续滑块定位
-            return True
+            return True, "unknown"
 
-    # 循环结束后最后确认一次"安全验证"是否依然存在
+    # 循环结束后最终校验
     ocr_results, _ = ocr_detect_region(monitor)
-    return find_text_position(ocr_results, "安全验证") is not None
+    if find_text_position(ocr_results, "安全验证") is None:
+        return False, "none"
+    elif find_text_position(ocr_results, "滑动") is not None:
+        return True, "slider"
+    elif find_text_position(ocr_results, "请绘制图中路径") is not None:
+        return True, "path"
+    else:
+        return True, "unknown"
 
 def solve_pdd_captcha(max_retries=5):
     print("=" * 50)
-    print(f"🚀 开始测试拼多多滑块验证码解锁 (最大重试次数: {max_retries})")
+    print(f"🚀 开始测试拼多多验证码解锁 (最大重试次数: {max_retries})")
     print("=" * 50)
 
     for attempt in range(1, max_retries + 1):
@@ -520,145 +712,235 @@ def solve_pdd_captcha(max_retries=5):
         force_bring_to_front(hwnd)
         time.sleep(0.5)
 
-        # 2. 【改造点1】OCR判断验证码是否存在（若为算术验证码会自动输入0切换至滑块）
-        if not check_captcha_exist(window_rect):
+        # 2. 判断验证码是否存在及类型
+        captcha_exist, captcha_type = check_captcha_exist(window_rect)
+        if not captcha_exist:
             print("❌ 未检测到'安全验证'，当前不在验证码界面。")
             return False
 
-        # 3. 【改造点2】OCR定位滑块轨道与图片区域
-        locate_result = locate_slider_by_ocr(window_rect)
-        if not locate_result:
-            print("❌ OCR定位滑块区域失败")
+        # ========== 分支1：路径绘制验证码 ==========
+        if captcha_type == "path":
+            print("🎨 检测到路径绘制验证码，开始执行路径识别与绘制...")
+
+            # 3. 定位验证码图片区域
+            img_monitor = locate_path_captcha_by_ocr(window_rect)
+            if not img_monitor:
+                print("❌ 定位路径验证码图片区域失败")
+                if attempt < max_retries:
+                    time.sleep(1)
+                    continue
+                return False
+
+            if img_monitor["width"] <= 0 or img_monitor["height"] <= 0:
+                print("❌ 提取的图片区域尺寸异常")
+                return False
+
+            print(f"✅ 验证码图片区域: 宽={img_monitor['width']}, 高={img_monitor['height']}")
+
+            # 4. 截图保存
+            if not os.path.exists('temp_data'):
+                os.makedirs('temp_data')
+            path_img_path = f"temp_data/path_captcha_{attempt}.png"
+            sct_img = sct.grab(img_monitor)
+            img_cv = cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
+            cv2.imwrite(path_img_path, img_cv)
+            print(f"📸 路径验证码截图已保存: {path_img_path}")
+
+            # 5. 大模型识别归一化关键点
+            norm_points = llm_recognize_path_captcha(path_img_path)
+            if len(norm_points) < 2:
+                print("❌ 路径关键点识别失败，无法绘制")
+                if attempt < max_retries:
+                    print("⏳ 点击刷新验证码并重试...")
+                    # 点击图片右下角刷新按钮
+                    refresh_x = img_monitor["left"] + img_monitor["width"] - 20
+                    refresh_y = img_monitor["top"] + img_monitor["height"] - 20
+                    win32api.SetCursorPos((refresh_x, refresh_y))
+                    time.sleep(0.2)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                    time.sleep(0.05)
+                    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                    time.sleep(1)
+                    continue
+                return False
+
+            # 6. 归一化坐标转屏幕绝对坐标
+            abs_points = []
+            img_left = img_monitor["left"]
+            img_top = img_monitor["top"]
+            img_w = img_monitor["width"]
+            img_h = img_monitor["height"]
+            for nx, ny in norm_points:
+                abs_x = img_left + nx * img_w
+                abs_y = img_top + ny * img_h
+                abs_points.append((abs_x, abs_y))
+
+            # 7. 平滑绘制路径
+            print("✍️  开始模拟鼠标绘制路径...")
+            draw_success = smooth_draw_path(abs_points)
+            if not draw_success:
+                print("❌ 路径绘制执行失败")
+                if attempt < max_retries:
+                    time.sleep(1)
+                    continue
+                return False
+
+            # 8. 等待验证结果
+            print("⏳ 等待服务器验证结果...")
+            time.sleep(2)
+
+            # 9. 校验是否通过
+            check_hwnd, check_rect = get_pdd_window_rect()
+            if not check_hwnd:
+                print("✅ 验证通过（窗口已关闭或跳转）！")
+                return True
+
+            check_ocr_results, _ = ocr_detect_region({
+                "left": int(check_rect[0]),
+                "top": int(check_rect[1]),
+                "width": int(check_rect[2] - check_rect[0]),
+                "height": int(check_rect[3] - check_rect[1])
+            })
+            path_text_exist = find_text_position(check_ocr_results, "请绘制图中路径") is not None
+            if not path_text_exist:
+                print("✅ 路径验证提示已消失，验证通过！")
+                return True
+            else:
+                print(f"❌ 第 {attempt} 次路径验证失败，验证码依然存在。")
+                if attempt < max_retries:
+                    print("⏳ 准备进行下一次重试...")
+                    time.sleep(1.0)
+                else:
+                    print("❌ 已达到最大重试次数，验证失败。")
+                    return False
+
+        # ========== 分支2：滑块验证码（原有逻辑） ==========
+        elif captcha_type == "slider":
+            print("🎚️ 检测到滑块验证码，开始执行滑动验证...")
+
+            locate_result = locate_slider_by_ocr(window_rect)
+            if not locate_result:
+                print("❌ OCR定位滑块区域失败")
+                if attempt < max_retries:
+                    time.sleep(1)
+                    continue
+                return False
+
+            img_monitor, track_rect, start_x, start_y = locate_result
+            track_left, track_top, track_right, track_bottom = track_rect
+
+            if img_monitor["width"] <= 0 or img_monitor["height"] <= 0:
+                print("❌ 提取的图片区域尺寸异常")
+                return False
+
+            print(f"✅ 验证码图片区域: 宽={img_monitor['width']}, 高={img_monitor['height']}")
+
+            num_steps = 10
+            total_distance = (img_monitor["left"] + img_monitor["width"]) - start_x
+            step_size = total_distance / num_steps
+
+            if not os.path.exists('temp_data'):
+                os.makedirs('temp_data')
+
+            current_x, current_y = float(start_x), float(start_y)
+            image_paths = []
+            step_positions = []
+
+            print("🤖 开始执行底层物理鼠标拖拽 (均匀截图模式)...")
+            win32api.SetCursorPos((int(current_x), int(current_y)))
+            time.sleep(0.5)
+
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.2)
+
+            for step in range(1, num_steps + 1):
+                current_x += step_size
+                current_y += random.uniform(-1.0, 1.0)
+                win32api.SetCursorPos((int(current_x), int(current_y)))
+                time.sleep(random.uniform(0.05, 0.1))
+
+                sct_img = sct.grab(img_monitor)
+                step_img_cv = cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
+                img_path = f"temp_data/step_{step}.png"
+                cv2.imwrite(img_path, step_img_cv)
+                image_paths.append(img_path)
+                step_positions.append(int(current_x))
+
+                print(f"📸 第 {step}/{num_steps} 步截图已保存: {img_path}")
+
+            print("🔄 准备统一调用多模态大模型进行识别...")
+            best_index = llm_recognize_best_match(image_paths)
+
+            target_x = step_positions[best_index]
+            print(f"\n🎯 大模型指示最佳位置为第 {best_index + 1} 步，准备将滑块微调至 X={target_x}...")
+
+            force_bring_to_front(hwnd)
+            time.sleep(0.3)
+
+            phys_x, phys_y = win32api.GetCursorPos()
+            if abs(phys_x - current_x) > 20:
+                print("⚠️ 检测到用户手动移动过鼠标，先平滑移回记录位置")
+                steps_back = 15
+                dx_back = (current_x - phys_x) / steps_back
+                curr_x = float(phys_x)
+                for i in range(steps_back):
+                    curr_x += dx_back
+                    win32api.SetCursorPos((int(curr_x), int(current_y + random.uniform(-1.0, 1.0))))
+                    time.sleep(random.uniform(0.01, 0.03))
+                time.sleep(0.1)
+
+            print(f"🎢 开始拟人化平滑微调，从 X={int(current_x)} 移动到 X={target_x}...")
+            steps_forward = 25
+            dx_forward = (target_x - current_x) / steps_forward
+            curr_x = float(current_x)
+
+            for i in range(steps_forward):
+                curr_x += dx_forward
+                y_offset = random.uniform(-1.5, 1.5)
+                win32api.SetCursorPos((int(curr_x), int(current_y + y_offset)))
+                time.sleep(random.uniform(0.01, 0.04))
+
+            win32api.SetCursorPos((target_x, int(current_y)))
+            time.sleep(random.uniform(0.2, 0.4))
+
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            print("🏁 鼠标已松开，等待服务器响应与结果判定...")
+
+            time.sleep(1.5)
+
+            check_hwnd, check_rect = get_pdd_window_rect()
+            if not check_hwnd:
+                print("✅ 验证通过（窗口已关闭或跳转）！")
+                return True
+
+            check_ocr_results, _ = ocr_detect_region({
+                "left": int(check_rect[0]),
+                "top": int(check_rect[1]),
+                "width": int(check_rect[2] - check_rect[0]),
+                "height": int(check_rect[3] - check_rect[1])
+            })
+            track_text_exist = find_text_position(check_ocr_results, "滑动") is not None \
+                                or find_text_position(check_ocr_results, "请输入计算结果") is not None
+
+            if not track_text_exist:
+                print("✅ 验证提示文本已消失，验证通过！")
+                return True
+            else:
+                print(f"❌ 第 {attempt} 次尝试失败，验证码依然存在。")
+                if attempt < max_retries:
+                    print("⏳ 准备进行下一次重试...")
+                    time.sleep(1.0)
+                else:
+                    print("❌ 已达到最大重试次数，验证失败。")
+                    return False
+
+        # ========== 未知类型 ==========
+        else:
+            print(f"❓ 未知验证码类型: {captcha_type}，无法处理")
             if attempt < max_retries:
                 time.sleep(1)
                 continue
             return False
-
-        img_monitor, track_rect, start_x, start_y = locate_result
-        track_left, track_top, track_right, track_bottom = track_rect
-
-        # 校验区域尺寸
-        if img_monitor["width"] <= 0 or img_monitor["height"] <= 0:
-            print("❌ 提取的图片区域尺寸异常")
-            return False
-
-        print(f"✅ 验证码图片区域: 宽={img_monitor['width']}, 高={img_monitor['height']}")
-
-        # ==================== 核心逻辑：均匀截图 + 统一大模型识别 ====================
-        num_steps = 10
-        # 计算总滑动距离：滑块起点 到 最小包围框右侧边缘
-        total_distance = (img_monitor["left"] + img_monitor["width"]) - start_x
-        step_size = total_distance / num_steps
-
-        if not os.path.exists('temp_data'):
-            os.makedirs('temp_data')
-
-        current_x, current_y = float(start_x), float(start_y)
-        image_paths = []
-        step_positions = []  # 记录每一步的X坐标（屏幕绝对坐标），用于大模型识别后的位置微调
-
-        print("🤖 开始执行底层物理鼠标拖拽 (均匀截图模式)...")
-        win32api.SetCursorPos((int(current_x), int(current_y)))
-        time.sleep(0.5)
-
-        # 按下鼠标左键，全程不松手
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        time.sleep(0.2)
-
-        for step in range(1, num_steps + 1):
-            # 1. 均匀滑动到当前步
-            current_x += step_size
-            current_y += random.uniform(-1.0, 1.0)  # Y轴微扰，模拟人手
-            win32api.SetCursorPos((int(current_x), int(current_y)))
-
-            # 2. 停顿等待画面渲染
-            time.sleep(random.uniform(0.05, 0.1))
-
-            # 3. 截图保存
-            sct_img = sct.grab(img_monitor)
-            step_img_cv = cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
-            img_path = f"temp_data/step_{step}.png"
-            cv2.imwrite(img_path, step_img_cv)
-            image_paths.append(img_path)
-            step_positions.append(int(current_x))
-
-            print(f"📸 第 {step}/{num_steps} 步截图已保存: {img_path}")
-
-        print("🔄 准备统一调用多模态大模型进行识别...")
-        # 4. 大模型识别最佳匹配帧
-        best_index = llm_recognize_best_match(image_paths)
-
-        # 5. 微调至最佳位置
-        target_x = step_positions[best_index]
-        print(f"\n🎯 大模型指示最佳位置为第 {best_index + 1} 步，准备将滑块微调至 X={target_x}...")
-
-        # 焦点修复
-        force_bring_to_front(hwnd)
-        time.sleep(0.3)
-
-        # 检测鼠标是否被手动移动
-        phys_x, phys_y = win32api.GetCursorPos()
-        if abs(phys_x - current_x) > 20:
-            print("⚠️ 检测到用户手动移动过鼠标，先平滑移回记录位置")
-            steps_back = 15
-            dx_back = (current_x - phys_x) / steps_back
-            curr_x = float(phys_x)
-            for i in range(steps_back):
-                curr_x += dx_back
-                win32api.SetCursorPos((int(curr_x), int(current_y + random.uniform(-1.0, 1.0))))
-                time.sleep(random.uniform(0.01, 0.03))
-            time.sleep(0.1)
-
-        # 拟人化平滑微调
-        print(f"🎢 开始拟人化平滑微调，从 X={int(current_x)} 移动到 X={target_x}...")
-        steps_forward = 25
-        dx_forward = (target_x - current_x) / steps_forward
-        curr_x = float(current_x)
-
-        for i in range(steps_forward):
-            curr_x += dx_forward
-            y_offset = random.uniform(-1.5, 1.5)
-            win32api.SetCursorPos((int(curr_x), int(current_y + y_offset)))
-            time.sleep(random.uniform(0.01, 0.04))
-
-        # 最终精准落位
-        win32api.SetCursorPos((target_x, int(current_y)))
-        time.sleep(random.uniform(0.2, 0.4))
-
-        # 6. 松开鼠标
-        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        print("🏁 鼠标已松开，等待服务器响应与结果判定...")
-
-        # ==================== 结果校验 ====================
-        time.sleep(1.5)
-
-        # 重新获取窗口，判断是否还存在
-        check_hwnd, check_rect = get_pdd_window_rect()
-        if not check_hwnd:
-            print("✅ 验证通过（窗口已关闭或跳转）！")
-            return True
-
-        # OCR校验：滑块提示文本或安全验证是否消失
-        check_ocr_results, _ = ocr_detect_region({
-            "left": int(check_rect[0]),
-            "top": int(check_rect[1]),
-            "width": int(check_rect[2] - check_rect[0]),
-            "height": int(check_rect[3] - check_rect[1])
-        })
-        track_text_exist = find_text_position(check_ocr_results, "滑动") is not None \
-                           or find_text_position(check_ocr_results, "请输入计算结果") is not None
-
-        if not track_text_exist:
-            print("✅ 验证提示文本已消失，验证通过！")
-            return True
-        else:
-            print(f"❌ 第 {attempt} 次尝试失败，验证码依然存在。")
-            if attempt < max_retries:
-                print("⏳ 准备进行下一次重试...")
-                time.sleep(1.0)
-            else:
-                print("❌ 已达到最大重试次数，验证失败。")
-                return False
 
     return False
 
