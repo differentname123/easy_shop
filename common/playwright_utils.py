@@ -720,15 +720,15 @@ if __name__ == "__main__":
 
 
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
-    USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
+    USER_DATA_DIR = r"W:\temp\biance_pdd_mama"
 
 
 
-    # # 场景二：携带环境自由操作 (按需打开) 多多进宝
-    # open_browser_for_manual_use(
-    #     user_data_dir=USER_DATA_DIR,
-    #     home_url=TEST_URL
-    # )
+    # 场景二：携带环境自由操作 (按需打开) 多多进宝
+    open_browser_for_manual_use(
+        user_data_dir=USER_DATA_DIR,
+        home_url=TEST_URL
+    )
 
 
     result = search_goods_and_intercept(

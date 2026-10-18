@@ -306,7 +306,7 @@ def search_pdd_goods_by_keyword(client_id, client_secret, pid, search_key, limit
                 "pid": pid,
                 "page": current_page,
                 "page_size": page_size,
-                "with_coupon": True  # 默认只查有券商品，可根据实际业务修改为 False
+                "with_coupon": False  # 默认只查有券商品，可根据实际业务修改为 False
             }
 
             if custom_params_str:
@@ -468,60 +468,112 @@ def generate_pdd_authority_url(client_id, client_secret, pid, uid=None):
         return {"status": "error", "error_msg": f"生成备案链接失败: {str(e)}"}
 
 
+def generate_goods_promotion_url(client_id, client_secret, pid, goods_sign, search_id=None, uid=None):
+    """
+    [独立生链] 使用官方标准接口，将商品 goods_sign 直接转换为推广链接
+    对应接口: pdd.ddk.goods.promotion.url.generate
+    """
+    params = {
+        "p_id": pid,
+        "goods_sign_list": [goods_sign],
+        "generate_short_url": True,
+        "generate_mobile": True,
+        "generate_schema_url": True,
+        "generate_we_app": True
+    }
+    if search_id:
+        params["search_id"] = search_id
+    if uid:
+        params["custom_parameters"] = json.dumps({"uid": str(uid)}, separators=(',', ':'))
+
+    res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.promotion.url.generate", params)
+    url_list = res.get("goods_promotion_url_generate_response", {}).get("goods_promotion_url_list", [])
+
+    if url_list:
+        return {"status": "success", "data": url_list[0]}
+    return {"status": "error", "error_msg": "未能生成推广链接"}
+
+
+def convert_external_pdd_url(client_id, client_secret, pid, source_url, uid=None):
+    """
+    [独立洗链] 仅用于外部链接（含他人推广链）清洗为自己 PID 的推广链
+    对应接口: pdd.ddk.goods.zs.unit.url.gen
+    """
+    params = {
+        "pid": pid,
+        "source_url": source_url
+    }
+    if uid:
+        params["custom_parameters"] = json.dumps({"uid": str(uid)}, separators=(',', ':'))
+
+    res = call_pdd_api(client_id, client_secret, "pdd.ddk.goods.zs.unit.url.gen", params)
+    data = res.get("goods_zs_unit_generate_response", {})
+    jump_url = data.get("mobile_short_url") or data.get("short_url")
+    return {"status": "success", "jump_url": jump_url} if jump_url else {"status": "error"}
+
 
 if __name__ == "__main__":
     # 配置信息读取
     pdd_client_id = get_config("nana_pdd_client_id")
     pdd_client_secret = get_config("nana_pdd_client_secret")
     pdd_pid = get_config("nana_pdd_pid")
-
-    # ==================================================================================================
-    # 🚀 商品推荐 API 测试
-    # ==================================================================================================
-    logger.info("======== 🚀 开始测试多多进宝商品推荐 (实时热销榜) ========")
-
-    # 测试参数：获取实时热销榜 (channel_type=5) 的前 5 个商品
-    test_channel = 5
-    limit_count = 5
-
-    recommend_result = get_pdd_recommend_goods(
+    # 生成推广链接
+    data = generate_goods_promotion_url(
         client_id=pdd_client_id,
         client_secret=pdd_client_secret,
         pid=pdd_pid,
-        channel_type=test_channel,
-        limit_count=limit_count,
+        goods_sign='E9L2aS_F_49tSR-hwfDBRxSudPR7NgLPyQ_JVhvjLwXu',  # 替换为实际的 goods_sign
+        uid=None  # 确保 uid 为 None，避免风控问题
     )
 
-    if "error" in recommend_result:
-        logger.error(f"❌ 推荐测试失败: {recommend_result['error']}")
-    else:
-        rec_goods_list = recommend_result.get("data", [])
-        total_count = recommend_result.get("total", 0)
-        returned_list_id = recommend_result.get("list_id", "")
-        returned_search_id = recommend_result.get("search_id", "")
 
-        logger.info(f"✅ 推荐测试成功: 成功获取 {len(rec_goods_list)} 条商品 (该榜单总量约: {total_count})。")
-        logger.info(f"   [翻页凭证] list_id: {returned_list_id} | search_id: {returned_search_id}")
-
-        for idx, item in enumerate(rec_goods_list, start=1):
-            # 获取统一清洗后的关键字段
-            goods_name = item.get("goods_name", "未知商品")
-            price_yuan = item.get("min_group_price", 0) / 100.0  # 拼多多价格单位是分，转为元
-            commission_yuan = item.get("estimated_commission", 0) / 100.0  # 佣金单位是分，转为元
-            sales_tip = item.get("sales_tip", "0")
-            has_coupon = "是" if item.get("has_coupon") else "否"
-            coupon_amount = item.get("coupon_discount", 0) / 100.0
-
-            # 为了控制台输出整洁，商品名称截断到最长25个字符
-            display_name = goods_name if len(goods_name) <= 25 else goods_name[:25] + "..."
-
-            logger.info(
-                f"  [{idx:02d}] {display_name} \n"
-                f"       ├─ 拼团价: {price_yuan:.2f}元 | 预估佣金: {commission_yuan:.2f}元\n"
-                f"       └─ 销量: {sales_tip} | 有券: {has_coupon} (券面额: {coupon_amount:.2f}元)"
-            )
-
-    logger.info("================ 推荐测试结束 ================")
+    # # ==================================================================================================
+    # # 🚀 商品推荐 API 测试
+    # # ==================================================================================================
+    # logger.info("======== 🚀 开始测试多多进宝商品推荐 (实时热销榜) ========")
+    #
+    # # 测试参数：获取实时热销榜 (channel_type=5) 的前 5 个商品
+    # test_channel = 5
+    # limit_count = 5
+    #
+    # recommend_result = get_pdd_recommend_goods(
+    #     client_id=pdd_client_id,
+    #     client_secret=pdd_client_secret,
+    #     pid=pdd_pid,
+    #     channel_type=test_channel,
+    #     limit_count=limit_count,
+    # )
+    #
+    # if "error" in recommend_result:
+    #     logger.error(f"❌ 推荐测试失败: {recommend_result['error']}")
+    # else:
+    #     rec_goods_list = recommend_result.get("data", [])
+    #     total_count = recommend_result.get("total", 0)
+    #     returned_list_id = recommend_result.get("list_id", "")
+    #     returned_search_id = recommend_result.get("search_id", "")
+    #
+    #     logger.info(f"✅ 推荐测试成功: 成功获取 {len(rec_goods_list)} 条商品 (该榜单总量约: {total_count})。")
+    #     logger.info(f"   [翻页凭证] list_id: {returned_list_id} | search_id: {returned_search_id}")
+    #
+    #     for idx, item in enumerate(rec_goods_list, start=1):
+    #         # 获取统一清洗后的关键字段
+    #         goods_name = item.get("goods_name", "未知商品")
+    #         price_yuan = item.get("min_group_price", 0) / 100.0  # 拼多多价格单位是分，转为元
+    #         commission_yuan = item.get("estimated_commission", 0) / 100.0  # 佣金单位是分，转为元
+    #         sales_tip = item.get("sales_tip", "0")
+    #         has_coupon = "是" if item.get("has_coupon") else "否"
+    #         coupon_amount = item.get("coupon_discount", 0) / 100.0
+    #
+    #         # 为了控制台输出整洁，商品名称截断到最长25个字符
+    #         display_name = goods_name if len(goods_name) <= 25 else goods_name[:25] + "..."
+    #
+    #         logger.info(
+    #             f"  [{idx:02d}] {display_name} \n"
+    #             f"       ├─ 拼团价: {price_yuan:.2f}元 | 预估佣金: {commission_yuan:.2f}元\n"
+    #             f"       └─ 销量: {sales_tip} | 有券: {has_coupon} (券面额: {coupon_amount:.2f}元)"
+    #         )
+    #
+    # logger.info("================ 推荐测试结束 ================")
 
     # # ==================================================================================================
     # # 🚨🚨🚨 【血泪教训：极其重要的 PDD 风控参数与授权说明】 🚨🚨🚨
@@ -565,8 +617,8 @@ if __name__ == "__main__":
     #     logger.error(f"❌ 生成备案链接失败，请检查网络或应用权限：{auth_res['error_msg']}")
 
 
-    test_keyword = "可乐"
-    test_limit = 5
+    test_keyword = "电脑手柄 游戏手柄"
+    test_limit = 500
     logger.info(f"======== 🚀 开始测试关键词搜索 | 关键词: [{test_keyword}] | 限制获取: [{test_limit}条] ========")
 
     search_result = search_pdd_goods_by_keyword(
