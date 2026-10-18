@@ -108,25 +108,6 @@ def save_debug_image(img_cv, ocr_results, title_bbox, track_bbox, start_x_rel, s
     print(f"✅ 已保存可视化调试图片: {debug_path} (请查看黄点是否准确落在滑块按钮上)")
 
 
-def check_captcha_exist(window_rect):
-    """
-    【改造1】通过OCR判断验证码是否存在
-    检测"安全验证"文本，存在则判定为滑块验证码已弹出
-    :param window_rect: 拼多多窗口的坐标 (left, top, right, bottom) 屏幕绝对坐标
-    :return: bool
-    """
-    left, top, right, bottom = window_rect
-    monitor = {
-        "left": int(left),
-        "top": int(top),
-        "width": int(right - left),
-        "height": int(bottom - top)
-    }
-    ocr_results, _ = ocr_detect_region(monitor)
-    print(f"[INFO] OCR识别结果: {[line[1] for line in ocr_results]}")
-    pos = find_text_position(ocr_results, "安全验证")
-    return pos is not None
-
 
 def locate_slider_by_ocr(window_rect):
     """
@@ -344,6 +325,184 @@ def get_pdd_window_rect():
     return hwnd, rect
 
 
+def llm_recognize_math_captcha(image_path):
+    """
+    调用多模态大模型识别算术验证码图片并计算结果
+    :param image_path: str - 算术验证码截图路径
+    :return: str - 计算结果字符串（如 "14"），识别失败兜底返回 "0"
+    """
+    if not os.path.exists(image_path):
+        print(f"[ERROR] 算术验证码图片不存在: {image_path}")
+        return "0"
+
+    prompt = (
+        "这是一张拼多多安全验证的算术验证码截图。"
+        "请忽略背景中浅色、细小的干扰字母和数字，只识别前景中字体最大、颜色最深的数学算式（例如 '2 * 7 = ?'）。"
+        "注意运算符可能是加(+)、减(-)、乘(*或×)、除(/或÷)。"
+        "请直接计算出该算式的最终结果。"
+        "**严格要求**：只输出最终计算结果的纯数字（例如 14），禁止输出算式过程、解释、标点符号或任何其他多余文字。"
+    )
+
+    max_retries = 2
+    for attempt in range(max_retries + 1):
+        try:
+            print(f"[INFO] 第 {attempt + 1} 次调用大模型识别算术验证码...")
+            result = generate_content(
+                prompt=prompt,
+                model="gemini-web-3.6-flash-thinking-max",
+                file_paths=[image_path]
+            )
+            content = result.get("content") if isinstance(result, dict) else str(result)
+            if not content or not isinstance(content, str):
+                print(f"[WARN] 第 {attempt + 1} 次算术识别返回结果为空")
+                time.sleep(0.5)
+                continue
+
+            result_text = content.strip()
+            # 提取所有整数（支持负数），取最后一个数字（防止模型连同算式一起输出如 '2 * 7 = 14'）
+            num_matches = re.findall(r'-?\d+', result_text)
+            if num_matches:
+                calc_answer = num_matches[-1]
+                print(f"✅ 大模型算术验证码识别成功，计算结果: {calc_answer} (原始输出: {result_text})")
+                return calc_answer
+            else:
+                print(f"[WARN] 第 {attempt + 1} 次返回结果未包含有效数字: {result_text}")
+                time.sleep(0.5)
+
+        except Exception as e:
+            print(f"[ERROR] 第 {attempt + 1} 次大模型算术识别调用异常: {str(e)}")
+            time.sleep(1.0)
+
+    print("[WARN] 大模型算术识别全部失败，兜底返回 '0'")
+    return "0"
+
+
+def check_captcha_exist(window_rect):
+    """
+    【改造1】通过OCR判断验证码是否存在：
+    若遇到算术验证码("请输入计算结果" / "验证不成功，请重试")，
+    则自动截图保存 -> 调用大模型识别算术结果 -> 点击输入框 -> 输入结果 -> 点击确认，
+    使其切换至滑动验证界面。
+    :param window_rect: 拼多多窗口的坐标 (left, top, right, bottom) 屏幕绝对坐标
+    :return: bool
+    """
+    left, top, right, bottom = window_rect
+    monitor = {
+        "left": int(left),
+        "top": int(top),
+        "width": int(right - left),
+        "height": int(bottom - top)
+    }
+
+    if not os.path.exists('temp_data'):
+        os.makedirs('temp_data')
+
+    max_calc_attempts = 3
+    cached_input_rel_pos = None  # 缓存输入框相对坐标，防止重试时占位符消失无法定位
+
+    for calc_attempt in range(max_calc_attempts):
+        ocr_results, img_cv = ocr_detect_region(monitor)
+        ocr_texts = [line[1] for line in ocr_results]
+        print(f"[INFO] OCR识别结果: {ocr_texts}")
+
+        # 1. 检测是否存在"安全验证"弹窗
+        pos = find_text_position(ocr_results, "安全验证")
+        if pos is None:
+            return False
+
+        # 2. 如果已经出现"滑动"关键字，说明已成功进入滑动验证界面，直接放行
+        if find_text_position(ocr_results, "滑动") is not None:
+            print("✅ 已检测到滑块验证界面，准备开始滑动验证...")
+            return True
+
+        # 3. 检查是否处于算术验证阶段（兼容首次"请输入计算结果"及重试时的"验证不成功"/"请重试"）
+        input_pos = find_text_position(ocr_results, "请输入计算结果")
+        retry_pos = find_text_position(ocr_results, "验证不成功") or find_text_position(ocr_results, "请重试")
+        confirm_pos = find_text_position(ocr_results, "确认") or find_text_position(ocr_results, "确定")
+
+        if input_pos is not None or retry_pos is not None or confirm_pos is not None:
+            print(f"🔢 检测到算术验证界面，开始执行第 {calc_attempt + 1}/{max_calc_attempts} 次识别与输入...")
+
+            # (1) 截图保存
+            math_img_path = f"temp_data/math_captcha_{calc_attempt + 1}.png"
+            cv2.imwrite(math_img_path, img_cv)
+            print(f"📸 算术验证码截图已保存: {math_img_path}")
+
+            # (2) 调用大模型识别计算结果
+            calc_answer = llm_recognize_math_captcha(math_img_path)
+
+            # (3) 确定输入框点击位置（优先用"请输入计算结果"，其次用缓存坐标或"验证不成功"位置，最后用"确认"按钮上方偏移）
+            if input_pos is not None:
+                cached_input_rel_pos = (input_pos[0], input_pos[1])
+            elif cached_input_rel_pos is None:
+                if retry_pos is not None:
+                    cached_input_rel_pos = (retry_pos[0], retry_pos[1])
+                elif confirm_pos is not None:
+                    # 输入框位于"确认"按钮正上方约 65 像素处
+                    cached_input_rel_pos = (confirm_pos[0], max(0, confirm_pos[1] - 65))
+
+            if cached_input_rel_pos is None:
+                print("[ERROR] 无法定位算术验证码输入框位置")
+                return False
+
+            input_x = int(left) + cached_input_rel_pos[0]
+            input_y = int(top) + cached_input_rel_pos[1]
+
+            # 点击输入框获取焦点
+            win32api.SetCursorPos((input_x, input_y))
+            time.sleep(0.2)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            time.sleep(0.05)
+            win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            time.sleep(0.3)
+
+            # (4) 连续按 Backspace 和 Delete 彻底清空可能残留的上次输入内容
+            for _ in range(6):
+                win32api.keybd_event(win32con.VK_BACK, 0, 0, 0)
+                time.sleep(0.02)
+                win32api.keybd_event(win32con.VK_BACK, 0, win32con.KEYEVENTF_KEYUP, 0)
+                win32api.keybd_event(win32con.VK_DELETE, 0, 0, 0)
+                time.sleep(0.02)
+                win32api.keybd_event(win32con.VK_DELETE, 0, win32con.KEYEVENTF_KEYUP, 0)
+            time.sleep(0.15)
+
+            # (5) 逐字符输入大模型计算出的结果（支持多位数及负数）
+            for ch in str(calc_answer):
+                if ch == '-':
+                    vk_code = 0xBD  # 主键盘减号/负号 VK_OEM_MINUS
+                elif ch.isdigit():
+                    vk_code = ord(ch)
+                else:
+                    continue
+                win32api.keybd_event(vk_code, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.keybd_event(vk_code, 0, win32con.KEYEVENTF_KEYUP, 0)
+                time.sleep(0.08)
+            time.sleep(0.3)
+
+            # (6) 查找"确认"或"确定"按钮并点击
+            if confirm_pos is not None:
+                confirm_x = int(left) + confirm_pos[0]
+                confirm_y = int(top) + confirm_pos[1]
+                win32api.SetCursorPos((confirm_x, confirm_y))
+                time.sleep(0.2)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                time.sleep(0.05)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                print(f"✅ 已输入计算结果 '{calc_answer}' 并点击确认按钮，等待切换至滑动验证...")
+                # 等待界面刷新切换为滑块验证码
+                time.sleep(1.5)
+            else:
+                print("[ERROR] 识别到算术验证界面，但未找到'确认'/'确定'按钮")
+                return False
+        else:
+            # 既没有算术验证特征，存在"安全验证"，直接放行交给后续滑块定位
+            return True
+
+    # 循环结束后最后确认一次"安全验证"是否依然存在
+    ocr_results, _ = ocr_detect_region(monitor)
+    return find_text_position(ocr_results, "安全验证") is not None
+
 def solve_pdd_captcha(max_retries=5):
     print("=" * 50)
     print(f"🚀 开始测试拼多多滑块验证码解锁 (最大重试次数: {max_retries})")
@@ -361,7 +520,7 @@ def solve_pdd_captcha(max_retries=5):
         force_bring_to_front(hwnd)
         time.sleep(0.5)
 
-        # 2. 【改造点1】OCR判断验证码是否存在
+        # 2. 【改造点1】OCR判断验证码是否存在（若为算术验证码会自动输入0切换至滑块）
         if not check_captcha_exist(window_rect):
             print("❌ 未检测到'安全验证'，当前不在验证码界面。")
             return False
@@ -440,7 +599,7 @@ def solve_pdd_captcha(max_retries=5):
         # 检测鼠标是否被手动移动
         phys_x, phys_y = win32api.GetCursorPos()
         if abs(phys_x - current_x) > 20:
-            print(f"⚠️ 检测到用户手动移动过鼠标，先平滑移回记录位置")
+            print("⚠️ 检测到用户手动移动过鼠标，先平滑移回记录位置")
             steps_back = 15
             dx_back = (current_x - phys_x) / steps_back
             curr_x = float(phys_x)
@@ -479,21 +638,21 @@ def solve_pdd_captcha(max_retries=5):
             print("✅ 验证通过（窗口已关闭或跳转）！")
             return True
 
-        # OCR校验：滑块提示文本是否消失
+        # OCR校验：滑块提示文本或安全验证是否消失
         check_ocr_results, _ = ocr_detect_region({
             "left": int(check_rect[0]),
             "top": int(check_rect[1]),
             "width": int(check_rect[2] - check_rect[0]),
             "height": int(check_rect[3] - check_rect[1])
         })
-        track_text_exist = find_text_position(check_ocr_results, "向右滑动") is not None \
-                           or find_text_position(check_ocr_results, "拖动滑块") is not None
+        track_text_exist = find_text_position(check_ocr_results, "滑动") is not None \
+                           or find_text_position(check_ocr_results, "请输入计算结果") is not None
 
         if not track_text_exist:
-            print("✅ 滑块提示文本已消失，验证通过！")
+            print("✅ 验证提示文本已消失，验证通过！")
             return True
         else:
-            print(f"❌ 第 {attempt} 次尝试失败，滑块校验依然存在。")
+            print(f"❌ 第 {attempt} 次尝试失败，验证码依然存在。")
             if attempt < max_retries:
                 print("⏳ 准备进行下一次重试...")
                 time.sleep(1.0)
@@ -502,7 +661,6 @@ def solve_pdd_captcha(max_retries=5):
                 return False
 
     return False
-
 
 if __name__ == "__main__":
     solve_pdd_captcha(max_retries=5)
