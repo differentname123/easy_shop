@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+import traceback
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -768,6 +769,7 @@ def web_search_intercept_task():
                                     )
 
                             except Exception as inner_exc:
+                                traceback.print_exc()
                                 logger.error(
                                     "[UI拦截任务/账户异常] 关键词: [%s] | 账户: [%s] 执行拦截或入库出错 | 错误: [%s]",
                                     keyword, account_name, inner_exc
@@ -1622,6 +1624,12 @@ def api_recommend_task():
 
 
 if __name__ == "__main__":
+
+    # intercept_result = search_goods_and_intercept(
+    #     search_key_list=["正宗渝兄重庆怪味胡豆"],
+    #     user_data_dir=USER_DATA_DIR,
+    #     debug=True
+    # )
 
     # 配置基础日志 (将其提取到最外层，共享给所有线程)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(message)s")

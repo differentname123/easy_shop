@@ -720,7 +720,7 @@ if __name__ == "__main__":
 
 
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
-    USER_DATA_DIR = r"W:\temp\biance_pdd_mama"
+    USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
 
 
 
