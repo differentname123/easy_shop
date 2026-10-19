@@ -824,59 +824,69 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     return results
 
 if __name__ == "__main__":
-    # data = get_pdd_sku_info(id="test", debug=True)
-    # print(f"耗时: s | 共采集到 {len(data)} 个规格组合：")
-    # for row in data:
-    #     print(row)
-
     while True:
         try:
             monitored_products = read_json(
-                r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
-            search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
+                r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json') or {}
+            search_keywords = [
+                k for k, v in monitored_products.items()
+                if isinstance(v, dict) and v.get('is_monitoring')
+            ]
 
             target_category_list = []
             for search_keyword in search_keywords:
+                kw_clean = (search_keyword or "").strip().lower()
+                if not kw_clean:
+                    continue
                 words = gen_goods_segment_info(name=search_keyword)
-                target_category_list.append(words)
+                clean_words = []
+                if isinstance(words, (list, tuple, set)):
+                    clean_words = [str(w).strip().lower() for w in words if str(w).strip()]
+                if not clean_words:
+                    clean_words = [kw_clean]
+                target_category_list.append(clean_words)
 
             print(target_category_list)
 
-            results = get_data_updated_within_24h(
-                limit=0,
-                extra_query={
-                    "format_status": "success",
-                    "need_update_sku": True,  # 【修改点 1】：直接精准检索需要更新规格的商品
-                    "$or": [
-                        {"sku_retry_count": {"$lte": 3}},
-                        {"sku_retry_count": {"$exists": False}}
-                    ]
-                },
-                projection={
-                    "_id": 1,
-                    "platform": 1,
-                    "product_id": 1,
-                    "name": 1,
-                    "sku_info": 1,
-                    "need_update_sku": 1,  # 【修改点 2】：投影增加该字段
-                    "sku_retry_count": 1
-                }
-            )
-
-            # 过滤逻辑：
-            # 1. 满足任意一组分词规则
-            # 2. need_update_sku 为 True 且 sku_retry_count <= 3
-            filtered_results = [
-                item for item in results
-                if bool(item.get("need_update_sku"))
-                   and (item.get("sku_retry_count") or 0) <= 3
-                   and any(
-                    all(keyword in item.get("name", "") for keyword in keywords_group)
-                    for keywords_group in target_category_list
+            if target_category_list:
+                results = get_data_updated_within_24h(
+                    limit=0,
+                    extra_query={
+                        "format_status": "success",
+                        "need_update_sku": True,
+                        "$or": [
+                            {"sku_retry_count": {"$lte": 3}},
+                            {"sku_retry_count": {"$exists": False}}
+                        ]
+                    },
+                    projection={
+                        "_id": 1,
+                        "platform": 1,
+                        "product_id": 1,
+                        "name": 1,
+                        "sku_info": 1,
+                        "need_update_sku": 1,
+                        "sku_retry_count": 1
+                    }
                 )
-            ]
 
-            batch_runner(filtered_results)
+                # 过滤逻辑：
+                # 1. 满足任意一组非空分词规则（统一小写匹配，与前端搜索保持一致）
+                # 2. need_update_sku 为 True 且 sku_retry_count <= 3
+                filtered_results = [
+                    item for item in results
+                    if bool(item.get("need_update_sku"))
+                       and (item.get("sku_retry_count") or 0) <= 3
+                       and (item_name := (item.get("name") or "").lower())
+                       and any(
+                        all(keyword in item_name for keyword in keywords_group)
+                        for keywords_group in target_category_list
+                    )
+                ]
+
+                batch_runner(filtered_results)
+            else:
+                log("[INFO] 当前无有效监控关键词，跳过本轮 SKU 抓取")
         except Exception as e:
             log(f"[FATAL] 💥 主程序异常退出: {str(e)}")
         time.sleep(600)

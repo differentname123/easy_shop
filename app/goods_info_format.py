@@ -270,6 +270,8 @@ def run_format_round(product_manager):
     # 1. 将商品按 SKU 拆解为待清洗的任务单元
     all_sku_tasks = []
     total_reformat_prods = 0
+    # 记录本轮已累加过失败次数的商品 _id，保证同一商品在同一轮内最多只 +1 次 format_retry_count
+    round_failed_docs = set()
 
     for product in products:
         is_reformat = bool(product.get("need_reformat"))
@@ -283,8 +285,8 @@ def run_format_round(product_manager):
         if not isinstance(existing_format_info, dict):
             existing_format_info = {}
 
-        # 【极简改动 1】：针对重洗（或旧版单层结构）商品，第一次拉取时直接将数据库和内存中的
-        # need_reformat 设为 False、清空旧 format_info 并置为 pending，后续完全交给未完成规格逻辑自然推进
+        # 【改动 1】：针对重洗（或旧版单层结构）商品，第一次拉取时直接将数据库和内存中的
+        # need_reformat 设为 False、清空旧 format_info、重置 format_retry_count 为 0
         if is_reformat or "pricing_basis" in existing_format_info:
             existing_format_info = {}
             product["format_info"] = existing_format_info
@@ -296,6 +298,7 @@ def run_format_round(product_manager):
                     "need_reformat": False,
                     "format_status": "pending",
                     "format_info": {},
+                    "format_retry_count": 0,
                 },
                 condition={"_id": product["_id"]},
                 upsert=False,
@@ -344,7 +347,7 @@ def run_format_round(product_manager):
                     "is_reformat": is_reformat,
                 })
 
-        # 【极简改动 2】：如果该商品下所有规格其实已在上一轮全部生成完毕，直接补标为 success，防止第二轮空转
+        # 【改动 2】：如果该商品下所有规格其实已在上一轮全部生成完毕，直接补标为 success，防止空转
         if not product_pending_tasks and len(existing_format_info) >= total_expected:
             product_manager.update(
                 {
@@ -392,6 +395,7 @@ def run_format_round(product_manager):
         for task in batch:
             sku_id = task["sku_id"]
             product = task["product_ref"]
+            doc_id = product["_id"]
             product_id = product["product_id"]
             is_reformat = task["is_reformat"]
             total_expected_skus = task["total_expected_skus"]
@@ -403,7 +407,7 @@ def run_format_round(product_manager):
                 else generated["item_errors"].get(sku_id, "未知的规格解析错误")
             )
 
-            condition = {"_id": product["_id"]}
+            condition = {"_id": doc_id}
             update_fields = {
                 "platform": product["platform"],
                 "product_id": product_id,
@@ -411,24 +415,32 @@ def run_format_round(product_manager):
                 "format_updated_at": datetime.now(timezone.utc),
             }
 
+            fmt_map = product.setdefault("format_info", {})
             if is_success:
                 update_fields[f"format_info.{sku_id}"] = format_info_item
-                # 【极简改动 3】：直接将当前完成的 sku_id 写回共享的 product["format_info"] 字典中，
-                # 这样第一轮最后一个完成的规格就能看到完整数量并当场置为 success；即便极端并发差一点，第二轮也会被改动 2 自动收口
-                fmt_map = product.setdefault("format_info", {})
                 fmt_map[sku_id] = format_info_item
+                # 只要已有有效规格成功入库，即标记 format_status 为 success（未齐的规格靠 $size 条件在后续轮次补洗）
+                update_fields["format_status"] = "success"
+                update_fields["need_reformat"] = False
                 if len(fmt_map) >= total_expected_skus:
-                    update_fields["format_status"] = "success"
-                    update_fields["need_reformat"] = False
                     update_fields["format_error"] = ""
+                inc_val = 0
             else:
-                update_fields["format_status"] = "failed"
+                # 仅当该商品目前没有任何已成功规格时才标为 failed，防止单个异常规格屏蔽整件商品的其它正常规格
+                if not fmt_map:
+                    update_fields["format_status"] = "failed"
                 update_fields["format_error"] = error
+                # 同一商品在本轮最多只累加 1 次重试计数，防止多规格商品在单轮内直接累加满 3 次
+                if doc_id not in round_failed_docs:
+                    round_failed_docs.add(doc_id)
+                    inc_val = 1
+                else:
+                    inc_val = 0
 
             saved = product_manager.update(
                 update_fields,
                 condition=condition,
-                increments={"format_retry_count": 0 if is_success else 1},
+                increments={"format_retry_count": inc_val},
                 upsert=False,
             )
 
@@ -489,17 +501,17 @@ def run_format_round(product_manager):
 
     return counts
 
+
 def pending_promotion_query():
-    """查询没有推广链接、goods_sign 存在且重试未达上限的待转链商品。"""
+    """查询没有有效推广链接（不存在、为 None 或为空字符串）、goods_sign 存在且重试未达上限的待转链商品。"""
     return {
-        "promotion_url": {"$exists": False},
-        "goods_sign": {"$exists": True},
+        "promotion_url": {"$in": [None, ""]},
+        "goods_sign": {"$exists": True, "$nin": [None, ""]},
         "$or": [
             {"promotion_retry_count": {"$exists": False}},
             {"promotion_retry_count": {"$lt": PROMOTION_MAX_RETRIES}},
         ],
     }
-
 
 def run_promotion_round(product_manager):
     pdd_client_id = get_config("myself_pdd_client_id")

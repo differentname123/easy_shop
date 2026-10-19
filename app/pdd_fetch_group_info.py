@@ -1303,7 +1303,6 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
     started = time.monotonic()
     logger.info("[采集/开始] 准备加载目标分类 | 分类: [%s] | 账号: [%s]", tab_display, account_name)
 
-    # 【新增开关】：数据收集控制开关，防止提前写入默认的“首页”数据
     is_ready_to_collect = False
 
     def check_storage():
@@ -1316,19 +1315,16 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
         """仅处理目标接口 HTTP 200；清洗补丁后就地累计 stats，存储异常留给 check_storage 上抛。"""
         nonlocal hit_risk, storage_error, is_ready_to_collect
 
-        # 【新增拦截】：如果还未确认点击到目标分类并等待残余请求过期，直接丢弃所有响应，防污染！
         if not is_ready_to_collect:
             return
 
         if storage_error is not None or "brand-group-home/home/goods_list" not in response.url or response.status != 200:
             return
-        # : requests 仍统计所有目标 HTTP 200，包含无效 JSON、失败业务响应与空批次。
         stats["requests"] += 1
         try:
             data = response.json()
             if not isinstance(data, dict) or not data.get("success") or not isinstance(data.get("result"), dict):
                 return
-            # : 保留成功响应全文匹配 risk；商品文字可能误报，失败响应的风控可能漏报。
             hit_risk = hit_risk or "risk" in str(data).lower()
             records = []
             now = datetime.now(timezone.utc)
@@ -1340,7 +1336,6 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                     record["updated_at"] = now
                     records.append(record)
         except Exception as exc:
-            # : 保留一个商品价格异常便跳过整批的规则，不擅自改成逐商品容错。
             logger.warning("[采集/解析] 本批未入库，继续监听 | 分类: [%s] | 错误: [%s] "
                            "| 排查: [JSON 结构、价格字段]", tab_display, exc)
             return
@@ -1357,16 +1352,24 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
         with sync_playwright() as p, closing(launch_persistent_context(
                 p, user_data_dir=user_data_dir, headless=GLOBAL_CONFIG["headless_mode"])) as context:
             page = context.pages[0] if context.pages else context.new_page()
-            # : 监听虽然前置，但已被 is_ready_to_collect 开关阻断旧数据
             page.on("response", handle_response)
             try:
                 page.goto(GLOBAL_CONFIG["target_url"], wait_until="domcontentloaded")
                 check_storage()
-                # : 保留先等待导航再查风控；缺少导航的拦截页仍按 ERROR 处理。
                 navigation = page.locator("#brand-first-nav")
-                navigation.wait_for(state="visible", timeout=15000)
+                try:
+                    navigation.wait_for(state="visible", timeout=15000)
+                except Exception as nav_exc:
+                    if check_logged_out(page):
+                        save_error_snapshot(page, tab_name, "账号掉登录")
+                        return "LOGGED_OUT", stats
+                    raise nav_exc
+
                 page.wait_for_timeout(3000)
                 check_storage()
+                if check_logged_out(page):
+                    save_error_snapshot(page, tab_name, "账号掉登录")
+                    return "LOGGED_OUT", stats
                 if check_risk_control(page):
                     if stats["requests"] < 10:
                         save_error_snapshot(page, tab_name, "风控拦截_请求不足10次")
@@ -1375,7 +1378,6 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                 check_storage()
                 navigation.wait_for(state="visible", timeout=5000)
 
-                # 【核心修复】：抛弃 index 点击，通过在当前页面执行完全对称的 JS 代码，根据名称精准匹配标签
                 clicked = page.evaluate("""
                     (targetName) => {
                         const tabs = Array.from(document.querySelectorAll('#brand-first-nav > div'));
@@ -1398,12 +1400,10 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                 """, tab_name)
 
                 if not clicked:
-                    # 彻底解决千人千面：如果这个账号确实没这个分类，安全跳过，留给后续账号
                     logger.warning("[采集/跳过] 当前账号无目标分类标签，放弃该分类 | 账号: [%s] | 目标: [%s]",
                                    account_name, tab_name)
                     return "PAGE_MISMATCH", stats
 
-                # 【核心防御】：点击完毕后，强制等待，让首页滞留的网络请求彻底被抛弃，同时等待新分类数据触发
                 page.wait_for_timeout(3500)
                 check_storage()
 
@@ -1411,7 +1411,6 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                     save_error_snapshot(page, tab_name, "异常跑偏_误入搜索页")
                     return "PAGE_MISMATCH", stats
 
-                # 【核心开启】：万事俱备，放行拦截器，接下来的数据才是纯净的目标分类数据！
                 is_ready_to_collect = True
 
                 max_scrolls = GLOBAL_CONFIG["max_scrolls_per_tab"]
@@ -1433,7 +1432,6 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                     if max_scrolls == -1:
                         idle_scrolls = 0 if stats["requests"] > last_response_count else idle_scrolls + 1
                         last_response_count = stats["requests"]
-                        # : 连续十次无新 HTTP 200 即结束；慢响应或断网可能被误判为到底。
                         if idle_scrolls >= 10:
                             stop_reason = "连续十次滑动无新目标 HTTP 200 响应"
                             break
@@ -1448,16 +1446,17 @@ def scrape_single_tab(user_data_dir, tab_info, product_manager):
                 raise
             except Exception as exc:
                 check_storage()
+                if check_logged_out(page):
+                    save_error_snapshot(page, tab_name, "账号掉登录")
+                    return "LOGGED_OUT", stats
                 logger.warning("[采集/异常] 页面作业失败，重新申请账号 | 分类: [%s] | 账号: [%s] "
                                "| 错误: [%s] | 排查: [网络、导航或点击目标]", tab_display, account_name, exc)
                 save_error_snapshot(page, tab_name, "代码崩溃异常")
                 return "ERROR", stats
     finally:
-        # 关闭浏览器时仍可能执行回调；存储故障优先于提前返回与关闭异常。
         check_storage()
     if stats["requests"] == 0:
         return "PAGE_MISMATCH", stats
-    # : 仍以存在目标 HTTP 200 判成功；空商品或全部解析失败也可能返回 SUCCESS。
     logger.info("[采集/完成] 分类作业结束 | 分类: [%s] | 账号: [%s] | 滑动/响应: [%d/%d] "
                 "| 新增/更新: [%d/%d] | 耗时: [%.1f 秒] | 结束依据: [%s]", tab_display, account_name,
                 stats["scrolls"], stats["requests"], stats["new"], stats["update"], time.monotonic() - started,
@@ -1473,19 +1472,25 @@ def run_collection_rounds(account_pool, product_manager):
         started = time.monotonic()
         logger.info("[调度/轮次开始] 准备探测并遍历分类 | 轮次: [%d]", round_count)
         tabs = None
-        while not tabs:
-            tabs = get_tab_list(account_pool.acquire("探测分类"))
-            if tabs is None:
+        while not isinstance(tabs, list) or not tabs:
+            probe_account = account_pool.acquire("探测分类")
+            tabs = get_tab_list(probe_account)
+            if tabs == "LOGGED_OUT":
+                account_pool.mark_invalid(probe_account, "LOGGED_OUT")
+                tabs = None
+                time.sleep(2)
+            elif not tabs:
                 time.sleep(5)
         round_stats = []
         for tab_index, tab in enumerate(tabs, 1):
             tab_info = dict(tab, round=round_count, tab_index=tab_index, total_tabs=len(tabs))
             tab_display = f"第{round_count}轮-第{tab_index}/{len(tabs)}个({tab['name']})"
             totals = dict.fromkeys(STAT_KEYS, 0)
-            # : 每分类最多三次失败后仍推进下一分类；被跳过不代表采集成功。
             for attempt in range(1, MAX_ATTEMPTS_PER_TAB + 1):
                 account = account_pool.acquire(tab_display)
                 status, stats = scrape_single_tab(account, tab_info, product_manager)
+                if status == "LOGGED_OUT":
+                    account_pool.mark_invalid(account, "LOGGED_OUT")
                 for key in STAT_KEYS:
                     totals[key] += stats.get(key, 0)
                 if status != "SUCCESS":
