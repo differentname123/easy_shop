@@ -88,21 +88,36 @@ def _is_box_selected(img_bgr, box):
     return float(np.mean(pink)) > 0.30
 
 
-def _extract_price_fast(img_bgr, price_anchor):
-    """只截取固定 ￥ 符号及其右侧同行窄条区域进行极速识别，绝不触碰下一行"""
+def _extract_price_fast(img_bgr, price_anchor, save_path=None):
+    """截取价格单行区域，自适应切除右侧空白后直接整行识别（不切框、零特判）"""
     h_img, w_img = img_bgr.shape[:2]
     px, py, pw, ph = price_anchor
 
-    crop = img_bgr[max(0, py):min(h_img, py + ph), max(0, px - 2):int(w_img * 0.88)]
+    # 1. 上下留 4px 余量防切边，初筛截取到窗口 0.85 宽度（避开最右侧关闭按钮 'X'）
+    crop = img_bgr[max(0, py - 4):min(h_img, py + ph + 4), max(0, px - 4):int(w_img * 0.85)]
+
+    # 2. 自适应切除右侧纯白背景：无论这行字有多长，精准裁到最后一个非白像素为止
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    non_white_cols = np.where(np.min(gray, axis=0) < 235)[0]
+    if len(non_white_cols) > 0:
+        crop = crop[:, :min(crop.shape[1], int(non_white_cols[-1]) + 6)]
+
     padded = cv2.copyMakeBorder(crop, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=(255, 255, 255))
 
-    items = _run_ocr(padded)
-    items.sort(key=lambda i: i["box"][0])
-    text = "".join(i["text"] for i in items).replace("¥", "￥")
-    text = re.sub(r"券后\s*[?？¥￥]?\s*", "券后￥", text)
-    idx = text.find("￥")
-    return text[idx:].strip() if idx != -1 else text.strip()
+    # 3. 保存用于识别价格的图片，方便排查
+    if save_path:
+        ok, buf = cv2.imencode(".png", padded, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        if ok:
+            buf.tofile(save_path)
 
+    # 4. 核心：use_det=False 关闭切框检测，整行直接识别，彻底杜绝拆框重叠问题
+    res, _ = ocr(padded, use_det=False, use_cls=False)
+    if not res:
+        return ""
+
+    text = str(res[0][0]).strip().replace("¥", "￥")
+    idx = text.find("￥")
+    return text[idx:].strip() if idx != -1 else text
 
 def _is_box_disabled(img_bgr, box):
     """判断未选中的 SKU 框是否处于缺货/置灰不可选状态（灰底浅灰字，无深色前景像素）"""
@@ -270,13 +285,20 @@ def get_pdd_sku_info(id, debug=True):
                 if not combo_valid or not all(_is_box_selected(current_img, s["box"]) for s in combo):
                     continue
 
-                price_text = _extract_price_fast(current_img, price_anchor)
                 screenshot_path = ""
+                price_screenshot_path = ""
                 if debug:
                     screenshot_path = os.path.join(SKU_DEBUG_DIR, f"{id}_{idx}.png")
+                    price_screenshot_path = os.path.join(SKU_DEBUG_DIR, f"{id}_{idx}_price.png")
                     ok, buf = cv2.imencode(".png", current_img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
                     if ok:
                         buf.tofile(screenshot_path)
+
+                price_text = _extract_price_fast(
+                    current_img,
+                    price_anchor,
+                    save_path=price_screenshot_path if debug else None
+                )
 
                 record = {name: sku["text"] for name, sku in zip(cat_names, combo)}
                 record["价格"] = price_text
