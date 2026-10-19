@@ -102,6 +102,10 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
     if len(non_white_cols) > 0:
         crop = crop[:, :min(crop.shape[1], int(non_white_cols[-1]) + 6)]
 
+    # =====================【仅在这里加这一行，放大 2 倍】=====================
+    crop = cv2.resize(crop, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    # =====================================================================
+
     padded = cv2.copyMakeBorder(crop, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=(255, 255, 255))
 
     # 3. 保存用于识别价格的图片，方便排查
@@ -110,7 +114,7 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
         if ok:
             buf.tofile(save_path)
 
-    # 4. 核心：use_det=False 关闭切框检测，整行直接识别，彻底杜绝拆框重叠问题
+    # 4. 核心：use_det=False 关闭切框检测，整行直接识别（完全保持你原来的代码）
     res, _ = ocr(padded, use_det=False, use_cls=False)
     if not res:
         return ""
@@ -118,6 +122,7 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
     text = str(res[0][0]).strip().replace("¥", "￥")
     idx = text.find("￥")
     return text[idx:].strip() if idx != -1 else text
+
 
 def _is_box_disabled(img_bgr, box):
     """判断未选中的 SKU 框是否处于缺货/置灰不可选状态（灰底浅灰字，无深色前景像素）"""

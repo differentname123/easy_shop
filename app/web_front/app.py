@@ -232,6 +232,7 @@ def api_submit_feedback(req: FeedbackRequest):
 # =====================================================================
 
 
+
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     target_kw = (keyword or "").strip().lower()
 
@@ -272,20 +273,18 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         sort=[("updated_at", -1)], limit=limit,
     )
 
-    def _parse_sku_price(price_val, fallback_price):
-        """从 sku_info 的 '价格' 字段（如 '￥19.9'）中提取浮点数价格"""
-        if isinstance(price_val, (int, float)) and price_val > 0:
-            return round(float(price_val), 2)
-        if isinstance(price_val, str) and price_val.strip():
-            match = re.search(r"\d+(?:\.\d+)?", price_val)
-            if match:
-                try:
-                    val = float(match.group(0))
-                    if val > 0:
-                        return round(val, 2)
-                except ValueError:
-                    pass
-        return fallback_price
+    def _is_valid_sku_price(price_val, min_limit_price):
+        """
+        校验规格价格有效性：
+        1. 必须为大于 0 的有效浮点数/整数；
+        2. 若商品存在全局 activity_price，任何规格价格均不得低于该阈值（排除浮点数精度误差）。
+        """
+        if type(price_val) not in (int, float) or not math.isfinite(price_val) or price_val <= 0:
+            return False
+        if min_limit_price is not None:
+            if round(float(price_val), 2) < round(float(min_limit_price), 2):
+                return False
+        return True
 
     # 2. 提取前端展示和计算所需的字段，过滤无效商品并按 SKU 展开 format_info
     filtered_products = []
@@ -325,13 +324,18 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             _source_api = "no_group"
 
         base_orig_price = product.get("original_price")
-        base_act_price = product.get("activity_price", 999999)
+
+        # 获取商品级别的最低活动价作为规格价格过滤基准
+        raw_act_price = product.get("activity_price")
+        min_act_price = None
+        if isinstance(raw_act_price, (int, float)) and math.isfinite(raw_act_price) and raw_act_price > 0:
+            min_act_price = float(raw_act_price)
 
         # 组装当前商品下的 (唯一SKU标识, 展示名称, SKU价格, 单个SKU的format_info字典) 列表
         sku_entries = []
         if "pricing_basis" in raw_format_info and isinstance(raw_format_info.get("pricing_basis"), dict):
             sku_price = raw_format_info.get("price")
-            if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
+            if not _is_valid_sku_price(sku_price, min_act_price):
                 continue
             sku_entries.append((f"{product_id}_0", base_name, sku_price, raw_format_info))
         else:
@@ -347,7 +351,8 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                     ]
                     display_name = f"{base_name} 【{' | '.join(desc_parts)}】" if desc_parts else base_name
                     sku_price = sku_fmt.get("price")
-                    if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
+                    # 过滤低于 activity_price 或非法的规格
+                    if not _is_valid_sku_price(sku_price, min_act_price):
                         continue
                     sku_entries.append((sku_id, display_name, sku_price, sku_fmt))
 
@@ -356,7 +361,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 for fallback_idx, (sku_id, sku_fmt) in enumerate(raw_format_info.items(), start=1):
                     if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
                         sku_price = sku_fmt.get("price")
-                        if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
+                        if not _is_valid_sku_price(sku_price, min_act_price):
                             continue
                         uid_str = str(sku_id) if sku_id else f"{product_id}_fb_{fallback_idx}"
                         sku_entries.append((uid_str, base_name, sku_price, sku_fmt))
@@ -365,7 +370,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             orig_price = base_orig_price
             is_suspicious = 1 if is_confirmed_sku else 0
 
-            if orig_price is not None and act_price != 999999 and act_price > 0:
+            if orig_price is not None and act_price > 0:
                 try:
                     orig_p = float(orig_price)
                     act_p = float(act_price)
@@ -546,6 +551,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             for item in top_filters
         ]
     }
+
 # ============== 新增：商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
 monitor_file_lock = threading.Lock()

@@ -67,12 +67,17 @@ MEDIUM_MODEL_LIST = [
     {"model_name": "gpt-6-codex-sol-max", "权重": 1, "备注": "来源codex 付费"},
 
 ]
+
 LOW_MODEL_LIST = [
     {"model_name": "gpt-5.6-max", "权重": 1, "备注": "来源chatgpt_web "},
 
-    # {"model_name": "gemma-api-key-4-31b-it", "权重": 0, "备注": "来源api key aistudio "},
+
+    {"model_name": "gemma-api-key-4-31b-it", "权重": 1, "备注": "来源api key aistudio "},
+    {"model_name": "gemini-api-key-3.5-flash-lite", "权重": 1, "备注": "来源api key aistudio "},
+
 
     {"model_name": "gemini-aistudio-3.5-flash", "权重": 0, "备注": "来源aistudio_web"},
+
 
     {"model_name": "gemini-web-3.5-flash-lite-thinking", "权重": 1, "备注": "来源gemini_web 目前是免费 gemini用户能够用到的最强模型了"},
 
@@ -717,6 +722,6 @@ if __name__ == "__main__":
     name = "小方块火锅底料批发"
     prompt = f"{prompt_text}\n{name}"
 
-    result = generate_content(prompt=prompt, model="qwen/qwen3.8-27b")
+    result = generate_content(prompt=prompt, model="gemma-api-key-4-31b-it")
     print()
 
