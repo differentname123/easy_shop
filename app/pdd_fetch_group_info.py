@@ -829,57 +829,45 @@ def web_search_intercept_task():
 def safe_batch_update(product_manager, records):
     """
     【安全批量更新封装】
-    1. 在入库前对账：如果数据库中已有提取成功的 sku_info，
-       则使用 sku_info.price 强行覆盖爬虫刚抓取的 activity_price，防止 AI 清洗成果被破坏。
-    2. 对 _source_api 来源列表进行安全合并与追加，保留商品全部历史来源并去重。
+    1. 价格与商品基础字段直接以当前最新抓取的数据为准进行更新，不做任何旧价格拦截或覆盖。
+    2. 对 _source_api 来源列表进行安全合并与追加，保留商品全部历史来源并保序去重。
     """
     if not records:
         return {"new": 0, "update": 0}
 
     try:
-        # 1. 提取当前批次中所有的 product_id
-        product_ids = [r["product_id"] for r in records if r.get("product_id")]
+        # 1. 仅当当前批次记录中包含 _source_api 时，才去数据库查询历史来源进行合并
+        product_ids = [
+            str(r["product_id"]) for r in records
+            if r.get("product_id") and r.get("_source_api") is not None
+        ]
 
         if product_ids:
-            # 2. 批量查询：查询这批商品在数据库中的记录（投影 sku_info 与 _source_api）
+            # 2. 批量查询：仅投影 product_id 与 _source_api，彻底移除 sku_info 相关查询
             existing_docs = product_manager.query(
-                {
-                    "product_id": {"$in": product_ids}
-                },
-                projection={"product_id": 1, "sku_info.price": 1, "_source_api": 1}
+                {"product_id": {"$in": list(set(product_ids))}},
+                projection={"product_id": 1, "_source_api": 1}
             )
 
-            # 3. 建立映射关系: product_id -> 数据库中已锁定的 sku_price 与已有来源列表
-            sku_price_map = {}
+            # 3. 建立映射关系: product_id -> 数据库中已有的来源列表
             source_api_map = {}
             if existing_docs:
                 for doc in existing_docs:
                     pid = str(doc.get("product_id"))
-                    sku_price = doc.get("sku_info", {}).get("price") if isinstance(doc.get("sku_info"), dict) else None
-                    if sku_price is not None:
-                        sku_price_map[pid] = sku_price
-
                     old_source = doc.get("_source_api")
                     if old_source:
                         if isinstance(old_source, list):
-                            source_api_map[pid] = [item for item in old_source if item]
+                            source_api_map[pid] = [str(item) for item in old_source if item]
                         elif isinstance(old_source, str):
                             source_api_map[pid] = [old_source]
                         else:
                             source_api_map[pid] = [str(old_source)]
 
-            # 4. 拦截并覆写爬虫刚抓取到的 activity_price，同时安全合并追加 _source_api
+            # 4. 安全合并追加 _source_api，绝不触碰 activity_price 等价格字段
             for record in records:
                 pid = str(record.get("product_id"))
-                if pid in sku_price_map:
-                    # 强行覆盖：用 SKU 价格替换爬虫价格
-                    record["activity_price"] = sku_price_map[pid]
-                    # 可选打标，方便日后排查这是被保护的数据
-                    record["_price_protected"] = True
-
-                # 处理 _source_api 来源追加与去重
-                if "_source_api" in record and record["_source_api"] is not None:
-                    current_source = record["_source_api"]
+                current_source = record.get("_source_api")
+                if current_source is not None:
                     if isinstance(current_source, list):
                         new_sources = [str(s) for s in current_source if s]
                     elif isinstance(current_source, str):
@@ -891,15 +879,14 @@ def safe_batch_update(product_manager, records):
                     # 合并并保序去重
                     combined_sources = list(dict.fromkeys(existing_sources + new_sources))
                     record["_source_api"] = combined_sources
-                    # 同步刷新 map，确保批次内多条同 product_id 记录能持续累加
+                    # 同步刷新 map，确保同一批次内多条相同 product_id 记录能持续累加
                     source_api_map[pid] = combined_sources
 
     except Exception as e:
-        logger.error("[安全更新/拦截异常] 价格对账或来源合并查询失败，退回直接入库模式 | 错误: %s", e)
+        logger.error("[安全更新/来源合并异常] 来源合并查询失败，退回直接入库模式 | 错误: %s", e)
 
-    # 5. 原样调用底层的 update 批量更新入库
+    # 5. 直接调用底层的 update 批量更新入库（最新抓取的价格直接生效）
     return product_manager.update(records)
-
 
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
