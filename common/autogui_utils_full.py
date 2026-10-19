@@ -104,6 +104,20 @@ def _extract_price_fast(img_bgr, price_anchor):
     return text[idx:].strip() if idx != -1 else text.strip()
 
 
+def _is_box_disabled(img_bgr, box):
+    """判断未选中的 SKU 框是否处于缺货/置灰不可选状态（灰底浅灰字，无深色前景像素）"""
+    if _is_box_selected(img_bgr, box):
+        return False
+    x, y, w, h = box
+    # 内缩 4 像素避开边框干扰，仅检测内部文字颜色
+    roi = img_bgr[max(0, y + 4):y + h - 4, max(0, x + 4):x + w - 4]
+    if roi.size == 0:
+        return True
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # 正常可选规格文字为深黑色(灰度<150)，缺货规格文字为浅灰(灰度≈204)
+    return int(np.sum(gray < 150)) < 10
+
+
 def _parse_detail_page(img_bgr):
     """验证详情页并一次性解析价格锚点、规格分类及所有 SKU 框完整内容"""
     h_img, w_img = img_bgr.shape[:2]
@@ -145,7 +159,7 @@ def _parse_detail_page(img_bgr):
 
     raw_boxes.sort(key=lambda b: (b[1] // 18, b[0]))
 
-    # 匹配每个 SKU 框内的所有 OCR 文本块，按 X 坐标排序拼接保证内容完整
+    # 匹配每个 SKU 框内的所有 OCR 文本块，按先上后下、先左后右排序拼接（兼容多行规格文本）
     used_ocr = set()
     sku_items = []
     for bx, by, bw, bh in raw_boxes:
@@ -154,10 +168,10 @@ def _parse_detail_page(img_bgr):
             ox, oy, ow, oh = item["box"]
             ix, iy = max(0, min(bx + bw, ox + ow) - max(bx, ox)), max(0, min(by + bh, oy + oh) - max(by, oy))
             if (ix * iy) / float(max(1, ow * oh)) >= 0.35:
-                frags.append((ox, item["text"]))
+                frags.append((oy, ox, item["text"]))
                 used_ocr.add(idx)
-        frags.sort(key=lambda f: f[0])
-        sku_items.append({"box": (bx, by, bw, bh), "cy": by + bh / 2.0, "text": "".join(t for _, t in frags)})
+        frags.sort(key=lambda f: (f[0] // 16, f[1]))
+        sku_items.append({"box": (bx, by, bw, bh), "cy": by + bh / 2.0, "text": "".join(t for _, _, t in frags)})
 
     if not sku_items:
         return True, price_anchor, []
@@ -186,7 +200,7 @@ def _parse_detail_page(img_bgr):
 
 def get_pdd_sku_info(id, debug=True):
     """
-    获取所有 SKU 规格组合、价格及截图
+    获取所有有效（非缺货）SKU 规格组合、价格及截图
     :param id: 截图命名前缀（保存在 SKU_DEBUG_DIR 下，如 id_1.png, id_2.png）
     :param debug: 默认为 True，保存每次选择的完整页面截图
     :return: 字典列表，任何异常或非详情页均稳定返回 []
@@ -224,19 +238,37 @@ def get_pdd_sku_info(id, debug=True):
         all_combos = list(itertools.product(*(c["items"] for c in categories)))
         results = []
 
-        # 2. 极速遍历所有规格组合
+        # 2. 极速遍历所有规格组合（自动跳过缺货规格）
         for idx, combo in enumerate(all_combos, start=1):
             try:
-                clicked = False
+                combo_valid = True
                 for target_sku in combo:
-                    bx, by, bw, bh = target_sku["box"]
-                    if not _is_box_selected(current_img, (bx, by, bw, bh)):
-                        auto.Click(int(win_left + bx + bw // 2), int(win_top + by + bh // 2), waitTime=0)
-                        clicked = True
-                        time.sleep(0.05)
+                    # 若规格文字为空（如初始极浅灰字未被OCR检出），直接跳过防止脏数据
+                    if not target_sku["text"]:
+                        combo_valid = False
+                        break
 
-                if clicked:
+                    bx, by, bw, bh = target_sku["box"]
+                    if _is_box_selected(current_img, (bx, by, bw, bh)):
+                        continue
+
+                    # 点击前检测：若该规格当前已处于缺货置灰状态，直接放弃该组合
+                    if _is_box_disabled(current_img, (bx, by, bw, bh)):
+                        combo_valid = False
+                        break
+
+                    auto.Click(int(win_left + bx + bw // 2), int(win_top + by + bh // 2), waitTime=0)
+                    time.sleep(0.05)
                     current_img, win_left, win_top = _capture_full_window(window)
+
+                    # 点击后校验：若点击后并未变为浅粉选中状态（说明不可选或缺货），放弃该组合
+                    if not _is_box_selected(current_img, (bx, by, bw, bh)):
+                        combo_valid = False
+                        break
+
+                # 最终复核：确保当前组合中的所有规格均同时处于选中状态（防止子规格因父规格切换而被自动取消选中）
+                if not combo_valid or not all(_is_box_selected(current_img, s["box"]) for s in combo):
+                    continue
 
                 price_text = _extract_price_fast(current_img, price_anchor)
                 screenshot_path = ""
@@ -769,6 +801,15 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 
 
 if __name__ == "__main__":
+    # data = get_pdd_sku_info(id="test", debug=True)
+    # print(f"耗时: s | 共采集到 {len(data)} 个规格组合：")
+    # for row in data:
+    #     print(row)
+
+
+
+
+
     while True:
         try:
             monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
