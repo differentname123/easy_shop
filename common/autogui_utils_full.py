@@ -711,6 +711,7 @@ def batch_runner(product_list):
                         "platform": product.get("platform", "pdd"),
                         "product_id": product["product_id"],
                         "need_reformat": True,
+                        "need_update_sku": False,  # 【核心闭环】：成功更新完整规格，不再重复拉起抓取
                         "sku_info": sku_info,
                         "sku_status": "success",
                         "sku_error": "",
@@ -794,7 +795,6 @@ def batch_runner(product_list):
     log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
     print(f"{'=' * 50}")
 
-
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
     查询最近更新的商品数据（基于 updated_at 字段）。
@@ -828,13 +828,10 @@ if __name__ == "__main__":
     # for row in data:
     #     print(row)
 
-
-
-
-
     while True:
         try:
-            monitored_products = read_json(r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
+            monitored_products = read_json(
+                r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json')
             search_keywords = [k for k, v in monitored_products.items() if v.get('is_monitoring')]
 
             target_category_list = []
@@ -848,6 +845,7 @@ if __name__ == "__main__":
                 limit=0,
                 extra_query={
                     "format_status": "success",
+                    "need_update_sku": True,  # 【修改点 1】：直接精准检索需要更新规格的商品
                     "$or": [
                         {"sku_retry_count": {"$lte": 3}},
                         {"sku_retry_count": {"$exists": False}}
@@ -859,18 +857,19 @@ if __name__ == "__main__":
                     "product_id": 1,
                     "name": 1,
                     "sku_info": 1,
+                    "need_update_sku": 1,  # 【修改点 2】：投影增加该字段
                     "sku_retry_count": 1
                 }
             )
 
             # 过滤逻辑：
-            # 1. 满足任意一组规则（该组内所有关键词都在商品名中）
-            # 2. sku_info 为空 且 sku_retry_count <= 3
+            # 1. 满足任意一组分词规则
+            # 2. need_update_sku 为 True 且 sku_retry_count <= 3
             filtered_results = [
                 item for item in results
-                if not item.get("sku_info")
-                and (item.get("sku_retry_count") or 0) <= 3
-                and any(
+                if bool(item.get("need_update_sku"))
+                   and (item.get("sku_retry_count") or 0) <= 3
+                   and any(
                     all(keyword in item.get("name", "") for keyword in keywords_group)
                     for keywords_group in target_category_list
                 )
