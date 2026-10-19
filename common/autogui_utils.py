@@ -25,8 +25,8 @@ from common.common_utils import read_json, save_json
 # ⚙️ 全局配置区
 # ==========================================
 # 新增中转小程序配置
-TRANSFER_APP_NAME = "合力汇"
-TRANSFER_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\合力汇.lnk"
+TRANSFER_APP_NAME = "wxid_2lr36gkzn2io22的小程序测试号"
+TRANSFER_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\wxid_2lr36gkzn2io22的小程序测试号.lnk"
 TARGET_APP_NAME = "拼多多"
 
 DEBUG_MODE = True
@@ -460,7 +460,7 @@ def batch_runner(goods_id_list):
                      and state.get(gid, {}).get("attempts", 0) < 3]
 
     print(f"\n{'=' * 60}")
-    log("[SYSTEM] 🚀 桥接级 RPA 引擎启动 (通过合力汇中转)")
+    log("[SYSTEM] 🚀 桥接级 RPA 引擎启动 (通过wxid_2lr36gkzn2io22的小程序测试号中转)")
     log(f"[INFO] 📊 待执行任务数: {len(filtered_list)}")
     print(f"{'=' * 60}\n")
 
