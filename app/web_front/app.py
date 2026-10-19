@@ -8,6 +8,7 @@
 :description:
 
 """
+import math
 import os
 import json
 import threading
@@ -233,7 +234,10 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         # 组装当前商品下的 (展示名称, SKU价格, 单个SKU的format_info字典) 列表，兼容新版多规格字典与旧版单层字典
         sku_entries = []
         if "pricing_basis" in raw_format_info and isinstance(raw_format_info.get("pricing_basis"), dict):
-            sku_entries.append((base_name, base_act_price, raw_format_info))
+            sku_price = raw_format_info.get("price")
+            if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
+                continue
+            sku_entries.append((base_name, sku_price, raw_format_info))
         else:
             if sku_info_list:
                 for idx, sku_item in enumerate(sku_info_list, start=1):
@@ -246,14 +250,19 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                         if k not in ("价格", "截图地址") and str(v).strip()
                     ]
                     display_name = f"{base_name} 【{' | '.join(desc_parts)}】" if desc_parts else base_name
-                    sku_price = _parse_sku_price((sku_item or {}).get("价格"), base_act_price)
+                    sku_price = sku_fmt.get("price")
+                    if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
+                        continue
                     sku_entries.append((display_name, sku_price, sku_fmt))
 
-            # 兜底：若 sku_info 尚未对齐但 raw_format_info 中存在有效规格项（如 _0）
+            # 兜底结果也必须使用清洗通过的价格，禁止使用商品基础价补位
             if not sku_entries:
                 for sku_id, sku_fmt in raw_format_info.items():
                     if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
-                        sku_entries.append((base_name, base_act_price, sku_fmt))
+                        sku_price = sku_fmt.get("price")
+                        if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
+                            continue
+                        sku_entries.append((base_name, sku_price, sku_fmt))
 
         for display_name, act_price, sku_fmt in sku_entries:
             orig_price = base_orig_price

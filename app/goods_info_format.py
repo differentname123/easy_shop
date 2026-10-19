@@ -99,8 +99,12 @@ def _check_single_item(format_info, index):
     if not isinstance(format_info, dict):
         return False, f"元素[{index}] 必须是对象"
     prefix = f"元素[{index}](sku_id={format_info.get('sku_id')})"
-    if set(format_info) != {"sku_id", "core_entities", "decision_keywords", "pricing_basis"}:
+    if set(format_info) != {"sku_id", "price", "core_entities", "decision_keywords", "pricing_basis"}:
         return False, f"{prefix} 必须且只能包含 sku_id、core_entities、decision_keywords、pricing_basis"
+
+    price = format_info["price"]
+    if type(price) not in (int, float) or not math.isfinite(price) or price <= 0:
+        return False, f"{prefix} price 必须是大于0的有限数字"
     for field, text_keys in (
         ("core_entities", ("name",)),
         ("decision_keywords", ("attribute_name", "attribute_value")),
