@@ -495,11 +495,13 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
     else:
         api_list = ["api_search"]
 
+    clean_goods_id = str(goods_id).strip()
     record = {
         "platform": GLOBAL_CONFIG["platform"],
-        "product_id": str(goods_id).strip(),
+        "product_id": clean_goods_id,
         "category": item.get("category_name") or default_category,
-        "_source_api": api_list
+        "_source_api": api_list,
+        "product_url": f"https://mobile.pinduoduo.com/goods.html?goods_id={clean_goods_id}",
     }
 
     # 基础字段映射 (从 API 字段 -> 数据库字段)
@@ -535,6 +537,7 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
 
     return record
 
+
 def normalize_intercept_goods(item, default_category, source_account=""):
     """
     清洗 search_goods_and_intercept 返回的混合商品数据（API Json + Excel 融合字段）。
@@ -554,12 +557,14 @@ def normalize_intercept_goods(item, default_category, source_account=""):
         raw_acc = str(source_account).strip()
         clean_account = os.path.basename(os.path.normpath(raw_acc)) or raw_acc
 
+    clean_goods_id = str(goods_id).strip()
     record = {
         "platform": GLOBAL_CONFIG["platform"],
-        "product_id": str(goods_id).strip(),
+        "product_id": clean_goods_id,
         "category": item.get("categoryName") or default_category,
         "_source_api": ["web_intercept"],
         "source_account": clean_account,
+        "product_url": f"https://mobile.pinduoduo.com/goods.html?goods_id={clean_goods_id}",
     }
 
     # 基础字段映射 (从驼峰或中文表头字段 -> 数据库字段)
@@ -579,8 +584,10 @@ def normalize_intercept_goods(item, default_category, source_account=""):
     activity_price = round(max(0.0, raw_group_price - saved_price), 2)
     record["activity_price"] = activity_price
 
-    # 提取推广短链接
-    record["promotion_url"] = str(item.get("短链接") or "").strip()
+    # 仅在推广短链接非空时写入，防止空字符串覆盖已有转链或阻断 pending_promotion_query
+    short_url = str(item.get("短链接") or "").strip()
+    if short_url:
+        record["promotion_url"] = short_url
 
     # 安全提取并计算估算的佣金(元)
     try:
@@ -854,31 +861,39 @@ def web_search_intercept_task():
 def safe_batch_update(product_manager, records):
     """
     【安全批量更新封装】
-    1. 价格与商品基础字段直接以当前最新抓取的数据为准进行更新，不做任何旧价格拦截或覆盖。
+    1. 价格与商品基础字段以当前最新抓取的数据为准进行更新。
     2. 对 _source_api 来源列表进行安全合并与追加，保留商品全部历史来源并保序去重。
+    3. 保护已被 RPA 抓取过真实多规格的商品（need_update_sku == False 或 sku_status == "success"），
+       防止重复采集将真实 sku_info 覆盖回默认单规格占位，或将 need_update_sku 重置为 True。
+    4. 保护库中已生成的非空 promotion_url，防止被空值覆盖。
     """
     if not records:
         return {"new": 0, "update": 0}
 
     try:
-        # 1. 仅当当前批次记录中包含 _source_api 时，才去数据库查询历史来源进行合并
         product_ids = [
             str(r["product_id"]) for r in records
-            if r.get("product_id") and r.get("_source_api") is not None
+            if r.get("product_id")
         ]
 
         if product_ids:
-            # 2. 批量查询：仅投影 product_id 与 _source_api，彻底移除 sku_info 相关查询
             existing_docs = product_manager.query(
                 {"product_id": {"$in": list(set(product_ids))}},
-                projection={"product_id": 1, "_source_api": 1}
+                projection={
+                    "product_id": 1,
+                    "_source_api": 1,
+                    "need_update_sku": 1,
+                    "sku_status": 1,
+                    "promotion_url": 1,
+                }
             )
 
-            # 3. 建立映射关系: product_id -> 数据库中已有的来源列表
             source_api_map = {}
+            existing_doc_map = {}
             if existing_docs:
                 for doc in existing_docs:
                     pid = str(doc.get("product_id"))
+                    existing_doc_map[pid] = doc
                     old_source = doc.get("_source_api")
                     if old_source:
                         if isinstance(old_source, list):
@@ -888,9 +903,10 @@ def safe_batch_update(product_manager, records):
                         else:
                             source_api_map[pid] = [str(old_source)]
 
-            # 4. 安全合并追加 _source_api，绝不触碰 activity_price 等价格字段
             for record in records:
                 pid = str(record.get("product_id"))
+
+                # 合并 _source_api
                 current_source = record.get("_source_api")
                 if current_source is not None:
                     if isinstance(current_source, list):
@@ -901,18 +917,25 @@ def safe_batch_update(product_manager, records):
                         new_sources = [str(current_source)]
 
                     existing_sources = source_api_map.get(pid, [])
-                    # 合并并保序去重
                     combined_sources = list(dict.fromkeys(existing_sources + new_sources))
                     record["_source_api"] = combined_sources
-                    # 同步刷新 map，确保同一批次内多条相同 product_id 记录能持续累加
                     source_api_map[pid] = combined_sources
+
+                old_doc = existing_doc_map.get(pid)
+                if old_doc:
+                    # 若该商品已完成过 RPA 真实规格提取，绝不用默认单规格覆盖 sku_info 和 need_update_sku
+                    if old_doc.get("need_update_sku") is False or old_doc.get("sku_status") == "success":
+                        record.pop("sku_info", None)
+                        record.pop("need_update_sku", None)
+
+                    # 若新记录未携带有效推广链接，但库中已有推广链接，绝不覆盖为空
+                    if not record.get("promotion_url") and old_doc.get("promotion_url"):
+                        record.pop("promotion_url", None)
 
     except Exception as e:
         logger.error("[安全更新/来源合并异常] 来源合并查询失败，退回直接入库模式 | 错误: %s", e)
 
-    # 5. 直接调用底层的 update 批量更新入库（最新抓取的价格直接生效）
     return product_manager.update(records)
-
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
 # ==========================================
@@ -1555,7 +1578,7 @@ def api_recommend_task():
     """后台任务：利用封装好的自动翻页引擎 get_pdd_recommend_goods 横扫推荐榜单。
     每遍历完一个频道/分类，立刻清洗落库，防止因中途网络异常或封禁导致全局数据丢失。
     """
-    from app.pdd_utils import get_pdd_recommend_goods  # 确保导入你的函数
+    from app.pdd_utils import get_pdd_recommend_goods
 
     pdd_client_id = get_config("myself_pdd_client_id")
     pdd_client_secret = get_config("myself_pdd_client_secret")
@@ -1578,15 +1601,12 @@ def api_recommend_task():
                 product_manager = ProductManager(db_instance)
 
                 for channel in target_channels:
-                    # 如果是频道4，则遍历类目；如果是其他榜单，无需传类目 (传 [None])
                     current_cat_list = cat_id_list if channel == 4 else [None]
 
                     for cid in current_cat_list:
-                        # 组合出分类名称作为默认 Category 落库
                         category_name = f"推荐榜单_ch{channel}" + (f"_cat{cid}" if cid else "")
                         logger.info("[推荐API任务/拉取] 正在调用底层引擎拉取大类: [%s] ...", category_name)
 
-                        # 调用你的自翻页实现，limit_count=0 代表拉干为止
                         res = get_pdd_recommend_goods(
                             client_id=pdd_client_id,
                             client_secret=pdd_client_secret,
@@ -1605,47 +1625,26 @@ def api_recommend_task():
                             logger.info("[推荐API任务/空数据] [%s] 该分类/榜单暂无推荐数据", category_name)
                             continue
 
-                        # 【核心转换】：你的函数吐出的是 format_unified_response 的大一统数据
-                        # 我们需要将其适配进 ProductManager 的 MongoDB 字段规范
                         records = []
                         now = datetime.now(timezone.utc)
                         for item in raw_items:
-                            goods_id = item.get("goods_id")
-                            if not goods_id:
-                                continue
+                            record = normalize_api_goods(item, category_name, source_api=["api_recommend"])
+                            if record is not None:
+                                record["updated_at"] = now
+                                records.append(record)
 
-                            record = {
-                                "platform": GLOBAL_CONFIG["platform"],
-                                "product_id": str(goods_id).strip(),
-                                "category": item.get("category_name") or category_name,
-                                "_source_api": ["api_recommend"],  # 【核心修改】：列表格式存储来源
-                                "name": item.get("goods_name", ""),
-                                "brand": item.get("brand_name", ""),
-                                "sales_tip": str(item.get("sales_tip", "")),
-                                "image_url": item.get("goods_image_url") or item.get("goods_thumbnail_url", ""),
-                                # 大一统数据价格单位是分，入库前除以 100 转为元
-                                "original_price": item.get("min_normal_price", 0) / 100,
-                                "activity_price": item.get("min_group_price", 0) / 100,
-                                "saved_price": item.get("coupon_discount", 0) / 100,
-                                "updated_at": now
-                            }
-                            records.append(record)
-
-                        # 【核心安全设计】：每次调完 get_pdd_recommend_goods 立刻落库，即使后续其他分类崩溃，本分类也已保存
                         if records:
                             counts = safe_batch_update(product_manager, records)
                             logger.info("[推荐API任务/落库] [%s] 采集结束 | 新增/更新: [%d/%d] | 标志: [api_recommend]",
                                         category_name, counts.get("new", 0), counts.get("update", 0))
 
-                        # 防护机制：不同的大类之间请求休眠 3 秒，防止被判机器人封禁IP
                         time.sleep(3)
 
         except Exception as exc:
             logger.error("[推荐API任务/数据库异常] 连接或全局操作失败 | 错误: [%s]", exc)
 
-        logger.info("[推荐API任务/轮次结束] 本轮推荐横扫完成，休眠 12 小时等待下一次全盘拉取...")
+        logger.info("[推荐API任务/轮次结束] 本轮推荐横扫完成，休眠 24 小时等待下一次全盘拉取...")
         time.sleep(24 * 3600)
-
 
 if __name__ == "__main__":
 

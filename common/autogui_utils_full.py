@@ -797,16 +797,18 @@ def batch_runner(product_list):
 
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
-    查询最近更新的商品数据（基于 updated_at 字段）。
+    查询最近更新的拼多多商品数据（基于 updated_at 字段，强制过滤 platform='pdd' 防止非拼多多商品引发 RPA 熔断）。
     """
     time_threshold = datetime.now(timezone.utc) - timedelta(hours=12)
 
     query_condition = {
+        "platform": "pdd",
         "updated_at": {"$gte": time_threshold}
     }
 
     if extra_query and isinstance(extra_query, dict):
         query_condition = {**query_condition, **extra_query}
+        query_condition["platform"] = extra_query.get("platform", "pdd")
 
     with closing(gen_db_object()) as db_instance:
         db_instance.ping()
@@ -820,7 +822,6 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
         )
 
     return results
-
 
 if __name__ == "__main__":
     # data = get_pdd_sku_info(id="test", debug=True)

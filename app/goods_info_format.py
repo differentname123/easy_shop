@@ -279,20 +279,38 @@ def run_format_round(product_manager):
         product_id = str(product.get("product_id")).strip()
         name = str(product.get("name") or "").strip()
         sku_info = product.get("sku_info")
-        existing_format_info = product.get("format_info") or {}
-
-        # 针对需要完全重洗的场景，忽略旧的已洗记录
-        if is_reformat:
+        existing_format_info = product.get("format_info")
+        if not isinstance(existing_format_info, dict):
             existing_format_info = {}
 
+        # 【极简改动 1】：针对重洗（或旧版单层结构）商品，第一次拉取时直接将数据库和内存中的
+        # need_reformat 设为 False、清空旧 format_info 并置为 pending，后续完全交给未完成规格逻辑自然推进
+        if is_reformat or "pricing_basis" in existing_format_info:
+            existing_format_info = {}
+            product["format_info"] = existing_format_info
+            product["need_reformat"] = False
+            product_manager.update(
+                {
+                    "platform": product["platform"],
+                    "product_id": product_id,
+                    "need_reformat": False,
+                    "format_status": "pending",
+                    "format_info": {},
+                },
+                condition={"_id": product["_id"]},
+                upsert=False,
+            )
+        else:
+            product["format_info"] = existing_format_info
+
+        product_pending_tasks = []
         if isinstance(sku_info, list) and len(sku_info) > 0:
+            total_expected = len(sku_info)
             for idx, item in enumerate(sku_info, start=1):
                 sku_id = f"{product_id}_{idx}"
-                # 如果当前规格已经成功生成过且非重洗，跳过生成
                 if sku_id in existing_format_info:
                     continue
 
-                # 提取除去 价格、截图地址 以外的字段
                 desc_parts = [
                     f"{k}：{v}" for k, v in item.items()
                     if k not in ("价格", "截图地址") and str(v).strip()
@@ -300,32 +318,51 @@ def run_format_round(product_manager):
                 sku_desc = " | ".join(desc_parts)
                 price_str = str(item.get("价格", "")).strip()
 
-                all_sku_tasks.append({
+                product_pending_tasks.append({
                     "sku_id": sku_id,
                     "product_id": product_id,
                     "product_desc": name,
                     "sku_desc": sku_desc,
                     "价格": price_str,
                     "product_ref": product,
-                    "total_expected_skus": len(sku_info)
+                    "total_expected_skus": total_expected,
+                    "is_reformat": is_reformat,
                 })
         else:
-            # 无 sku_info 场景
+            total_expected = 1
             sku_id = f"{product_id}_0"
             if sku_id not in existing_format_info:
                 act_price = str(product.get("activity_price", "")).strip()
-                all_sku_tasks.append({
+                product_pending_tasks.append({
                     "sku_id": sku_id,
                     "product_id": product_id,
                     "product_desc": name,
                     "sku_desc": "",
                     "价格": act_price,
                     "product_ref": product,
-                    "total_expected_skus": 1
+                    "total_expected_skus": 1,
+                    "is_reformat": is_reformat,
                 })
 
+        # 【极简改动 2】：如果该商品下所有规格其实已在上一轮全部生成完毕，直接补标为 success，防止第二轮空转
+        if not product_pending_tasks and len(existing_format_info) >= total_expected:
+            product_manager.update(
+                {
+                    "platform": product["platform"],
+                    "product_id": product_id,
+                    "format_status": "success",
+                    "need_reformat": False,
+                    "format_error": "",
+                    "format_updated_at": datetime.now(timezone.utc),
+                },
+                condition={"_id": product["_id"]},
+                upsert=False,
+            )
+        else:
+            all_sku_tasks.extend(product_pending_tasks)
+
     if not all_sku_tasks:
-        logger.info("[调度/完成] 查到候选商品，但其下规格均已生成完毕 | 耗时: [%.2f 秒]", time.monotonic() - started)
+        logger.info("[调度/完成] 查到候选商品，其下规格均已生成完毕并已同步状态 | 耗时: [%.2f 秒]", time.monotonic() - started)
         return counts
 
     prompt_text = read_file_to_str(PROMPT_FILE_PATH)
@@ -356,7 +393,7 @@ def run_format_round(product_manager):
             sku_id = task["sku_id"]
             product = task["product_ref"]
             product_id = product["product_id"]
-            is_reformat = bool(product.get("need_reformat"))
+            is_reformat = task["is_reformat"]
             total_expected_skus = task["total_expected_skus"]
 
             format_info_item = generated["results"].get(sku_id)
@@ -366,10 +403,7 @@ def run_format_round(product_manager):
                 else generated["item_errors"].get(sku_id, "未知的规格解析错误")
             )
 
-            # 构建条件
             condition = {"_id": product["_id"]}
-
-            # 增量设置字段
             update_fields = {
                 "platform": product["platform"],
                 "product_id": product_id,
@@ -378,12 +412,12 @@ def run_format_round(product_manager):
             }
 
             if is_success:
-                # 仅更新指定 sku_id 的深层字段，绝不覆盖其他批次写好的 sku
                 update_fields[f"format_info.{sku_id}"] = format_info_item
-                # 预读现有已完成的 sku 数量，如果加上当前这个达到了完整规格数，则整体状态标为 success
-                current_completed_keys = set((product.get("format_info") or {}).keys())
-                current_completed_keys.add(sku_id)
-                if len(current_completed_keys) >= total_expected_skus:
+                # 【极简改动 3】：直接将当前完成的 sku_id 写回共享的 product["format_info"] 字典中，
+                # 这样第一轮最后一个完成的规格就能看到完整数量并当场置为 success；即便极端并发差一点，第二轮也会被改动 2 自动收口
+                fmt_map = product.setdefault("format_info", {})
+                fmt_map[sku_id] = format_info_item
+                if len(fmt_map) >= total_expected_skus:
                     update_fields["format_status"] = "success"
                     update_fields["need_reformat"] = False
                     update_fields["format_error"] = ""
@@ -454,7 +488,6 @@ def run_format_round(product_manager):
         time.monotonic() - started)
 
     return counts
-
 
 def pending_promotion_query():
     """查询没有推广链接、goods_sign 存在且重试未达上限的待转链商品。"""

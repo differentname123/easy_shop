@@ -147,6 +147,7 @@ def api_submit_feedback(req: FeedbackRequest):
 
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
+    import re
     target_kw = (keyword or "").strip().lower()
 
     # 1. 调用分词工具获取分词词列表
@@ -161,6 +162,9 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     if not search_terms and target_kw:
         search_terms = [target_kw]
 
+    if not search_terms:
+        return {"results": [], "filters": []}
+
     # 读取已反馈有误的商品列表，用于后续过滤
     with feedback_file_lock:
         feedback_data = _load_feedback_data_unsafe()
@@ -171,11 +175,25 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         sort=[("updated_at", -1)], limit=limit,
     )
 
-    # 提取前端展示和计算所需的字段 (过滤 product_url 为空的数据及已反馈商品)
-    products = []
+    def _parse_sku_price(price_val, fallback_price):
+        """从 sku_info 的 '价格' 字段（如 '￥19.9'）中提取浮点数价格"""
+        if isinstance(price_val, (int, float)) and price_val > 0:
+            return round(float(price_val), 2)
+        if isinstance(price_val, str) and price_val.strip():
+            match = re.search(r"\d+(?:\.\d+)?", price_val)
+            if match:
+                try:
+                    val = float(match.group(0))
+                    if val > 0:
+                        return round(val, 2)
+                except ValueError:
+                    pass
+        return fallback_price
+
+    # 2. 提取前端展示和计算所需的字段，过滤无效商品并按 SKU 展开 format_info
+    filtered_products = []
     for product in raw_products:
         product_url = product.get("promotion_url") or product.get("product_url")
-
         if not product_url:
             continue
 
@@ -183,31 +201,25 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         if product_id in feedback_data:
             continue
 
-        original_price = product.get("original_price")
-        activity_price = product.get("activity_price", 999999)
-        is_suspicious = 0
+        base_name = product.get("name") or ""
+        if not base_name or not all(term in base_name.lower() for term in search_terms):
+            continue
 
-        # 计算比值并标记可疑商品
-        if original_price is not None and activity_price != 999999 and activity_price > 0:
-            try:
-                orig_p = float(original_price)
-                act_p = float(activity_price)
+        raw_format_info = product.get("format_info")
+        if not isinstance(raw_format_info, dict) or not raw_format_info:
+            continue
 
-                if act_p > orig_p:
-                    orig_p *= 10
-
-                ratio = orig_p / act_p
-                if ratio > 3:
-                    is_suspicious = -1
-
-                original_price = orig_p
-            except (ValueError, TypeError):
-                pass
-
-        sku_info = product.get("sku_info")
+        sku_info_list = product.get("sku_info") if isinstance(product.get("sku_info"), list) else []
         need_reformat = product.get("need_reformat")
-        if sku_info and (need_reformat is False or need_reformat == "false"):
-            is_suspicious = 1
+        need_update_sku = product.get("need_update_sku")
+        sku_status = product.get("sku_status")
+
+        # 仅当已完成真实 SKU 抓取（need_update_sku 为 False 或 sku_status 为 success）且完成重洗时，才标记为已确认规格 (1)
+        is_confirmed_sku = bool(
+            sku_info_list
+            and (need_update_sku is False or sku_status == "success")
+            and (need_reformat is False or need_reformat == "false")
+        )
 
         _source_api = product.get("_source_api", "group")
         if "group" in _source_api:
@@ -215,32 +227,75 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         else:
             _source_api = "no_group"
 
-        products.append({
-            "name": product.get("name"),
-            "product_id": product_id,
-            "platform": product.get("platform"),
-            "image_url": product.get("image_url"),
-            "product_url": product_url,
-            "has_commission": bool(product.get("promotion_url")),
-            "original_price": original_price,
-            "saved_price": product.get("saved_price") or 0,
-            "brand": product.get("brand"),
-            "format_info": product.get("format_info"),
-            "activity_price": activity_price,
-            "is_suspicious": is_suspicious,
-            "_source_api": _source_api
-        })
+        base_orig_price = product.get("original_price")
+        base_act_price = product.get("activity_price", 999999)
 
-    # 2. 搜索过滤：商品名称必须包含分词列表中的每一个元素 (AND 关系)
-    if search_terms:
-        filtered_products = [
-            p for p in products
-            if (p_name := (p.get("name") or "").lower()) and all(term in p_name for term in search_terms)
-        ]
-    else:
-        filtered_products = []
+        # 组装当前商品下的 (展示名称, SKU价格, 单个SKU的format_info字典) 列表，兼容新版多规格字典与旧版单层字典
+        sku_entries = []
+        if "pricing_basis" in raw_format_info and isinstance(raw_format_info.get("pricing_basis"), dict):
+            sku_entries.append((base_name, base_act_price, raw_format_info))
+        else:
+            if sku_info_list:
+                for idx, sku_item in enumerate(sku_info_list, start=1):
+                    sku_id = f"{product_id}_{idx}"
+                    sku_fmt = raw_format_info.get(sku_id)
+                    if not isinstance(sku_fmt, dict) or not isinstance(sku_fmt.get("pricing_basis"), dict):
+                        continue
+                    desc_parts = [
+                        f"{k}:{v}" for k, v in (sku_item or {}).items()
+                        if k not in ("价格", "截图地址") and str(v).strip()
+                    ]
+                    display_name = f"{base_name} 【{' | '.join(desc_parts)}】" if desc_parts else base_name
+                    sku_price = _parse_sku_price((sku_item or {}).get("价格"), base_act_price)
+                    sku_entries.append((display_name, sku_price, sku_fmt))
 
-    logger.info(f"搜索词：[{keyword}]，分词项：{search_terms}，过滤后的商品数量: {len(filtered_products)}")
+            # 兜底：若 sku_info 尚未对齐但 raw_format_info 中存在有效规格项（如 _0）
+            if not sku_entries:
+                for sku_id, sku_fmt in raw_format_info.items():
+                    if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
+                        sku_entries.append((base_name, base_act_price, sku_fmt))
+
+        for display_name, act_price, sku_fmt in sku_entries:
+            orig_price = base_orig_price
+            is_suspicious = 1 if is_confirmed_sku else 0
+
+            if orig_price is not None and act_price != 999999 and act_price > 0:
+                try:
+                    orig_p = float(orig_price)
+                    act_p = float(act_price)
+                    if act_p > orig_p:
+                        orig_p *= 10
+                    if (orig_p / act_p) > 3 and not is_confirmed_sku:
+                        is_suspicious = -1
+                    orig_price = orig_p
+                except (ValueError, TypeError):
+                    pass
+
+            # 拷贝单规格 format_info，防止后续单位换算直接修改原引用或报 KeyError
+            pricing_basis_copy = dict(sku_fmt.get("pricing_basis") or {})
+            format_info_copy = {
+                "pricing_basis": pricing_basis_copy,
+                "decision_keywords": list(sku_fmt.get("decision_keywords") or []),
+                "core_entities": list(sku_fmt.get("core_entities") or []),
+            }
+
+            filtered_products.append({
+                "name": display_name,
+                "product_id": product_id,
+                "platform": product.get("platform"),
+                "image_url": product.get("image_url"),
+                "product_url": product_url,
+                "has_commission": bool(product.get("promotion_url")),
+                "original_price": orig_price,
+                "saved_price": product.get("saved_price") or 0,
+                "brand": product.get("brand"),
+                "format_info": format_info_copy,
+                "activity_price": act_price,
+                "is_suspicious": is_suspicious,
+                "_source_api": _source_api
+            })
+
+    logger.info(f"搜索词：[{keyword}]，分词项：{search_terms}，过滤展开后的商品规格数量: {len(filtered_products)}")
 
     # 构建单位到类别、以及单位到基数乘数的反向查找字典
     unit_to_category = {}
@@ -268,8 +323,9 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
     grouped_products = {}
     for product in filtered_products:
-        total_value = product.get("format_info", {}).get("pricing_basis", {}).get("total_value", 1)
-        base_unit = product.get("format_info", {}).get("pricing_basis", {}).get("base_unit", "件")
+        pricing_basis = product["format_info"]["pricing_basis"]
+        total_value = pricing_basis.get("total_value", 1)
+        base_unit = pricing_basis.get("base_unit", "件")
 
         # 检查是否可以进行单位转换
         category = unit_to_category.get(base_unit)
@@ -280,11 +336,11 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 target_multiplier = unit_to_multiplier[target_unit]
                 total_value = total_value * (orig_multiplier / target_multiplier)
                 base_unit = target_unit
-                product["format_info"]["pricing_basis"]["total_value"] = total_value
+                pricing_basis["total_value"] = total_value
 
         # 性价比计算
         price = product["activity_price"]
-        product["cost_performance_score"] = total_value / price if price > 0 else 0
+        product["cost_performance_score"] = total_value / price if price and price > 0 else 0
         product["base_unit"] = base_unit
 
         if base_unit not in grouped_products:
@@ -376,7 +432,6 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             for item in top_filters
         ]
     }
-
 # ============== 新增：商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
 monitor_file_lock = threading.Lock()
@@ -422,7 +477,7 @@ def _save_monitor_data_unsafe(data: dict):
 
 
 def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hours: int = 72) -> dict:
-    """一次性查询 72 小时内更新的有效商品，通过商品名直接匹配，统计总数量及已人工确定的数量"""
+    """一次性查询 72 小时内更新的有效商品，通过商品名直接匹配，统计总数量及已通过 RPA 确定真实规格的数量"""
     counts = {kw: {"total": 0, "confirmed": 0} for kw in keywords}
     if not keywords:
         return counts
@@ -443,7 +498,15 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
 
         sku_info = product.get("sku_info")
         need_reformat = product.get("need_reformat")
-        is_confirmed = bool(sku_info and (need_reformat is False or need_reformat == "false"))
+        need_update_sku = product.get("need_update_sku")
+        sku_status = product.get("sku_status")
+
+        # 必须已完成真实规格抓取（need_update_sku 为 False 或 sku_status 为 success）且完成重洗，才计入已确定数量
+        is_confirmed = bool(
+            sku_info
+            and (need_update_sku is False or sku_status == "success")
+            and (need_reformat is False or need_reformat == "false")
+        )
 
         valid_products_info.append((product_name, is_confirmed))
 
@@ -452,15 +515,11 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
         if not target_lower:
             continue
 
-        # 1. 调用分词工具获取分词词列表
         words = gen_goods_segment_info(name=kw)
-
-        # 对分词结果进行清洗与大小写统一，过滤空字符
         search_terms = []
         if isinstance(words, (list, tuple, set)):
             search_terms = [str(w).strip().lower() for w in words if str(w).strip()]
 
-        # 兜底保障：若分词结果为空但原始关键字非空，则降级使用原始关键字
         if not search_terms and target_lower:
             search_terms = [target_lower]
 
@@ -477,7 +536,6 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
         }
 
     return counts
-
 
 def build_monitor_response(data: dict) -> dict:
     """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量）"""
