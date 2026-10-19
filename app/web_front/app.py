@@ -78,6 +78,79 @@ sku_unit_base_mapping = {
     }
 }
 
+# ============== 新增：商品分词结果本地 JSON 缓存与持久化逻辑 ==============
+SEGMENT_CACHE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "segment_cache.json")
+segment_cache_lock = threading.Lock()
+_raw_gen_goods_segment_info = gen_goods_segment_info
+_segment_memory_cache = None
+
+
+def _load_segment_cache_unsafe() -> dict:
+    """内部读取分词缓存 JSON 文件（调用方需持有锁）"""
+    if not os.path.exists(SEGMENT_CACHE_FILE_PATH):
+        return {}
+    try:
+        with open(SEGMENT_CACHE_FILE_PATH, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            if not content:
+                return {}
+            data = json.loads(content)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.error(f"读取分词缓存文件失败: {e}")
+        return {}
+
+
+def _save_segment_cache_unsafe(data: dict):
+    """内部原子写入分词缓存 JSON 文件（调用方需持有锁，使用临时文件替换保障安全）"""
+    temp_path = f"{SEGMENT_CACHE_FILE_PATH}.tmp"
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, SEGMENT_CACHE_FILE_PATH)
+    except Exception as e:
+        logger.error(f"写入分词缓存文件失败: {e}")
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise e
+
+
+def gen_goods_segment_info(name: str = "", *args, **kwargs):
+    """带内存与本地 JSON 双重持久化的分词包装函数：命中相同输入直接快速返回"""
+    global _segment_memory_cache
+    cache_key = str(name) if name is not None else ""
+    if not cache_key.strip():
+        return []
+
+    with segment_cache_lock:
+        if _segment_memory_cache is None:
+            _segment_memory_cache = _load_segment_cache_unsafe()
+        if cache_key in _segment_memory_cache:
+            return list(_segment_memory_cache[cache_key])
+
+    words = _raw_gen_goods_segment_info(name=name, *args, **kwargs)
+
+    if isinstance(words, (list, tuple, set)):
+        normalized_words = list(words)
+        if normalized_words:
+            with segment_cache_lock:
+                if _segment_memory_cache is None:
+                    _segment_memory_cache = _load_segment_cache_unsafe()
+                _segment_memory_cache[cache_key] = normalized_words
+                try:
+                    _save_segment_cache_unsafe(_segment_memory_cache)
+                except Exception:
+                    pass
+        return normalized_words
+
+    return words
+# =====================================================================
+
 # ============== 新增：商品错误反馈本地 JSON 安全维护逻辑 ==============
 FEEDBACK_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_products.json")
 feedback_file_lock = threading.Lock()
@@ -445,6 +518,11 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
 monitor_file_lock = threading.Lock()
 
+# 监控商品展示数据 1 分钟缓存配置与状态
+MONITOR_CACHE_TTL_SECONDS = 60
+monitor_cache_lock = threading.Lock()
+_monitor_counts_cache = {}
+
 
 class MonitorRequest(BaseModel):
     keyword: str
@@ -547,9 +625,40 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
     return counts
 
 def build_monitor_response(data: dict) -> dict:
-    """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量）"""
+    """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量，1分钟内更新的数据直接使用缓存）"""
     active_keywords = [kw for kw, info in data.items() if info.get("is_monitoring", False)]
-    counts_map = count_monitored_products_72h(active_keywords, min_match_score=10, hours=72)
+    now_ts = datetime.now().timestamp()
+
+    counts_map = {}
+    keywords_to_query = []
+    has_expired = False
+
+    with monitor_cache_lock:
+        for kw in active_keywords:
+            cached_entry = _monitor_counts_cache.get(kw)
+            if cached_entry is not None and (now_ts - cached_entry.get("updated_at", 0)) < MONITOR_CACHE_TTL_SECONDS:
+                counts_map[kw] = {
+                    "total": cached_entry["total"],
+                    "confirmed": cached_entry["confirmed"]
+                }
+            else:
+                if cached_entry is not None:
+                    has_expired = True
+                keywords_to_query.append(kw)
+
+    if keywords_to_query:
+        # 若已有缓存超过1分钟过期，则统一刷新全部活跃监控词以对齐缓存时间；若仅新增监控词，则只查询新增词
+        target_query_keywords = active_keywords if has_expired else keywords_to_query
+        fresh_counts = count_monitored_products_72h(target_query_keywords, min_match_score=10, hours=72)
+        update_ts = datetime.now().timestamp()
+        with monitor_cache_lock:
+            for kw, val in fresh_counts.items():
+                _monitor_counts_cache[kw] = {
+                    "total": val["total"],
+                    "confirmed": val["confirmed"],
+                    "updated_at": update_ts
+                }
+                counts_map[kw] = val
 
     active_list = []
     inactive_list = []
