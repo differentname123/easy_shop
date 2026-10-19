@@ -52,18 +52,21 @@
             --sab: env(safe-area-inset-bottom);
         }
 
-- {
-
-
+        * {
             -webkit-tap-highlight-color: transparent;
         }
 
         body {
             background-color: #f4f4f5;
             background-image: radial-gradient(circle at 50% 0%, #ffffff 0%, #f4f4f5 70%);
-            background-attachment: fixed;
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
+        }
+
+        @media (min-width: 640px) {
+            body {
+                background-attachment: fixed;
+            }
         }
 
         /* 隐藏滚动条但保留功能 */
@@ -114,7 +117,7 @@
 
         /* ============ 卡片交互 ============ */
         .product-card {
-            transition: all 0.3s ease;
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
         }
 
         @media (min-width: 640px) {
@@ -253,7 +256,7 @@
                     >
                     <button
                             v-if="nameKeywordFilter"
-                            @click="nameKeywordFilter = ''"
+                            @click="clearNameFilter"
                             type="button"
                             class="absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400 hover:text-zinc-600"
                     >
@@ -528,14 +531,17 @@
                         <h3 class="text-xl font-bold text-zinc-900">
                             找到 {{ sortedProducts.length }} 个「<span class="text-brand-600">{{ currentKeyword }}</span>」
                         </h3>
-                        <p class="text-sm text-zinc-500 mt-1 font-medium">已按 AI 测算的单位价格为您智能排序</p>
+                        <p class="text-sm text-zinc-500 mt-1 font-medium">
+                            {{ sortBy === 'value' ? '已按 AI 测算的单位价格为您智能排序' : '已按商品预估到手总价从低到高排序' }}
+                        </p>
                     </div>
                     <!-- 排序维度 -->
-                    <div class="flex gap-2 bg-zinc-100 p-1 rounded-xl">
+                    <div class="flex gap-2 bg-zinc-100 p-1 rounded-xl self-start sm:self-auto">
                         <button
                                 v-for="option in sortOptions"
                                 :key="option.value"
-                                @click="sortBy = option.value"
+                                type="button"
+                                @click="changeSort(option.value)"
                                 class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
                                 :class="sortBy === option.value ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'"
                         >
@@ -583,14 +589,13 @@
                 <p class="text-sm text-zinc-500">请尝试清除某些过滤条件</p>
             </div>
 
-            <!-- 商品列表 -->
+            <!-- 商品列表（使用唯一 uid 作为 key，配合增量渲染保障手机端丝滑与排序准确） -->
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-5">
                 <article
-                        v-for="(item, index) in sortedProducts"
-                        :key="item.product_id"
+                        v-for="(item, index) in visibleProducts"
+                        :key="item._uid"
                         @click="openDetail(item)"
                         class="product-card bg-white rounded-2xl p-3 sm:p-4 flex sm:flex-col gap-3 sm:gap-4 border border-zinc-200 shadow-sm cursor-pointer relative overflow-hidden"
-                        :class="'delay-' + Math.min(index, 3)"
                 >
                     <!-- 排名角标 -->
                     <div v-if="sortBy === 'value' && index < 3"
@@ -603,12 +608,12 @@
 
                     <!-- 图片与平台 -->
                     <div class="w-28 h-28 sm:w-full sm:h-48 rounded-xl bg-zinc-50 relative flex-shrink-0 overflow-hidden">
-                        <img :src="item.image_url" :alt="item.name" loading="lazy" class="w-full h-full object-cover mix-blend-multiply">
+                        <img :src="item.image_url" :alt="item.name" loading="lazy" decoding="async" class="w-full h-full object-cover mix-blend-multiply">
                         <div class="absolute bottom-1.5 left-1.5">
-                                <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-white shadow-sm"
-                                      :style="{ backgroundColor: getPlatformColor(item.platform) }">
-                                    {{ getPlatformName(item.platform) }}
-                                </span>
+                            <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-white shadow-sm"
+                                  :style="{ backgroundColor: item._platformColor }">
+                                {{ item._platformName }}
+                            </span>
                         </div>
                     </div>
 
@@ -627,7 +632,7 @@
                                       class="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded text-[10px] font-medium border border-emerald-200">
                                     已人工确定
                                 </span>
-                                <span v-for="kw in getDecisionKeywords(item).slice(0,3)" :key="kw.attribute_name"
+                                <span v-for="kw in item._topKeywords" :key="kw.attribute_name"
                                       class="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded text-[10px] font-medium border border-zinc-200">
                                     {{ kw.attribute_value }}
                                 </span>
@@ -638,13 +643,13 @@
                         <div class="bg-brand-50/50 rounded-lg p-2 border border-brand-100/50 mt-1">
                             <div class="flex items-end gap-1 mb-1.5">
                                 <span class="text-[10px] text-brand-600 font-semibold mb-0.5">折算单价</span>
-                                <span class="text-lg font-bold text-brand-600 leading-none num-font">¥{{ getUnitPrice(item) }}</span>
+                                <span class="text-lg font-bold text-brand-600 leading-none num-font">¥{{ item._unitPriceStr }}</span>
                                 <span class="text-[10px] text-brand-600/70 font-medium mb-0.5">/{{ item.base_unit }}</span>
                             </div>
                             <div class="flex items-center justify-between mt-1 pt-1 border-t border-brand-100">
                                 <div class="flex items-center gap-1.5">
-                                    <span class="text-xs font-bold text-zinc-800 num-font">¥{{ item.activity_price.toFixed(2) }}</span>
-                                    <span class="text-[10px] text-zinc-400 line-through num-font" v-if="item.original_price > item.activity_price">¥{{ item.original_price }}</span>
+                                    <span class="text-xs font-bold text-zinc-800 num-font">¥{{ item._activityPriceStr }}</span>
+                                    <span class="text-[10px] text-zinc-400 line-through num-font" v-if="item.original_price > item._activityPriceNum">¥{{ item.original_price }}</span>
                                 </div>
                                 <span v-if="getCompareIndicator(item)"
                                       class="text-[9px] font-bold px-1.5 py-0.5 rounded"
@@ -655,6 +660,17 @@
                         </div>
                     </div>
                 </article>
+            </div>
+
+            <!-- 增量加载提示区 -->
+            <div v-if="visibleProducts.length < sortedProducts.length" class="py-6 text-center">
+                <button
+                        type="button"
+                        @click="loadMoreProducts"
+                        class="px-5 py-2 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-600 hover:border-brand-500 hover:text-brand-600 shadow-sm transition-all"
+                >
+                    正在加载更多 ({{ visibleProducts.length }} / {{ sortedProducts.length }})...
+                </button>
             </div>
         </div>
 
@@ -787,8 +803,8 @@
                                 <div class="bg-white/5 border border-white/10 rounded-xl p-3">
                                     <span class="text-xs text-zinc-400 block mb-1">预估到手总价</span>
                                     <div class="flex items-baseline gap-1.5">
-                                        <span class="text-xl font-extrabold text-white num-font">¥{{ selectedProduct.activity_price.toFixed(2) }}</span>
-                                        <span v-if="selectedProduct.original_price > selectedProduct.activity_price" class="text-xs text-zinc-400 line-through num-font">
+                                        <span class="text-xl font-extrabold text-white num-font">¥{{ selectedProduct._activityPriceStr }}</span>
+                                        <span v-if="selectedProduct.original_price > selectedProduct._activityPriceNum" class="text-xs text-zinc-400 line-through num-font">
                                             ¥{{ selectedProduct.original_price }}
                                         </span>
                                     </div>
@@ -830,7 +846,7 @@
                             <p class="text-xs text-accent-700 font-bold mb-0.5">联盟专属优惠</p>
                             <p class="text-[10px] text-accent-600/80">结合各项优惠为您省下</p>
                         </div>
-                        <div class="text-xl font-extrabold text-accent-600 num-font">¥{{ selectedProduct.saved_price.toFixed(2) }}</div>
+                        <div class="text-xl font-extrabold text-accent-600 num-font">¥{{ Number(selectedProduct.saved_price).toFixed(2) }}</div>
                     </div>
 
                     <!-- 新增：商品信息有误反馈区域（置于详情最底部） -->
@@ -898,15 +914,17 @@
 </div>
 
 <script>
-    const { createApp, ref, shallowRef, computed, onMounted, onUnmounted } = Vue
+    const { createApp, ref, shallowRef, computed, watch, onMounted, onUnmounted } = Vue
 
     createApp({
         setup() {
-            // ======== 页面滚动交互状态 ========
+            // ======== 页面滚动交互与增量渲染状态 ========
             const showHeader = ref(true)
             const headerRef = ref(null)
             const headerHeight = ref(100)
             const lastScrollTop = ref(0)
+            const PAGE_SIZE = 36
+            const displayLimit = ref(PAGE_SIZE)
             let resizeObserver = null
 
             // ======== 新增：视图切换与商品监控状态 ========
@@ -1022,9 +1040,22 @@
             }
             // ==========================================
 
-            // 处理滚动的核心逻辑
+            const loadMoreProducts = () => {
+                if (displayLimit.value < sortedProducts.value.length) {
+                    displayLimit.value += PAGE_SIZE
+                }
+            }
+
+            // 处理滚动的核心逻辑（合并滚动隐藏 Header 与触底自动分批加载）
             const handleScroll = () => {
                 const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop
+                const docHeight = document.documentElement.scrollHeight
+                const winHeight = window.innerHeight
+
+                // 触底前 600px 自动追加渲染下一批商品，消除一次性渲染上千节点带来的卡顿
+                if (currentView.value === 'search' && docHeight - (currentScrollTop + winHeight) < 600) {
+                    loadMoreProducts()
+                }
 
                 // 1. 到达顶部时必须显示
                 if (currentScrollTop <= 0) {
@@ -1034,7 +1065,7 @@
                 }
 
                 // 2. 忽略 iOS 的橡皮筋过度滚动
-                if (currentScrollTop > document.documentElement.scrollHeight - window.innerHeight) {
+                if (currentScrollTop > docHeight - winHeight) {
                     return
                 }
 
@@ -1042,10 +1073,8 @@
                 if (Math.abs(currentScrollTop - lastScrollTop.value) < 10) return
 
                 if (currentScrollTop > lastScrollTop.value && currentScrollTop > headerHeight.value) {
-                    // 向下滚动，且已经超过 Header 的高度 -> 隐藏
                     showHeader.value = false
                 } else if (currentScrollTop < lastScrollTop.value) {
-                    // 向上滚动 -> 显示
                     showHeader.value = true
                 }
 
@@ -1056,24 +1085,37 @@
             const currentKeyword = ref('')
             const products = shallowRef([])
 
-            // 新增：商品名自定义关键字过滤
+            // 新增：商品名自定义关键字过滤（带防抖，防止移动端输入卡顿）
             const nameKeywordFilter = ref('')
+            const debouncedNameFilter = ref('')
+            let nameFilterTimer = null
+            watch(nameKeywordFilter, (val) => {
+                if (nameFilterTimer) clearTimeout(nameFilterTimer)
+                nameFilterTimer = setTimeout(() => {
+                    debouncedNameFilter.value = val.trim().toLowerCase()
+                    displayLimit.value = PAGE_SIZE
+                }, 180)
+            })
+            const clearNameFilter = () => {
+                if (nameFilterTimer) clearTimeout(nameFilterTimer)
+                nameKeywordFilter.value = ''
+                debouncedNameFilter.value = ''
+                displayLimit.value = PAGE_SIZE
+            }
 
             const availableUnits = computed(() => {
                 const units = products.value.map(p => p.base_unit).filter(Boolean)
                 return [...new Set(units)]
             })
             const activeUnitFilter = ref('')
-            const activeCommissionFilter = ref('yes') // 新增佣金筛选状态
-            const activeSuspiciousFilter = ref('') // 状态筛选：''全部, '-1'可疑, '0'正常, '1'已人工确定
+            const activeCommissionFilter = ref('yes')
+            const activeSuspiciousFilter = ref('')
 
-            // --- 新增：来源筛选状态 ---
             const availableSources = computed(() => {
                 const sources = products.value.map(p => p._source_api).filter(Boolean)
                 return [...new Set(sources)]
             })
             const activeSourceFilter = ref('')
-            // ------------------------
 
             const availableFilters = ref([])
             const activeFilters = ref({})
@@ -1107,7 +1149,6 @@
                     const res = await response.json()
                     if (res.status === 'success') {
                         feedbackSuccess.value = true
-                        // 从当前前端商品列表中同步过滤掉该商品
                         products.value = products.value.filter(p => String(p.product_id) !== targetPid)
                         setTimeout(() => {
                             closeDetail()
@@ -1127,124 +1168,16 @@
                 {label: '总价最低', value: 'price'}
             ]
 
+            const changeSort = (val) => {
+                if (sortBy.value === val) return
+                sortBy.value = val
+                displayLimit.value = PAGE_SIZE
+            }
+
             const hotKeywords = ref(['抽纸', '洗衣液', '纯牛奶', '巴旦木', '猫粮', '可乐'])
             const placeholderIndex = ref(0)
             const placeholders = ['输入商品或粘贴链接，AI帮你算真单价...', '买纸巾洗衣液前，先来算算每克多少钱...', '智能提取规格，一键还原真实性价比...']
             const placeholderText = computed(() => placeholders[placeholderIndex.value % placeholders.length])
-
-            const getUnitPriceNum = (item) => {
-                const price = item.activity_price || 0.01
-                const total = item.format_info?.pricing_basis?.total_value || 1
-                return price / total
-            }
-
-            const getUnitPrice = (item) => {
-                const num = getUnitPriceNum(item);
-                if (num >= 0.1) return num.toFixed(2);
-                return parseFloat(num.toPrecision(3)).toString();
-            }
-
-            const sortedProducts = computed(() => {
-                let arr = [...products.value]
-
-                // 新增：根据自定义商品名关键字过滤（支持空格或逗号拆分多个关键字，全部满足才保留）
-                if (nameKeywordFilter.value.trim()) {
-                    const terms = nameKeywordFilter.value
-                        .trim()
-                        .toLowerCase()
-                        .split(/[\s,，]+/)
-                        .filter(Boolean)
-                    if (terms.length > 0) {
-                        arr = arr.filter(p => {
-                            const pName = (p.name || '').toLowerCase()
-                            return terms.every(term => pName.includes(term))
-                        })
-                    }
-                }
-
-                if (activeUnitFilter.value) {
-                    arr = arr.filter(p => p.base_unit === activeUnitFilter.value)
-                }
-
-                // 新增佣金过滤逻辑
-                if (activeCommissionFilter.value === 'yes') {
-                    arr = arr.filter(p => p.has_commission)
-                } else if (activeCommissionFilter.value === 'no') {
-                    arr = arr.filter(p => !p.has_commission)
-                }
-
-                // 调整：根据 activeSuspiciousFilter 过滤对应状态
-                if (activeSuspiciousFilter.value !== '') {
-                    const targetVal = Number(activeSuspiciousFilter.value)
-                    arr = arr.filter(p => p.is_suspicious === targetVal)
-                }
-
-                // 新增来源过滤逻辑
-                if (activeSourceFilter.value) {
-                    arr = arr.filter(p => p._source_api === activeSourceFilter.value)
-                }
-
-                for (const [attrName, selectedValue] of Object.entries(activeFilters.value)) {
-                    if (selectedValue) {
-                        arr = arr.filter(p => {
-                            const kws = p.format_info?.decision_keywords || []
-                            return kws.some(kw => kw.attribute_name === attrName && kw.attribute_value === selectedValue)
-                        })
-                    }
-                }
-
-                if (sortBy.value === 'value') {
-                    return arr.sort((a, b) => getUnitPriceNum(a) - getUnitPriceNum(b))
-                } else {
-                    return arr.sort((a, b) => a.activity_price - b.activity_price)
-                }
-            })
-
-            const hasActiveFilter = computed(() => {
-                // 增加了 nameKeywordFilter 判定
-                return nameKeywordFilter.value.trim() !== '' || activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || activeSuspiciousFilter.value !== '' || activeSourceFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
-            })
-
-            const clearFilters = () => {
-                nameKeywordFilter.value = '' // 清理自定义商品名关键字
-                activeUnitFilter.value = ''
-                activeCommissionFilter.value = 'yes'
-                activeSuspiciousFilter.value = ''
-                activeSourceFilter.value = '' // 新增来源清理
-                for (const key in activeFilters.value) {
-                    activeFilters.value[key] = ''
-                }
-            }
-
-            const stats = computed(() => {
-                if (sortedProducts.value.length === 0) return {
-                    avgUnitPrice: 0, minUnitPrice: 0, maxUnitPrice: 0, baseUnit: '件'
-                }
-
-                const unitCounts = {}
-                sortedProducts.value.forEach(p => {
-                    const u = p.base_unit || '件'
-                    unitCounts[u] = (unitCounts[u] || 0) + 1
-                })
-                const dominantUnit = Object.keys(unitCounts).reduce((a, b) => unitCounts[a] > unitCounts[b] ? a : b)
-
-                const validProducts = sortedProducts.value.filter(p => (p.base_unit || '件') === dominantUnit)
-                const unitPrices = validProducts.map(p => getUnitPriceNum(p)).sort((a, b) => a - b)
-
-                const mid = Math.floor(unitPrices.length / 2)
-                const medianPrice = unitPrices.length % 2 !== 0 ? unitPrices[mid] : (unitPrices[mid - 1] + unitPrices[mid]) / 2
-
-                return {
-                    minUnitPrice: unitPrices[0],
-                    maxUnitPrice: unitPrices[unitPrices.length - 1],
-                    avgUnitPrice: medianPrice,
-                    baseUnit: dominantUnit
-                }
-            })
-
-            const getDecisionKeywords = (item) => item.format_info?.decision_keywords || []
-            const getPricingStructure = (item) => item.format_info?.pricing_basis?.structure || []
-            const getTotalValue = (item) => item.format_info?.pricing_basis?.total_value || 1
 
             const getPlatformName = (platform) => {
                 const p = platform?.toLowerCase() || ''
@@ -1262,6 +1195,145 @@
                 return '#18181b'
             }
 
+            const formatUnitPrice = (num) => {
+                if (num >= 0.1) return num.toFixed(2)
+                return parseFloat(num.toPrecision(3)).toString()
+            }
+
+            // 预计算每个商品的衍生属性，避免在排序和渲染阶段重复计算
+            const preprocessProducts = (rawList) => {
+                return (rawList || []).map((item, idx) => {
+                    const actPrice = Number(item.activity_price) > 0 ? Number(item.activity_price) : 0.01
+                    const totalVal = Number(item.format_info?.pricing_basis?.total_value) > 0
+                        ? Number(item.format_info.pricing_basis.total_value)
+                        : 1
+                    const unitPriceNum = actPrice / totalVal
+                    const kws = item.format_info?.decision_keywords || []
+                    const kwMap = {}
+                    for (let i = 0; i < kws.length; i++) {
+                        const k = kws[i]
+                        if (k.attribute_name) kwMap[k.attribute_name] = k.attribute_value
+                    }
+                    return {
+                        ...item,
+                        _uid: item.uid || `${item.product_id || 'p'}_${idx}`,
+                        _nameLower: (item.name || '').toLowerCase(),
+                        _activityPriceNum: actPrice,
+                        _activityPriceStr: actPrice.toFixed(2),
+                        _unitPriceNum: unitPriceNum,
+                        _unitPriceStr: formatUnitPrice(unitPriceNum),
+                        _topKeywords: kws.slice(0, 3),
+                        _kwMap: kwMap,
+                        _platformName: getPlatformName(item.platform),
+                        _platformColor: getPlatformColor(item.platform)
+                    }
+                })
+            }
+
+            const getUnitPriceNum = (item) => item._unitPriceNum ?? ((item.activity_price || 0.01) / (item.format_info?.pricing_basis?.total_value || 1))
+            const getUnitPrice = (item) => item._unitPriceStr ?? formatUnitPrice(getUnitPriceNum(item))
+
+            // 1. 先计算过滤后的商品列表（与排序解耦，切换排序时无需重新过滤和重算大盘统计）
+            const filteredProducts = computed(() => {
+                let arr = products.value
+                if (arr.length === 0) return []
+
+                const terms = debouncedNameFilter.value
+                    ? debouncedNameFilter.value.split(/[\s,，]+/).filter(Boolean)
+                    : []
+                const unitVal = activeUnitFilter.value
+                const commVal = activeCommissionFilter.value
+                const suspVal = activeSuspiciousFilter.value !== '' ? Number(activeSuspiciousFilter.value) : null
+                const srcVal = activeSourceFilter.value
+                const activeAttrEntries = Object.entries(activeFilters.value).filter(([, v]) => v !== '')
+
+                return arr.filter(p => {
+                    if (terms.length > 0 && !terms.every(t => p._nameLower.includes(t))) return false
+                    if (unitVal && p.base_unit !== unitVal) return false
+                    if (commVal === 'yes' && !p.has_commission) return false
+                    if (commVal === 'no' && p.has_commission) return false
+                    if (suspVal !== null && p.is_suspicious !== suspVal) return false
+                    if (srcVal && p._source_api !== srcVal) return false
+                    for (let i = 0; i < activeAttrEntries.length; i++) {
+                        const [attrName, selectedValue] = activeAttrEntries[i]
+                        if (p._kwMap[attrName] !== selectedValue) return false
+                    }
+                    return true
+                })
+            })
+
+            // 监听过滤条件变化，重置分页展示数量
+            watch([activeUnitFilter, activeCommissionFilter, activeSuspiciousFilter, activeSourceFilter, activeFilters], () => {
+                displayLimit.value = PAGE_SIZE
+            }, { deep: true })
+
+            // 2. 独立排序计算属性：保证手机端和电脑端按总价/单价排序 100% 稳定生效
+            const sortedProducts = computed(() => {
+                const arr = filteredProducts.value.slice()
+                if (sortBy.value === 'price') {
+                    return arr.sort((a, b) => (a._activityPriceNum - b._activityPriceNum) || (a._unitPriceNum - b._unitPriceNum))
+                }
+                return arr.sort((a, b) => (a._unitPriceNum - b._unitPriceNum) || (a._activityPriceNum - b._activityPriceNum))
+            })
+
+            // 3. 当前视口渲染的商品切片
+            const visibleProducts = computed(() => {
+                return sortedProducts.value.slice(0, displayLimit.value)
+            })
+
+            const hasActiveFilter = computed(() => {
+                return nameKeywordFilter.value.trim() !== '' || activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || activeSuspiciousFilter.value !== '' || activeSourceFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
+            })
+
+            const clearFilters = () => {
+                clearNameFilter()
+                activeUnitFilter.value = ''
+                activeCommissionFilter.value = 'yes'
+                activeSuspiciousFilter.value = ''
+                activeSourceFilter.value = ''
+                for (const key in activeFilters.value) {
+                    activeFilters.value[key] = ''
+                }
+                displayLimit.value = PAGE_SIZE
+            }
+
+            // 大盘统计仅依赖 filteredProducts，切换排序时不触发重复计算
+            const stats = computed(() => {
+                const list = filteredProducts.value
+                if (list.length === 0) return {
+                    avgUnitPrice: 0, minUnitPrice: 0, maxUnitPrice: 0, baseUnit: '件'
+                }
+
+                const unitCounts = {}
+                for (let i = 0; i < list.length; i++) {
+                    const u = list[i].base_unit || '件'
+                    unitCounts[u] = (unitCounts[u] || 0) + 1
+                }
+                const dominantUnit = Object.keys(unitCounts).reduce((a, b) => unitCounts[a] > unitCounts[b] ? a : b)
+
+                const unitPrices = []
+                for (let i = 0; i < list.length; i++) {
+                    if ((list[i].base_unit || '件') === dominantUnit) {
+                        unitPrices.push(list[i]._unitPriceNum)
+                    }
+                }
+                unitPrices.sort((a, b) => a - b)
+
+                const mid = Math.floor(unitPrices.length / 2)
+                const medianPrice = unitPrices.length % 2 !== 0 ? unitPrices[mid] : (unitPrices[mid - 1] + unitPrices[mid]) / 2
+
+                return {
+                    minUnitPrice: unitPrices[0],
+                    maxUnitPrice: unitPrices[unitPrices.length - 1],
+                    avgUnitPrice: medianPrice,
+                    baseUnit: dominantUnit
+                }
+            })
+
+            const getDecisionKeywords = (item) => item.format_info?.decision_keywords || []
+            const getPricingStructure = (item) => item.format_info?.pricing_basis?.structure || []
+            const getTotalValue = (item) => item.format_info?.pricing_basis?.total_value || 1
+
             const getCompareIndicator = (item) => {
                 const uPrice = getUnitPriceNum(item)
                 const avg = stats.value.avgUnitPrice
@@ -1277,6 +1349,7 @@
                 currentKeyword.value = term
                 loading.value = true
                 hasSearched.value = true
+                displayLimit.value = PAGE_SIZE
                 searchInputRef.value?.blur()
                 showHeader.value = true
 
@@ -1284,7 +1357,7 @@
                     const response = await fetch(`/api/search?keyword=${encodeURIComponent(term)}`)
                     const res = await response.json()
                     if (res.status === 'success') {
-                        products.value = res.data
+                        products.value = preprocessProducts(res.data)
                         availableFilters.value = res.filters || []
                         const initialFilters = {}
                         availableFilters.value.forEach(f => initialFilters[f.attribute_name] = '')
@@ -1306,11 +1379,12 @@
                 products.value = []
                 availableFilters.value = []
                 activeFilters.value = {}
-                nameKeywordFilter.value = '' // 重置商品名关键字
+                clearNameFilter()
                 activeUnitFilter.value = ''
                 activeCommissionFilter.value = 'yes'
                 activeSuspiciousFilter.value = ''
-                activeSourceFilter.value = '' // 新增来源重置
+                activeSourceFilter.value = ''
+                displayLimit.value = PAGE_SIZE
                 window.scrollTo({ top: 0, behavior: 'smooth' })
             }
 
@@ -1322,7 +1396,6 @@
                 feedbackSuccess.value = false
                 selectedProduct.value = item
                 document.body.style.overflow = 'hidden'
-                // 推入浏览器历史栈，使手机左滑返回/物理返回键仅关闭详情抽屉而不跳出网页
                 window.history.pushState({ detailModal: true }, '')
             }
 
@@ -1334,7 +1407,6 @@
                 feedbackSubmitting.value = false
                 feedbackSuccess.value = false
                 document.body.style.overflow = ''
-                // 如果是用户点击遮罩或返回按钮关闭，则同步回退刚刚压入的 history 记录
                 if (fromPopState !== true && window.history.state && window.history.state.detailModal) {
                     window.history.back()
                 }
@@ -1357,10 +1429,8 @@
                     search()
                 }
 
-                // ======== 挂载滚动监听、返回键监听和 Header 尺寸监听 ========
                 if (headerRef.value) {
                     headerHeight.value = headerRef.value.offsetHeight
-                    // 监听 Header 内部高度变化 (下拉选项呈现后重置高度，解决内容遮挡)
                     resizeObserver = new ResizeObserver((entries) => {
                         for (let entry of entries) {
                             headerHeight.value = entry.target.offsetHeight
@@ -1390,12 +1460,12 @@
                 keyword, currentKeyword, products, loading, hasSearched,
                 selectedProduct, searchInputRef,
                 showFeedbackForm, feedbackContent, feedbackSubmitting, feedbackSuccess, submitFeedback,
-                sortBy, sortOptions, hotKeywords,
-                placeholderText, sortedProducts, stats,
-                nameKeywordFilter, // 暴露给模板
+                sortBy, sortOptions, changeSort, hotKeywords,
+                placeholderText, sortedProducts, visibleProducts, loadMoreProducts, stats,
+                nameKeywordFilter, clearNameFilter,
                 availableUnits, activeUnitFilter, activeCommissionFilter,
                 activeSuspiciousFilter,
-                availableSources, activeSourceFilter, // 暴露给模板
+                availableSources, activeSourceFilter,
                 availableFilters, activeFilters, hasActiveFilter, clearFilters,
                 search, resetView, openDetail, closeDetail,
                 getUnitPrice, getDecisionKeywords, getPricingStructure, getTotalValue,

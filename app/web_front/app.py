@@ -10,10 +10,12 @@
 """
 import math
 import os
+import re
 import json
 import threading
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -33,6 +35,8 @@ db_instance.ping()
 product_manager = ProductManager(db_instance)
 
 app = FastAPI(title="性价比商品搜索服务")
+# 新增：开启 GZip 压缩，大幅减少网络传输体积（通常可压缩 80% 以上）
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 sku_unit_base_mapping = {
     "质量": {
@@ -78,6 +82,14 @@ sku_unit_base_mapping = {
     }
 }
 
+# 预构建单位到类别、以及单位到基数乘数的反向查找字典（避免每次请求重复构建）
+UNIT_TO_CATEGORY = {}
+UNIT_TO_MULTIPLIER = {}
+for _cat, _units in sku_unit_base_mapping.items():
+    for _u, _mul in _units.items():
+        UNIT_TO_CATEGORY[_u] = _cat
+        UNIT_TO_MULTIPLIER[_u] = _mul
+
 # ============== 新增：商品分词结果本地 JSON 缓存与持久化逻辑 ==============
 SEGMENT_CACHE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "segment_cache.json")
 segment_cache_lock = threading.Lock()
@@ -106,7 +118,7 @@ def _save_segment_cache_unsafe(data: dict):
     temp_path = f"{SEGMENT_CACHE_FILE_PATH}.tmp"
     try:
         with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+            json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
             f.flush()
             os.fsync(f.fileno())
         os.replace(temp_path, SEGMENT_CACHE_FILE_PATH)
@@ -221,7 +233,6 @@ def api_submit_feedback(req: FeedbackRequest):
 
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
-    import re
     target_kw = (keyword or "").strip().lower()
 
     # 1. 调用分词工具获取分词词列表
@@ -243,9 +254,21 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     with feedback_file_lock:
         feedback_data = _load_feedback_data_unsafe()
 
-    # 从数据库获取近期数据
+    # 构建数据库查询条件：将分词正则下推到 MongoDB，大幅减少拉取到内存的数据量
+    query_cond = {
+        "format_status": "success",
+        "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)},
+    }
+    if len(search_terms) == 1:
+        query_cond["name"] = {"$regex": re.escape(search_terms[0]), "$options": "i"}
+    else:
+        query_cond["$and"] = [
+            {"name": {"$regex": re.escape(t), "$options": "i"}} for t in search_terms
+        ]
+
+    # 从数据库获取近期匹配数据
     raw_products = product_manager.query(
-        {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
+        query_cond,
         sort=[("updated_at", -1)], limit=limit,
     )
 
@@ -304,13 +327,13 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         base_orig_price = product.get("original_price")
         base_act_price = product.get("activity_price", 999999)
 
-        # 组装当前商品下的 (展示名称, SKU价格, 单个SKU的format_info字典) 列表，兼容新版多规格字典与旧版单层字典
+        # 组装当前商品下的 (唯一SKU标识, 展示名称, SKU价格, 单个SKU的format_info字典) 列表
         sku_entries = []
         if "pricing_basis" in raw_format_info and isinstance(raw_format_info.get("pricing_basis"), dict):
             sku_price = raw_format_info.get("price")
             if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
                 continue
-            sku_entries.append((base_name, sku_price, raw_format_info))
+            sku_entries.append((f"{product_id}_0", base_name, sku_price, raw_format_info))
         else:
             if sku_info_list:
                 for idx, sku_item in enumerate(sku_info_list, start=1):
@@ -326,18 +349,19 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                     sku_price = sku_fmt.get("price")
                     if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
                         continue
-                    sku_entries.append((display_name, sku_price, sku_fmt))
+                    sku_entries.append((sku_id, display_name, sku_price, sku_fmt))
 
             # 兜底结果也必须使用清洗通过的价格，禁止使用商品基础价补位
             if not sku_entries:
-                for sku_id, sku_fmt in raw_format_info.items():
+                for fallback_idx, (sku_id, sku_fmt) in enumerate(raw_format_info.items(), start=1):
                     if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
                         sku_price = sku_fmt.get("price")
                         if type(sku_price) not in (int, float) or not math.isfinite(sku_price) or sku_price <= 0:
                             continue
-                        sku_entries.append((base_name, sku_price, sku_fmt))
+                        uid_str = str(sku_id) if sku_id else f"{product_id}_fb_{fallback_idx}"
+                        sku_entries.append((uid_str, base_name, sku_price, sku_fmt))
 
-        for display_name, act_price, sku_fmt in sku_entries:
+        for sku_uid, display_name, act_price, sku_fmt in sku_entries:
             orig_price = base_orig_price
             is_suspicious = 1 if is_confirmed_sku else 0
 
@@ -349,7 +373,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                         orig_p *= 10
                     if (orig_p / act_p) > 3 and not is_confirmed_sku:
                         is_suspicious = -1
-                    orig_price = orig_p
+                    orig_price = round(orig_p, 2)
                 except (ValueError, TypeError):
                     pass
 
@@ -358,10 +382,10 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             format_info_copy = {
                 "pricing_basis": pricing_basis_copy,
                 "decision_keywords": list(sku_fmt.get("decision_keywords") or []),
-                "core_entities": list(sku_fmt.get("core_entities") or []),
             }
 
             filtered_products.append({
+                "uid": sku_uid,
                 "name": display_name,
                 "product_id": product_id,
                 "platform": product.get("platform"),
@@ -369,29 +393,21 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 "product_url": product_url,
                 "has_commission": bool(product.get("promotion_url")),
                 "original_price": orig_price,
-                "saved_price": product.get("saved_price") or 0,
+                "saved_price": round(float(product.get("saved_price") or 0), 2),
                 "brand": product.get("brand"),
                 "format_info": format_info_copy,
-                "activity_price": act_price,
+                "activity_price": round(float(act_price), 2),
                 "is_suspicious": is_suspicious,
                 "_source_api": _source_api
             })
 
     logger.info(f"搜索词：[{keyword}]，分词项：{search_terms}，过滤展开后的商品规格数量: {len(filtered_products)}")
 
-    # 构建单位到类别、以及单位到基数乘数的反向查找字典
-    unit_to_category = {}
-    unit_to_multiplier = {}
-    for category, units in sku_unit_base_mapping.items():
-        for unit, multiplier in units.items():
-            unit_to_category[unit] = category
-            unit_to_multiplier[unit] = multiplier
-
     # 遍历当前搜索结果，统计各个类别下不同单位的出现频率
     category_unit_counts = {}
     for product in filtered_products:
         base_unit = product.get("format_info", {}).get("pricing_basis", {}).get("base_unit", "件")
-        category = unit_to_category.get(base_unit)
+        category = UNIT_TO_CATEGORY.get(base_unit)
         if category:
             if category not in category_unit_counts:
                 category_unit_counts[category] = {}
@@ -410,14 +426,18 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         base_unit = pricing_basis.get("base_unit", "件")
 
         # 检查是否可以进行单位转换
-        category = unit_to_category.get(base_unit)
+        category = UNIT_TO_CATEGORY.get(base_unit)
         if category and category in category_target_unit:
             target_unit = category_target_unit[category]
             if base_unit != target_unit:
-                orig_multiplier = unit_to_multiplier[base_unit]
-                target_multiplier = unit_to_multiplier[target_unit]
+                orig_multiplier = UNIT_TO_MULTIPLIER[base_unit]
+                target_multiplier = UNIT_TO_MULTIPLIER[target_unit]
                 total_value = total_value * (orig_multiplier / target_multiplier)
                 base_unit = target_unit
+                pricing_basis["total_value"] = round(total_value, 4)
+        else:
+            if isinstance(total_value, float):
+                total_value = round(total_value, 4)
                 pricing_basis["total_value"] = total_value
 
         # 性价比计算
@@ -470,12 +490,33 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     valid_attributes.sort(key=lambda x: x["score"], reverse=True)
     top_filters = valid_attributes[:5]
 
-    # 精简响应结构
+    # 精简响应结构（去除空属性与重复关键词，控制浮点数精度以减少传输体积）
     response_products = []
-    for product in final_results:
+    for idx, product in enumerate(final_results):
         format_info = product.get("format_info") or {}
         pricing_basis = format_info.get("pricing_basis") or {}
+
+        # 清洗并去重 decision_keywords，避免传输空值或重复项
+        cleaned_keywords = []
+        seen_attrs = set()
+        for kw in (format_info.get("decision_keywords") or []):
+            a_name = kw.get("attribute_name")
+            a_val = kw.get("attribute_value")
+            if a_name and a_val and a_name not in seen_attrs:
+                seen_attrs.add(a_name)
+                cleaned_keywords.append({
+                    "attribute_name": a_name,
+                    "attribute_value": a_val
+                })
+
+        cleaned_structure = [
+            {"value": item.get("value"), "unit": item.get("unit")}
+            for item in (pricing_basis.get("structure") or [])
+            if item.get("value") is not None or item.get("unit")
+        ]
+
         response_products.append({
+            "uid": f"{product['uid']}_{idx}",
             "product_id": product["product_id"],
             "name": product["name"],
             "platform": product["platform"],
@@ -484,7 +525,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "has_commission": product["has_commission"],
             "original_price": product["original_price"],
             "saved_price": product["saved_price"],
-            "brand": product["brand"],
+            "brand": product["brand"] or "",
             "activity_price": product["activity_price"],
             "_source_api": product["_source_api"],
             "is_suspicious": product["is_suspicious"],
@@ -492,18 +533,9 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "format_info": {
                 "pricing_basis": {
                     "total_value": pricing_basis.get("total_value", 1),
-                    "structure": [
-                        {"value": item.get("value"), "unit": item.get("unit")}
-                        for item in (pricing_basis.get("structure") or [])
-                    ]
+                    "structure": cleaned_structure
                 },
-                "decision_keywords": [
-                    {
-                        "attribute_name": kw.get("attribute_name"),
-                        "attribute_value": kw.get("attribute_value")
-                    }
-                    for kw in (format_info.get("decision_keywords") or [])
-                ]
+                "decision_keywords": cleaned_keywords
             }
         })
 
@@ -624,6 +656,7 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
 
     return counts
 
+
 def build_monitor_response(data: dict) -> dict:
     """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量，1分钟内更新的数据直接使用缓存）"""
     active_keywords = [kw for kw, info in data.items() if info.get("is_monitoring", False)]
@@ -707,7 +740,6 @@ def api_add_monitor(req: MonitorRequest):
         raise HTTPException(status_code=400, detail="商品名称不能为空")
 
     # 支持单个商品或用逗号、顿号、空格、换行分隔的批量商品上传
-    import re
     keywords = [k.strip() for k in re.split(r"[\s,，、;；\n]+", raw_input) if k.strip()]
     if not keywords:
         raise HTTPException(status_code=400, detail="未解析到有效的商品名称")
@@ -763,10 +795,8 @@ def api_delete_monitor(keyword: str):
 
 
 # 1. 搜索 API 接口
-# 修改搜索 API 接口
 @app.get("/api/search")
 def api_search(keyword: str = "方便面", hours: int = 72):
-    # 【新增这一行】：此时 keyword 已经是解码后的中文 "可乐"
     logger.info(f"收到用户搜索请求，搜索词：[{keyword}]，时间范围：{hours}小时")
 
     search_data = search_product(keyword, min_match_score=10, hours=hours)
