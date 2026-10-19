@@ -133,6 +133,7 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
     清洗淘宝联盟返回的数据：
     1. 严禁使用动态变化的 item_id。
     2. 强制提取或映射为恒定不变的纯数字商品 ID 作为 product_id。
+    3. 构造统一的默认 sku_info 列表，并打标 need_update_sku: True。
     """
     if not isinstance(item, dict):
         return None
@@ -172,6 +173,7 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
     )
     image_url = _normalize_url(basic.get("pict_url") or basic.get("white_image") or "")
     item_id = str(item.get("item_id") or "").strip()  # 仅用于日志或调试，绝不作为 product_id
+
     # 价格计算
     reserve_price = _safe_float(price_info.get("reserve_price"))
     zk_final_price = _safe_float(price_info.get("zk_final_price"))
@@ -204,10 +206,18 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
         income_info.get("commission_rate") or publish.get("income_rate")
     )
 
+    # 统一构造默认单规格 sku_info
+    default_sku_info = [
+        {
+            "价格": f"￥{activity_price}",
+            "截图地址": "",
+        }
+    ]
+
     return {
         "platform": "taobao",
-        "product_id": product_id,  # 确保这里拿到的是纯数字 ID 或恒定指纹，绝对不是原生的动态 item_id
-        "item_id":item_id,
+        "product_id": product_id,
+        "item_id": item_id,
         "category": category,
         "_source_api": api_list,
         "name": title,
@@ -226,7 +236,11 @@ def normalize_taobao_goods(item, default_category, source_api="taobao_api_search
             "predict_rounding_up_price": predict_price,
             "shop_title": basic.get("shop_title", ""),
         },
+        "sku_info": default_sku_info,
+        "need_update_sku": True,
     }
+
+
 class AccountPool:
     """accounts 为目录列表；JSON 形貌为 {平台: {绝对目录: ISO 时间字符串 或 状态字符串}}。
     整个调度期间持有操作系统文件锁；临时文件原子替换，避免多进程抢号和半写文件。
@@ -464,8 +478,8 @@ def taobao_api_search_task():
 # ==========================================
 def normalize_api_goods(item, default_category, source_api="api_search"):
     """
-    清洗 API 返回的商品数据，将其转为与数据库已有格式 (ProductManager.update 所需) 保持一致。
-    价格字段（原价、拼团价、优惠券）除以 100 转为元。
+    清洗 API 返回的商品数据，将其转为与数据库已有格式保持一致。
+    统一构造默认 sku_info 列表，并打标 need_update_sku: True。
     """
     goods_id = item.get("goods_id")
     if type(goods_id) not in (str, int) or not str(goods_id).strip():
@@ -484,14 +498,13 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
     record = {
         "platform": GLOBAL_CONFIG["platform"],
         "product_id": str(goods_id).strip(),
-        # 如果 API 没有返回 category_name，则用搜索关键词或外部定义分类保底
         "category": item.get("category_name") or default_category,
-        "_source_api": api_list  # 【核心修改】：列表格式存储来源
+        "_source_api": api_list
     }
 
     # 基础字段映射 (从 API 字段 -> 数据库字段)
     for source, target in (
-            ("goods_sign", "goods_sign"),  # 【新增】保留拼多多 goods_sign 供后续转链或查详情使用
+            ("goods_sign", "goods_sign"),
             ("goods_name", "name"),
             ("brand_name", "brand"),
             ("sales_tip", "sales_tip"),
@@ -507,21 +520,25 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
             ("coupon_discount", "saved_price"),
     ):
         if source in item:
-            record[target] = (item[source] or 0) / 100
+            record[target] = round((item[source] or 0) / 100, 2)
+
+    act_price = record.get("activity_price", 0.0)
+
+    # 统一构造默认单规格 sku_info，并增加 need_update_sku 字段
+    record["sku_info"] = [
+        {
+            "价格": f"￥{act_price}",
+            "截图地址": "",
+        }
+    ]
+    record["need_update_sku"] = True
 
     return record
 
-
-# ==========================================
-# 修改：UI 拦截数据清洗模块 (新增 url 与 dict 结构)
-# ==========================================
-# ==========================================
-# 修改：UI 拦截数据清洗模块 (新增 source_account 与类型安全防护)
-# ==========================================
 def normalize_intercept_goods(item, default_category, source_account=""):
     """
     清洗 search_goods_and_intercept 返回的混合商品数据（API Json + Excel 融合字段）。
-    将其转为与数据库已有格式保持一致，新增推广链接、佣金详情集合以及来源账户字段。
+    统一构造默认 sku_info 列表，并打标 need_update_sku: True。
     """
     if not isinstance(item, dict):
         return None
@@ -541,8 +558,8 @@ def normalize_intercept_goods(item, default_category, source_account=""):
         "platform": GLOBAL_CONFIG["platform"],
         "product_id": str(goods_id).strip(),
         "category": item.get("categoryName") or default_category,
-        "_source_api": ["web_intercept"],  # 列表格式标识数据来源为 UI 拦截
-        "source_account": clean_account,   # 【新增】：标识该商品数据及推广链接来源于哪个账户
+        "_source_api": ["web_intercept"],
+        "source_account": clean_account,
     }
 
     # 基础字段映射 (从驼峰或中文表头字段 -> 数据库字段)
@@ -551,36 +568,44 @@ def normalize_intercept_goods(item, default_category, source_account=""):
     record["sales_tip"] = str(item.get("salesTip", ""))
     record["image_url"] = item.get("goodsImageUrl") or item.get("goodsThumbnailUrl", "")
 
-    # 价格字段安全映射 (分/千分位 -> 元，使用 _safe_float 防止字符串相除报错)
+    # 价格字段安全映射 (分/千分位 -> 元)
     record["original_price"] = round(_safe_float(item.get("goodsMarkPrice")) / 100, 2)
 
-    # 1. 先分别算出未扣券的拼团价和优惠券金额
+    # 计算拼团价和优惠券金额
     raw_group_price = round(_safe_float(item.get("minGroupPrice")) / 1000, 2)
     saved_price = round(_safe_float(item.get("couponDiscount")) / 1000, 2)
 
     record["saved_price"] = saved_price
-    # 2. 【核心修改】：实际到手价 = 拼团价 - 优惠券 (使用 max(0.0, ...) 防御异常负数)
-    record["activity_price"] = round(max(0.0, raw_group_price - saved_price), 2)
+    activity_price = round(max(0.0, raw_group_price - saved_price), 2)
+    record["activity_price"] = activity_price
 
-    # 1. 提取短链接为 promotion_url
+    # 提取推广短链接
     record["promotion_url"] = str(item.get("短链接") or "").strip()
 
-    # 2. 安全提取并计算估算的佣金(元)，去除多余的字符串
+    # 安全提取并计算估算的佣金(元)
     try:
         commission_str = str(item.get("佣金(元)", "0")).replace("元", "").strip()
         est_commission = _safe_float(commission_str, default=0.0)
     except Exception:
         est_commission = 0.0
 
-    # 3. 组装 promotion_info 字典结构
+    # 组装 promotion_info 字典结构
     record["promotion_info"] = {
         "promotion_rate": _safe_float(item.get("promotionRate"), default=0.0),
         "estimated_commission": est_commission,
         "has_mall_coupon": bool(item.get("hasCoupon", False)),
     }
 
-    return record
+    # 统一构造默认单规格 sku_info，并增加 need_update_sku 字段
+    record["sku_info"] = [
+        {
+            "价格": f"￥{activity_price}",
+            "截图地址": "",
+        }
+    ]
+    record["need_update_sku"] = True
 
+    return record
 
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (支持 USER_DATA_DIR_LIST 严格顺序容灾切换与来源账户落库)
@@ -1054,8 +1079,9 @@ def api_search_task():
         time.sleep(30 * 60)
 
 def normalize_goods(item, tab_name):
-    """item 核心键为 goods_id，价格来源为 origin_price/activity_price/group_order_price_reduce（分）。
-    返回 {platform, product_id, category, 实际收到的商品字段}；非法 ID 返回 None，缺失字段不补空值。
+    """
+    清洗分类流拦截的单个商品对象。
+    统一构造默认 sku_info 列表，并打标 need_update_sku: True。
     """
     goods_id = item.get("goods_id")
     if type(goods_id) not in (str, int) or not str(goods_id).strip():
@@ -1071,11 +1097,22 @@ def normalize_goods(item, tab_name):
             ("group_order_price_reduce", "saved_price"),
     ):
         if source in item:
-            record[target] = (item[source] or 0) / 100
+            record[target] = round((item[source] or 0) / 100, 2)
     if "link_url" in item:
         record["product_url"] = urljoin("https://mobile.pinduoduo.com/", item["link_url"] or "")
-    return record
 
+    act_price = record.get("activity_price", 0.0)
+
+    # 统一构造默认单规格 sku_info，并增加 need_update_sku 字段
+    record["sku_info"] = [
+        {
+            "价格": f"￥{act_price}",
+            "截图地址": "",
+        }
+    ]
+    record["need_update_sku"] = True
+
+    return record
 
 def save_error_snapshot(page, tab_name, reason):
     """page 为 Playwright Page；尽力保存 PNG/HTML，保留快照失败不阻断主流程的容错。"""
