@@ -34,15 +34,30 @@ COUNT_KEYS = ("success", "failed", "skipped")
 
 
 def pending_format_query():
-    """新采集商品尚无 format_* 字段，自然进入候选；成功或累计失败三轮后不再处理。"""
+    """
+    候选商品查询条件：
+    1. 尚未成功格式化，或者标记了 need_reformat: True
+    2. 或者已存在 format_info，但未达到预期 SKU 数量（支持漏洗或分批补洗）
+    3. 且累计重试次数未超过阈值
+    """
     return {
-        "format_status": {"$ne": "success"},
-        "$or": [
-            {"format_retry_count": {"$exists": False}},
-            {"format_retry_count": {"$lt": FORMAT_MAX_RETRIES}},
-        ],
+        "$and": [
+            {
+                "$or": [
+                    {"format_status": {"$ne": "success"}},
+                    {"need_reformat": True},
+                    # 当存在 sku_info 列表且 format_info 未包含对应数量时允许继续洗
+                    {"$expr": {"$gt": [{"$size": {"$ifNull": ["$sku_info", []]}}, {"$size": {"$objectToArray": {"$ifNull": ["$format_info", {}]}}}]}}
+                ]
+            },
+            {
+                "$or": [
+                    {"format_retry_count": {"$exists": False}},
+                    {"format_retry_count": {"$lt": FORMAT_MAX_RETRIES}},
+                ]
+            }
+        ]
     }
-
 
 def _is_clean_string(value):
     """拒绝空白、首尾空格和不能编码为 UTF-8 的文本，保护模型输出协议。"""
@@ -77,14 +92,15 @@ def _check_ranked_items(items, field, text_keys):
 
 
 def _check_single_item(format_info, index):
-    """format_info 必含 product_id/core_entities/decision_keywords/pricing_basis；返回 (通过, 原因)。
+    """
+    format_info 必含 sku_id/core_entities/decision_keywords/pricing_basis；返回 (通过, 原因)。
     pricing_basis 必含 is_inferred/structure/total_value/base_unit/equivalent_description，structure 为 [{value, unit}]。
     """
     if not isinstance(format_info, dict):
         return False, f"元素[{index}] 必须是对象"
-    prefix = f"元素[{index}](product_id={format_info.get('product_id')})"
-    if set(format_info) != {"product_id", "core_entities", "decision_keywords", "pricing_basis"}:
-        return False, f"{prefix} 必须且只能包含 product_id、core_entities、decision_keywords、pricing_basis"
+    prefix = f"元素[{index}](sku_id={format_info.get('sku_id')})"
+    if set(format_info) != {"sku_id", "core_entities", "decision_keywords", "pricing_basis"}:
+        return False, f"{prefix} 必须且只能包含 sku_id、core_entities、decision_keywords、pricing_basis"
     for field, text_keys in (
         ("core_entities", ("name",)),
         ("decision_keywords", ("attribute_name", "attribute_value")),
@@ -124,10 +140,10 @@ def _check_single_item(format_info, index):
         return False, f"{prefix} pricing_basis.base_unit 必须与最后一层 unit 一致"
     return True, ""
 
-
-def check_format_info(format_info_list, input_product_ids):
-    """模型列表形貌为 [{product_id, core_entities, decision_keywords, pricing_basis}]，输入 ID 必须互不重复。
-    返回 (至少一项成功, {ID: 合格对象}, {ID: 失败原因}, 批次错误)，仅全批失败触发整体重试。
+def check_format_info(format_info_list, input_sku_ids):
+    """
+    模型返回列表形貌为 [{sku_id, core_entities, decision_keywords, pricing_basis}]。
+    返回: (至少一项成功, {sku_id: 合格对象}, {sku_id: 失败原因}, 批次整体错误信息)
     """
     if not isinstance(format_info_list, list):
         return False, {}, {}, "顶层结构必须是一个列表"
@@ -135,55 +151,65 @@ def check_format_info(format_info_list, input_product_ids):
     for index, item in enumerate(format_info_list):
         if not isinstance(item, dict):
             continue
-        product_id = item.get("product_id")
-        if type(product_id) not in (str, int):
+        sku_id = item.get("sku_id")
+        if type(sku_id) not in (str, int):
             continue
-        # : 保留模型重复 ID 以后一个为准、额外 ID 忽略的规则；不改成批次协议错误。
-        output_map[product_id] = (index, item)
+        output_map[str(sku_id).strip()] = (index, item)
     results, item_errors = {}, {}
-    for product_id in input_product_ids:
-        if product_id not in output_map:
-            item_errors[product_id] = "模型未返回该商品的数据或 product_id 类型不匹配"
+    for sku_id in input_sku_ids:
+        if sku_id not in output_map:
+            item_errors[sku_id] = "模型未返回该规格的数据或 sku_id 缺失"
             continue
-        index, item = output_map[product_id]
+        index, item = output_map[sku_id]
         valid, error = _check_single_item(item, index)
         if valid:
-            results[product_id] = item
+            results[sku_id] = item
         else:
-            item_errors[product_id] = error
+            item_errors[sku_id] = error
     if not results:
-        return False, {}, item_errors, "批次内所有商品均解析或校验失败"
+        return False, {}, item_errors, "批次内所有规格均解析或校验失败"
     return True, results, item_errors, ""
 
-
-def gen_goods_format_info(product_batch, prompt_text=None):
-    """product_batch 为 [{product_id, name}]；返回 {status, results: {ID: 对象}, item_errors: {ID: 原因}, model_used, error}。
-    保留最多三次模型尝试及 2/4 秒退避；部分成功立即采纳，失败单品本轮不另行调用模型。
+def gen_goods_format_info(sku_task_batch, prompt_text=None):
+    """
+    sku_task_batch 为拆解后的任务列表:
+    [{sku_id, product_id, product_desc, sku_desc, 价格, product_ref}]
+    返回: {status, results: {sku_id: 结构化对象}, item_errors: {sku_id: 原因}, model_used, error}
     """
     outcome = {"status": "failed", "results": {}, "item_errors": {}, "model_used": None, "error": ""}
-    if not isinstance(product_batch, list) or not product_batch:
+    if not isinstance(sku_task_batch, list) or not sku_task_batch:
         outcome["error"] = "批处理输入必须是非空列表"
         return outcome
-    inputs, input_ids = [], []
-    for product in product_batch:
-        if not isinstance(product, dict):
-            outcome["error"] = "批处理中的每个商品必须是字典"
-            return outcome
-        product_id, name = product.get("product_id"), product.get("name")
-        # : 输入中一个商品的 ID/名称无效仍使整批失败，保留原规则。
-        if type(product_id) not in (str, int) or not str(product_id).strip():
-            outcome["error"] = f"商品(_id={product.get('_id')})缺少有效 product_id"
+
+    inputs = []
+    input_sku_ids = []
+    for task in sku_task_batch:
+        sku_id = task.get("sku_id")
+        name = task.get("product_desc")
+        sku_desc = task.get("sku_desc", "")
+        price = task.get("价格", "")
+
+        if not sku_id or not str(sku_id).strip():
+            outcome["error"] = "存在无效的 sku_id"
             return outcome
         if not isinstance(name, str) or not name.strip():
-            outcome["error"] = f"商品(product_id={product_id}) name 必须是非空字符串"
+            outcome["error"] = f"规格(sku_id={sku_id}) product_desc 必须是非空字符串"
             return outcome
-        if product_id in input_ids:
-            raise ValueError("同一次模型请求不能包含重复 product_id，请将不同平台的同名 ID 分批")
-        selected_spec = product.get("sku_info",{}).get("selected_spec")
-        inputs.append({"product_desc": name, "product_id": product_id, "selected_spec": selected_spec})
-        input_ids.append(product_id)
+        if sku_id in input_sku_ids:
+            raise ValueError(f"同一次模型请求不能包含重复的 sku_id: {sku_id}")
+
+        # 严格按照规范组装大模型入参格式
+        inputs.append({
+            "product_desc": name,
+            "sku_id": str(sku_id).strip(),
+            "sku_desc": sku_desc,
+            "价格": price
+        })
+        input_sku_ids.append(str(sku_id).strip())
+
     if prompt_text is None:
         prompt_text = read_file_to_str(PROMPT_FILE_PATH)
+
     full_prompt = f"{prompt_text}\n<product_input>\n{json.dumps(inputs, ensure_ascii=False)}\n</product_input>"
     errors, content = [], ""
     for attempt in range(1, LLM_MAX_RETRIES + 1):
@@ -196,10 +222,9 @@ def gen_goods_format_info(product_batch, prompt_text=None):
                 detail = "；".join(str(error) for error in result.get("error_history", []) or [])
                 raise RuntimeError(detail or result.get("content") or "模型调用失败")
             content = result.get("content", "")
-            valid, results, item_errors, batch_error = check_format_info(string_to_object(content), input_ids)
+            valid, results, item_errors, batch_error = check_format_info(string_to_object(content), input_sku_ids)
             if not valid:
                 raise ValueError(f"{batch_error} | 抽样详情: {str(item_errors)[:200]}")
-            # : 批内至少一项成功便停止重试；失败单品只记一次本轮失败，不单独补跑。
             outcome.update(status="success", results=results, item_errors=item_errors)
             return outcome
         except Exception as exc:
@@ -207,36 +232,31 @@ def gen_goods_format_info(product_batch, prompt_text=None):
             errors.append(detail)
             if attempt < LLM_MAX_RETRIES:
                 delay = 2 ** attempt
-                logger.warning("[商品/重试] 模型调用、解析或校验未通过 | 批次大小: [%d] | 首个 ID: [%s] "
-                               "| 尝试: [%d/%d] | 等待: [%d 秒] | 原因: [%s] | 排查: [模型服务、提示词协议]",
-                               len(product_batch), input_ids[0], attempt, LLM_MAX_RETRIES, delay,
+                logger.warning("[商品/重试] 模型调用、解析或校验未通过 | 规格批次大小: [%d] | 首个 SKU: [%s] "
+                               "| 尝试: [%d/%d] | 等待: [%d 秒] | 原因: [%s]",
+                               len(sku_task_batch), input_sku_ids[0], attempt, LLM_MAX_RETRIES, delay,
                                " ".join(detail.split())[:400])
                 time.sleep(delay)
+
     outcome["error"] = "；".join(errors) + (f"\n模型原文：{content}" if content else "")
     return outcome
 
-
 def run_format_round(product_manager):
-    """一次查询 {_id, platform, product_id, name} 候选，独立写回结果；返回 {success, failed, skipped}。
-    批次进度在写入确认后立即累计，后续异常不会丢失已经保存商品的统计。
+    """
+    按 SKU 粒度并发生成结构化信息，支持断点补洗与增量写回 format_info.{sku_id}。
     """
     started = time.monotonic()
+    query_condition = pending_format_query()
 
-    # 1. 组合查询条件：常规未格式化商品 或 需要重洗的商品
-    query_condition = {
-        "$or": [
-            pending_format_query(),
-            {"need_reformat": True}
-        ]
-    }
-
-    # 2. projection中加入 need_reformat 以便区分，加入 sku_info 以便供 gen_goods_format_info 提取 selected_spec
     products = product_manager.query(
         query_condition,
-        projection={"_id": 1, "platform": 1, "product_id": 1, "name": 1, "need_reformat": 1, "sku_info": 1},
+        projection={
+            "_id": 1, "platform": 1, "product_id": 1, "name": 1,
+            "need_reformat": 1, "sku_info": 1, "activity_price": 1,
+            "format_info": 1
+        },
     )
 
-    # 3. 拓展统计维度
     counts = {
         "success": 0, "failed": 0, "skipped": 0,
         "normal_success": 0, "normal_failed": 0, "normal_skipped": 0,
@@ -247,100 +267,165 @@ def run_format_round(product_manager):
         logger.info("[调度/完成] 本轮无待处理商品 | 数量: [0] | 耗时: [%.2f 秒]", time.monotonic() - started)
         return counts
 
-    prompt_text = read_file_to_str(PROMPT_FILE_PATH)
-    batches, batch, batch_ids = [], [], set()
+    # 1. 将商品按 SKU 拆解为待清洗的任务单元
+    all_sku_tasks = []
+    total_reformat_prods = 0
 
-    total_reformat = 0
     for product in products:
-        if product.get("need_reformat"):
-            total_reformat += 1
+        is_reformat = bool(product.get("need_reformat"))
+        if is_reformat:
+            total_reformat_prods += 1
 
-        product_id = product["product_id"]
-        if len(batch) == FORMAT_BATCH_SIZE or product_id in batch_ids:
-            batches.append(batch)
-            batch, batch_ids = [], set()
-        batch.append(product)
-        batch_ids.add(product_id)
-    if batch:
-        batches.append(batch)
+        product_id = str(product.get("product_id")).strip()
+        name = str(product.get("name") or "").strip()
+        sku_info = product.get("sku_info")
+        existing_format_info = product.get("format_info") or {}
 
-    total_normal = len(products) - total_reformat
+        # 针对需要完全重洗的场景，忽略旧的已洗记录
+        if is_reformat:
+            existing_format_info = {}
+
+        if isinstance(sku_info, list) and len(sku_info) > 0:
+            for idx, item in enumerate(sku_info, start=1):
+                sku_id = f"{product_id}_{idx}"
+                # 如果当前规格已经成功生成过且非重洗，跳过生成
+                if sku_id in existing_format_info:
+                    continue
+
+                # 提取除去 价格、截图地址 以外的字段
+                desc_parts = [
+                    f"{k}：{v}" for k, v in item.items()
+                    if k not in ("价格", "截图地址") and str(v).strip()
+                ]
+                sku_desc = " | ".join(desc_parts)
+                price_str = str(item.get("价格", "")).strip()
+
+                all_sku_tasks.append({
+                    "sku_id": sku_id,
+                    "product_id": product_id,
+                    "product_desc": name,
+                    "sku_desc": sku_desc,
+                    "价格": price_str,
+                    "product_ref": product,
+                    "total_expected_skus": len(sku_info)
+                })
+        else:
+            # 无 sku_info 场景
+            sku_id = f"{product_id}_0"
+            if sku_id not in existing_format_info:
+                act_price = str(product.get("activity_price", "")).strip()
+                all_sku_tasks.append({
+                    "sku_id": sku_id,
+                    "product_id": product_id,
+                    "product_desc": name,
+                    "sku_desc": "",
+                    "价格": act_price,
+                    "product_ref": product,
+                    "total_expected_skus": 1
+                })
+
+    if not all_sku_tasks:
+        logger.info("[调度/完成] 查到候选商品，但其下规格均已生成完毕 | 耗时: [%.2f 秒]", time.monotonic() - started)
+        return counts
+
+    prompt_text = read_file_to_str(PROMPT_FILE_PATH)
+
+    # 2. 将规格任务按 FORMAT_BATCH_SIZE (10) 切批，同一批次内 sku_id 互不重复
+    batches, current_batch, batch_sku_ids = [], [], set()
+    for task in all_sku_tasks:
+        if len(current_batch) == FORMAT_BATCH_SIZE or task["sku_id"] in batch_sku_ids:
+            batches.append(current_batch)
+            current_batch, batch_sku_ids = [], set()
+        current_batch.append(task)
+        batch_sku_ids.add(task["sku_id"])
+    if current_batch:
+        batches.append(current_batch)
+
     logger.info(
-        "[调度/本轮] 开始格式化商品 | 总计: [%d] (常规: %d, 重洗: %d) | 批次: [%d] | 每批上限: [%d] | 并发: [%d]",
-        len(products), total_normal, total_reformat, len(batches), FORMAT_BATCH_SIZE, FORMAT_WORKERS)
+        "[调度/本轮] 开始格式化规格 | 涉及商品: [%d] (常规: %d, 重洗: %d) | 待洗SKU数: [%d] | 批次: [%d] | 并发: [%d]",
+        len(products), len(products) - total_reformat_prods, total_reformat_prods,
+        len(all_sku_tasks), len(batches), FORMAT_WORKERS
+    )
 
     def process_batch(batch, batch_counts):
-        """batch 为候选商品列表；batch_counts 是当前批次已确认保存/跳过的计数，异常时供主线程统计。"""
         batch_started = time.monotonic()
         generated = gen_goods_format_info(batch, prompt_text)
         failure_details, skipped_ids = [], []
 
-        for product in batch:
+        for task in batch:
+            sku_id = task["sku_id"]
+            product = task["product_ref"]
             product_id = product["product_id"]
             is_reformat = bool(product.get("need_reformat"))
+            total_expected_skus = task["total_expected_skus"]
 
-            format_info = generated["results"].get(product_id)
-            status = "success" if format_info is not None else "failed"
-            error = "" if status == "success" else (
+            format_info_item = generated["results"].get(sku_id)
+            is_success = format_info_item is not None
+            error = "" if is_success else (
                 generated["error"] if generated["status"] == "failed"
-                else generated["item_errors"].get(product_id, "未知的单品解析错误")
+                else generated["item_errors"].get(sku_id, "未知的规格解析错误")
             )
 
-            # 构建写回校验条件：区分常规数据与重洗数据
+            # 构建条件
             condition = {"_id": product["_id"]}
-            if "name" in product:
-                condition["name"] = {"$eq": product["name"]}
-            else:
-                condition["name"] = {"$exists": False}
 
-            if is_reformat:
-                condition["need_reformat"] = True
+            # 增量设置字段
+            update_fields = {
+                "platform": product["platform"],
+                "product_id": product_id,
+                "format_model": generated["model_used"],
+                "format_updated_at": datetime.now(timezone.utc),
+            }
+
+            if is_success:
+                # 仅更新指定 sku_id 的深层字段，绝不覆盖其他批次写好的 sku
+                update_fields[f"format_info.{sku_id}"] = format_info_item
+                # 预读现有已完成的 sku 数量，如果加上当前这个达到了完整规格数，则整体状态标为 success
+                current_completed_keys = set((product.get("format_info") or {}).keys())
+                current_completed_keys.add(sku_id)
+                if len(current_completed_keys) >= total_expected_skus:
+                    update_fields["format_status"] = "success"
+                    update_fields["need_reformat"] = False
+                    update_fields["format_error"] = ""
             else:
-                condition.update(pending_format_query())
+                update_fields["format_status"] = "failed"
+                update_fields["format_error"] = error
 
             saved = product_manager.update(
-                {
-                    "platform": product["platform"], "product_id": product_id,
-                    "format_status": status, "format_info": format_info,
-                    "format_model": generated["model_used"], "format_updated_at": datetime.now(timezone.utc),
-                    "format_error": error,
-                    "need_reformat": False
-                },
-                condition=condition, increments={"format_retry_count": 1 if status == "failed" else 0}, upsert=False,
+                update_fields,
+                condition=condition,
+                increments={"format_retry_count": 0 if is_success else 1},
+                upsert=False,
             )
 
-            if not saved["update"]:
+            status_key = "success" if is_success else "failed"
+            if not saved.get("update"):
                 batch_counts["skipped"] += 1
                 batch_counts["reformat_skipped" if is_reformat else "normal_skipped"] += 1
-                skipped_ids.append(product_id)
+                skipped_ids.append(sku_id)
                 continue
 
-            batch_counts[status] += 1
-            batch_counts[f"reformat_{status}" if is_reformat else f"normal_{status}"] += 1
+            batch_counts[status_key] += 1
+            batch_counts[f"reformat_{status_key}" if is_reformat else f"normal_{status_key}"] += 1
 
-            if status == "failed":
-                failure_details.append(f"{product_id}: {' '.join(error.split())[:240]}")
+            if not is_success:
+                failure_details.append(f"{sku_id}: {' '.join(error.split())[:240]}")
 
-        failed, skipped = batch_counts["failed"], batch_counts["skipped"]
+        failed = batch_counts["failed"]
         all_failed = failed == len(batch)
-        log = logger.error if all_failed else logger.warning if failed or skipped else logger.info
-        message = "❌ [商品/批次完成] 全批生成失败，失败结果已保存" if all_failed else "[商品/批次完成] 商品结果已逐项处理"
-        detail = " ".join(generated["error"].split())[:800] if generated["status"] == "failed" else "; ".join(
-            failure_details)[:800]
+        log = logger.error if all_failed else logger.warning if failed or batch_counts["skipped"] else logger.info
+        message = "❌ [规格/批次完成] 全批生成失败" if all_failed else "[规格/批次完成] 规格结果已增量写入"
+        detail = " ".join(generated["error"].split())[:800] if generated["status"] == "failed" else "; ".join(failure_details)[:800]
 
-        log("%s | 商品 ID: [%s] | 总计成功/失败/跳过: [%d/%d/%d] (重洗: %d/%d/%d) | 模型: [%s] | 耗时: [%.2f 秒] "
-            "| 失败摘要: [%s] | 跳过 ID: [%s] | 排查: [模型协议、名称变化或候选条件]", message,
-            ", ".join(str(product["product_id"]) for product in batch),
-            batch_counts["success"], failed, skipped,
-            batch_counts["reformat_success"], batch_counts["reformat_failed"], batch_counts["reformat_skipped"],
-            generated["model_used"] or "未返回", time.monotonic() - batch_started, detail or "无",
-            ", ".join(map(str, skipped_ids)) or "无")
+        log("%s | 规格列表: [%s] | 成功/失败/跳过: [%d/%d/%d] | 耗时: [%.2f 秒] | 失败摘要: [%s] | 跳过: [%s]",
+            message, ", ".join(t["sku_id"] for t in batch),
+            batch_counts["success"], failed, batch_counts["skipped"],
+            time.monotonic() - batch_started, detail or "无", ", ".join(skipped_ids) or "无")
 
     unexpected_errors = 0
     with ThreadPoolExecutor(max_workers=FORMAT_WORKERS) as executor:
         futures = {}
         for batch in batches:
-            # 扩展了初始化结构体
             batch_counts = {
                 "success": 0, "failed": 0, "skipped": 0,
                 "normal_success": 0, "normal_failed": 0, "normal_skipped": 0,
@@ -355,25 +440,20 @@ def run_format_round(product_manager):
             except Exception as exc:
                 unfinished = len(batch) - (batch_counts["success"] + batch_counts["failed"] + batch_counts["skipped"])
                 unexpected_errors += unfinished
-                logger.exception("❌ [商品/批次异常] 本批未完成，其他批次继续 | 首个 ID: [%s] | 未完成: [%d] "
-                                 "| 已成功/失败/跳过: [%d/%d/%d] | 原因: [%s] | 排查: [异常链、模型接口、MongoDB 写入]",
-                                 batch[0]["product_id"], unfinished, batch_counts["success"], batch_counts["failed"],
-                                 batch_counts["skipped"], " ".join(str(exc).split())[:400])
+                logger.exception("❌ [规格/批次异常] 本批未完成 | 首个 SKU: [%s] | 未完成: [%d] | 原因: %s",
+                                 batch[0]["sku_id"], unfinished, exc)
 
-            # 将批次统计汇入总统计
             for key in counts.keys():
                 counts[key] += batch_counts[key]
 
     log = logger.warning if unexpected_errors else logger.info
-    log("[调度/完成] 本轮处理结束 | 总计成功/失败/跳过: [%d/%d/%d] | 常规: [%d/%d/%d] | 重洗: [%d/%d/%d] | 异常未完成: [%d] | 耗时: [%.2f 秒] "
-        "| 排查: [异常批次日志]",
+    log("[调度/完成] 本轮处理结束 | 规格成功/失败/跳过: [%d/%d/%d] | 常规: [%d/%d/%d] | 重洗: [%d/%d/%d] | 耗时: [%.2f 秒]",
         counts["success"], counts["failed"], counts["skipped"],
         counts["normal_success"], counts["normal_failed"], counts["normal_skipped"],
         counts["reformat_success"], counts["reformat_failed"], counts["reformat_skipped"],
-        unexpected_errors, time.monotonic() - started)
+        time.monotonic() - started)
 
     return counts
-
 
 
 def pending_promotion_query():
