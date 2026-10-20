@@ -1105,11 +1105,30 @@ def normalize_goods(item, tab_name):
     """
     清洗分类流拦截的单个商品对象。
     统一构造默认 sku_info 列表，并打标 need_update_sku: True。
+    确保 _source_api 列表中一定包含 "group"。
     """
     goods_id = item.get("goods_id")
     if type(goods_id) not in (str, int) or not str(goods_id).strip():
         return None
-    record = {"platform": GLOBAL_CONFIG["platform"], "product_id": str(goods_id).strip(), "category": tab_name}
+
+    # 兼容处理 _source_api：若原数据已存在该字段则追加 "group"，不存在则初始化为 ["group"]
+    raw_source = item.get("_source_api")
+    if isinstance(raw_source, (list, tuple, set)):
+        source_api_list = [str(s).strip() for s in raw_source if s and str(s).strip()]
+    elif isinstance(raw_source, str) and raw_source.strip():
+        source_api_list = [raw_source.strip()]
+    else:
+        source_api_list = []
+
+    if "group" not in source_api_list:
+        source_api_list.append("group")
+
+    record = {
+        "platform": GLOBAL_CONFIG["platform"],
+        "product_id": str(goods_id).strip(),
+        "category": tab_name,
+        "_source_api": source_api_list,
+    }
     for source, target in (
             ("goods_name", "name"), ("brand_name", "brand"), ("sales_tip", "sales_tip"), ("hd_thumb_url", "image_url"),
     ):
@@ -1136,7 +1155,6 @@ def normalize_goods(item, tab_name):
     record["need_update_sku"] = True
 
     return record
-
 def save_error_snapshot(page, tab_name, reason):
     """page 为 Playwright Page；尽力保存 PNG/HTML，保留快照失败不阻断主流程的容错。"""
     try:
