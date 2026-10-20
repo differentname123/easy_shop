@@ -417,6 +417,20 @@ class PddAutomation(UIActionEngine):
     def __init__(self):
         super().__init__(TRANSFER_APP_NAME)
 
+    def click_home_button(self):
+        """点击拼多多小程序左上角小房子，复位回首页"""
+        if self.window and self.window.Exists(0, 0):
+            try:
+                # 先按一次 ESC，防止 SKU 弹窗拦截点击
+                auto.SendKeys('{Esc}')
+                time.sleep(0.05)
+                rect = self.window.BoundingRectangle
+                # 点击左上角小房子图标（高度与关闭按钮一致）
+                self.safe_click(rect.left + 30, rect.top + 55, "点击拼多多回到首页")
+                time.sleep(0.3)
+            except Exception as e:
+                logger.info(f"[WARN] 点击回到首页失败: {e}")
+
     def close_current_window(self):
         """通用窗口关闭，用于清理拼多多窗口，保持桌面整洁"""
         if self.window and self.window.Exists(0, 0):
@@ -656,11 +670,14 @@ class PddAutomation(UIActionEngine):
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
+            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
             return False, [], "进入详情页失败"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
+            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
+
             return False, [], "SKU面板未完全展开或点击全部失效"
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
