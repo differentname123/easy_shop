@@ -8,7 +8,9 @@ from datetime import datetime, timedelta, timezone
 from contextlib import closing
 
 from common.auto_captcha import solve_pdd_captcha
-from common.goods_common_utils import gen_goods_segment_info
+from common.goods_common_utils import gen_goods_segment_info, setup_logger
+logger = setup_logger(app_name="pdd_automation")
+
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 import win32gui
@@ -44,13 +46,7 @@ for d in [SKU_DEBUG_DIR, ERROR_DIR]:
 # 实例化电竞级截图抓取器 (全局单例，极速)
 sct = mss()
 
-
-def log(msg):
-    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    print(f"[{ts}] {msg}")
-
-
-log("[SYSTEM] 正在初始化 RapidOCR 轻量级引擎...")
+logger.info("[SYSTEM] 正在初始化 RapidOCR 轻量级引擎...")
 ocr = RapidOCR()
 
 
@@ -353,18 +349,18 @@ class UIActionEngine:
             win32gui.SetWindowPos(self.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
         except Exception as e:
-            log(f"[DEBUG] 置顶操作受到系统保护拦截: {e}")
+            logger.info(f"[DEBUG] 置顶操作受到系统保护拦截: {e}")
 
     def safe_click(self, x, y, desc=""):
         """无感瞬发点击，剥离所有冗余等待"""
         if desc:
-            log(f"[INFO] 执行点击: {desc} ({x}, {y})")
+            logger.info(f"[INFO] 执行点击: {desc} ({x}, {y})")
         auto.Click(int(x), int(y))
 
     def safe_input(self, text, desc=""):
         """极速输入：通过剪贴板瞬发，规避敲击延迟"""
         if desc:
-            log(f"[INFO] 执行输入: {desc}")
+            logger.info(f"[INFO] 执行输入: {desc}")
         pyperclip.copy(text)
         auto.SendKeys('{Ctrl}v')
         time.sleep(0.01)
@@ -462,7 +458,7 @@ class PddAutomation(UIActionEngine):
                         btn_ok.GetInvokePattern().Invoke()
                     except Exception:
                         btn_ok.Click(simulateMove=False)
-                    log("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
+                    logger.info("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
                     cleaned = True
                     time.sleep(0.1)
 
@@ -475,7 +471,7 @@ class PddAutomation(UIActionEngine):
                         btn_cancel.GetInvokePattern().Invoke()
                     except Exception:
                         btn_cancel.Click(simulateMove=False)
-                    log("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
+                    logger.info("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
                     cleaned = True
                     time.sleep(0.1)
 
@@ -533,7 +529,7 @@ class PddAutomation(UIActionEngine):
             if current_val == target_str:
                 return True, ""
 
-            log(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
+            logger.info(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
 
             edit_box.Click(simulateMove=False)
             time.sleep(0.02)
@@ -552,7 +548,7 @@ class PddAutomation(UIActionEngine):
         # --- 步骤 1：确立中转站据点 ---
         self.window_name = TRANSFER_APP_NAME
         if not self.find_window(timeout=1):
-            log(f"[SYSTEM] 正在唤醒中转小程序: {TRANSFER_APP_NAME}")
+            logger.info(f"[SYSTEM] 正在唤醒中转小程序: {TRANSFER_APP_NAME}")
             os.startfile(TRANSFER_SHORTCUT_PATH)
             if not self.find_window(timeout=5):
                 return False, [], "中转小程序启动失败"
@@ -564,12 +560,12 @@ class PddAutomation(UIActionEngine):
             return False, [], "中转小程序存在无法自动关闭的弹窗，环境未能恢复至正常状态"
 
         # --- 步骤 2：精确写入商品 ID 并严格比对 ---
-        log(f"[TASK] [{index}] 步骤 1/4: 向中转站写入商品 ID")
+        logger.info(f"[TASK] [{index}] 步骤 1/4: 向中转站写入商品 ID")
         input_ok, input_err = self.set_transfer_goods_id(goods_id)
         if not input_ok:
             return False, [], input_err
 
-        log(f"[TASK] [{index}] 步骤 2/4: 触发 API 跳转")
+        logger.info(f"[TASK] [{index}] 步骤 2/4: 触发 API 跳转")
         jump_btn = self.window.ButtonControl(Name="跳转到该商品")
         if not jump_btn.Exists(1, 1):
             return False, [], "无法定位中转小程序的跳转按钮"
@@ -580,19 +576,19 @@ class PddAutomation(UIActionEngine):
             jump_btn.Click(simulateMove=False)
 
         # --- 步骤 2.5：处理微信跳转授权弹窗 ---
-        log(f"[TASK] [{index}] 步骤 2.5/4: 处理微信跳转授权弹窗")
+        logger.info(f"[TASK] [{index}] 步骤 2.5/4: 处理微信跳转授权弹窗")
         allow_btn = self.window.TextControl(Name="允许")
         if allow_btn.Exists(2, 0.2):
             try:
                 allow_btn.GetInvokePattern().Invoke()
             except Exception:
                 allow_btn.Click(simulateMove=False)
-            log("[INFO] 已自动点击“允许”跳转")
+            logger.info("[INFO] 已自动点击“允许”跳转")
         else:
-            log("[INFO] 未检测到“允许”弹窗（可能已静默放行或系统延迟）")
+            logger.info("[INFO] 未检测到“允许”弹窗（可能已静默放行或系统延迟）")
 
         # --- 步骤 3 & 4：接管拼多多并进行状态机轮询 ---
-        log(f"[TASK] [{index}] 步骤 3/4: 状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获)")
+        logger.info(f"[TASK] [{index}] 步骤 3/4: 状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获)")
         self.window_name = TARGET_APP_NAME
 
         if not self.find_window(timeout=5):
@@ -607,7 +603,7 @@ class PddAutomation(UIActionEngine):
         try:
             close_btn = self.window.GroupControl(ClassName="close_btn")
             if close_btn.Exists(0.5, 0.1):
-                log("[HEAL] 检测到拼多多存在 'close_btn' 超时弹窗，正在执行消除...")
+                logger.info("[HEAL] 检测到拼多多存在 'close_btn' 超时弹窗，正在执行消除...")
                 try:
                     close_btn.Click(simulateMove=False)
                 except Exception:
@@ -618,7 +614,7 @@ class PddAutomation(UIActionEngine):
                                         "点击 close_btn")
                 time.sleep(0.3)
         except Exception as e:
-            log(f"[DEBUG] 检测 close_btn 时 UI 树正在重绘，已安全绕过: {e}")
+            logger.info(f"[DEBUG] 检测 close_btn 时 UI 树正在重绘，已安全绕过: {e}")
 
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
@@ -668,19 +664,19 @@ class PddAutomation(UIActionEngine):
             return False, [], "SKU面板未完全展开或点击全部失效"
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
-        log(f"[TASK] [{index}] 步骤 4/4: 正在遍历提取所有 SKU 规格组合与价格...")
+        logger.info(f"[TASK] [{index}] 步骤 4/4: 正在遍历提取所有 SKU 规格组合与价格...")
         sku_info = get_pdd_sku_info(id=goods_id, debug=DEBUG_MODE)
         if not sku_info:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
             return False, [], "未能提取到有效的SKU规格组合数据"
 
-        log(f"[TASK] [{index}] 🎯 成功提取 {len(sku_info)} 个规格组合。")
+        logger.info(f"[TASK] [{index}] 🎯 成功提取 {len(sku_info)} 个规格组合。")
 
         # 连续成功清理策略
         if (consecutive_successes + 1) % 500 == 0:
             self.close_current_window()
-            log("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
+            logger.info("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, sku_info, ""
 
@@ -689,10 +685,10 @@ class PddAutomation(UIActionEngine):
 # 🚦 任务调度引擎 (直接对接数据库)
 # ==========================================
 def batch_runner(product_list):
-    print(f"\n{'=' * 60}")
-    log("[SYSTEM] 🚀 桥接级 RPA 引擎启动 (通过wxid_2lr36gkzn2io22的小程序测试号中转)")
-    log(f"[INFO] 📊 待执行任务数: {len(product_list)}")
-    print(f"{'=' * 60}\n")
+    logger.info("=" * 60)
+    logger.info("[SYSTEM] 🚀 桥接级 RPA 引擎启动 (通过wxid_2lr36gkzn2io22的小程序测试号中转)")
+    logger.info(f"[INFO] 📊 待执行任务数: {len(product_list)}")
+    logger.info("=" * 60)
 
     if not product_list:
         return
@@ -704,8 +700,8 @@ def batch_runner(product_list):
 
     for i, product in enumerate(product_list, 1):
         goods_id = product["product_id"]
-        print("\n" + "-" * 40)
-        log(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(product_list)}] goods_id: {goods_id}")
+        logger.info("-" * 40)
+        logger.info(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(product_list)}] goods_id: {goods_id}")
 
         try:
             success, sku_info, error_msg = bot.process_single_goods(goods_id, i, consecutive_successes)
@@ -736,7 +732,7 @@ def batch_runner(product_list):
                     else:
                         batch_counts["skipped"] += 1
 
-                    log(f"[SUCCESS] ✅ 处理成功并已写入数据库 ({goods_id})")
+                    logger.info(f"[SUCCESS] ✅ 处理成功并已写入数据库 ({goods_id})")
                     consecutive_successes += 1
                     consecutive_failures = 0
                 else:
@@ -753,16 +749,16 @@ def batch_runner(product_list):
                         increments={"sku_retry_count": 1},
                         upsert=False
                     )
-                    log(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
+                    logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
                     solve_pdd_captcha()
-                    print("\n" + "-" * 40)
+                    logger.info("-" * 40)
                     time.sleep(10)
                     batch_counts["failed"] += 1
                     consecutive_successes = 0
                     consecutive_failures += 1
 
         except Exception as e:
-            log(f"[FATAL] 💥 发生严重异常: {str(e)}")
+            logger.info(f"[FATAL] 💥 发生严重异常: {str(e)}")
             batch_counts["failed"] += 1
             consecutive_successes = 0
             consecutive_failures += 1
@@ -785,7 +781,7 @@ def batch_runner(product_list):
                         upsert=False
                     )
             except Exception as db_err:
-                log(f"[ERROR] 数据库异常状态更新失败: {db_err}")
+                logger.info(f"[ERROR] 数据库异常状态更新失败: {db_err}")
 
             try:
                 bot.window_name = TARGET_APP_NAME
@@ -796,12 +792,12 @@ def batch_runner(product_list):
 
         # 判断是否连续失败 5 次
         if consecutive_failures >= 5:
-            log(f"[WARN] ⚠️ 已连续发生 5 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
+            logger.info(f"[WARN] ⚠️ 已连续发生 5 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
             break
 
-    print(f"\n{'=' * 50}")
-    log(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
-    print(f"{'=' * 50}")
+    logger.info("=" * 50)
+    logger.info(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
+    logger.info("=" * 50)
 
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
@@ -854,7 +850,7 @@ if __name__ == "__main__":
                     clean_words = [kw_clean]
                 target_category_list.append(clean_words)
 
-            print(target_category_list)
+            logger.info(target_category_list)
 
             if target_category_list:
                 results = get_data_updated_within_24h(
@@ -894,7 +890,7 @@ if __name__ == "__main__":
 
                 batch_runner(filtered_results)
             else:
-                log("[INFO] 当前无有效监控关键词，跳过本轮 SKU 抓取")
+                logger.info("[INFO] 当前无有效监控关键词，跳过本轮 SKU 抓取")
         except Exception as e:
-            log(f"[FATAL] 💥 主程序异常退出: {str(e)}")
+            logger.info(f"[FATAL] 💥 主程序异常退出: {str(e)}")
         time.sleep(600)
