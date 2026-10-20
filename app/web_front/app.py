@@ -741,27 +741,23 @@ def api_get_monitors():
 
 @app.post("/api/monitor")
 def api_add_monitor(req: MonitorRequest):
-    raw_input = (req.keyword or "").strip()
-    if not raw_input:
+    # 1. 仅去除首尾多余空格，保留中间内容（比如 "Green Bell 指甲刀" 原样保留）
+    kw = (req.keyword or "").strip()
+    if not kw:
         raise HTTPException(status_code=400, detail="商品名称不能为空")
 
-    # 支持单个商品或用逗号、顿号、空格、换行分隔的批量商品上传
-    keywords = [k.strip() for k in re.split(r"[\s,，、;；\n]+", raw_input) if k.strip()]
-    if not keywords:
-        raise HTTPException(status_code=400, detail="未解析到有效的商品名称")
-
+    # 2. 直接作为一个完整的监控项存入，绝不切分
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with monitor_file_lock:
         data = _load_monitor_data_unsafe()
-        for kw in keywords:
-            data[kw] = {
-                "is_monitoring": True,
-                "added_at": now_str,
-                "cancelled_at": None
-            }
+        data[kw] = {
+            "is_monitoring": True,
+            "added_at": now_str,
+            "cancelled_at": None
+        }
         _save_monitor_data_unsafe(data)
 
-    logger.info(f"新增监控商品: {keywords}")
+    logger.info(f"新增监控商品: [{kw}]")
     result = build_monitor_response(data)
     return {
         "status": "success",
