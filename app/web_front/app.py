@@ -4,9 +4,9 @@
 :create_date:
     2026/10/3 13:56
 :last_date:
-    2026/10/3 13:56
+    2026/10/22 14:00
 :description:
-
+    性价比商品搜索服务（已移除前端佣金字段传输）
 """
 import math
 import os
@@ -17,7 +17,6 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
@@ -35,7 +34,7 @@ db_instance.ping()
 product_manager = ProductManager(db_instance)
 
 app = FastAPI(title="性价比商品搜索服务")
-# 新增：开启 GZip 压缩，大幅减少网络传输体积（通常可压缩 80% 以上）
+# 开启 GZip 压缩，大幅减少网络传输体积
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 sku_unit_base_mapping = {
@@ -90,7 +89,7 @@ for _cat, _units in sku_unit_base_mapping.items():
         UNIT_TO_CATEGORY[_u] = _cat
         UNIT_TO_MULTIPLIER[_u] = _mul
 
-# ============== 新增：商品分词结果本地 JSON 缓存与持久化逻辑 ==============
+# ============== 商品分词结果本地 JSON 缓存与持久化逻辑 ==============
 SEGMENT_CACHE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "segment_cache.json")
 segment_cache_lock = threading.Lock()
 _raw_gen_goods_segment_info = gen_goods_segment_info
@@ -163,7 +162,7 @@ def gen_goods_segment_info(name: str = "", *args, **kwargs):
     return words
 # =====================================================================
 
-# ============== 新增：商品错误反馈本地 JSON 安全维护逻辑 ==============
+# ============== 商品错误反馈本地 JSON 安全维护逻辑 ==============
 FEEDBACK_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_products.json")
 feedback_file_lock = threading.Lock()
 
@@ -230,7 +229,6 @@ def api_submit_feedback(req: FeedbackRequest):
     logger.info(f"记录商品反馈: product_id=[{pid}], name=[{req.name}], content=[{req.content}]")
     return {"status": "success"}
 # =====================================================================
-
 
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
@@ -396,7 +394,6 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 "platform": product.get("platform"),
                 "image_url": product.get("image_url"),
                 "product_url": product_url,
-                "has_commission": bool(product.get("promotion_url")),
                 "original_price": orig_price,
                 "saved_price": round(float(product.get("saved_price") or 0), 2),
                 "brand": product.get("brand"),
@@ -495,7 +492,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     valid_attributes.sort(key=lambda x: x["score"], reverse=True)
     top_filters = valid_attributes[:5]
 
-    # 精简响应结构（去除空属性与重复关键词，控制浮点数精度以减少传输体积）
+    # 精简响应结构（已移除 has_commission 字段，减少传输体积）
     response_products = []
     for idx, product in enumerate(final_results):
         format_info = product.get("format_info") or {}
@@ -527,7 +524,6 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "platform": product["platform"],
             "image_url": product["image_url"],
             "product_url": product["product_url"],
-            "has_commission": product["has_commission"],
             "original_price": product["original_price"],
             "saved_price": product["saved_price"],
             "brand": product["brand"] or "",
@@ -552,7 +548,8 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         ]
     }
 
-# ============== 新增：商品监控本地 JSON 安全维护与统计逻辑 ==============
+
+# ============== 商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
 monitor_file_lock = threading.Lock()
 
@@ -686,7 +683,6 @@ def build_monitor_response(data: dict) -> dict:
                 keywords_to_query.append(kw)
 
     if keywords_to_query:
-        # 若已有缓存超过1分钟过期，则统一刷新全部活跃监控词以对齐缓存时间；若仅新增监控词，则只查询新增词
         target_query_keywords = active_keywords if has_expired else keywords_to_query
         fresh_counts = count_monitored_products_72h(target_query_keywords, min_match_score=10, hours=72)
         update_ts = datetime.now().timestamp()
@@ -717,7 +713,6 @@ def build_monitor_response(data: dict) -> dict:
         else:
             inactive_list.append(item)
 
-    # 按时间倒序排列
     active_list.sort(key=lambda x: x.get("added_at") or "", reverse=True)
     inactive_list.sort(key=lambda x: x.get("cancelled_at") or "", reverse=True)
 
@@ -741,12 +736,10 @@ def api_get_monitors():
 
 @app.post("/api/monitor")
 def api_add_monitor(req: MonitorRequest):
-    # 1. 仅去除首尾多余空格，保留中间内容（比如 "Green Bell 指甲刀" 原样保留）
     kw = (req.keyword or "").strip()
     if not kw:
         raise HTTPException(status_code=400, detail="商品名称不能为空")
 
-    # 2. 直接作为一个完整的监控项存入，绝不切分
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with monitor_file_lock:
         data = _load_monitor_data_unsafe()
@@ -807,6 +800,7 @@ def api_search(keyword: str = "方便面", hours: int = 72):
         "data": search_data["results"],
         "filters": search_data["filters"]
     }
+
 
 # 2. 网页路由配置
 @app.get("/", response_class=HTMLResponse)
