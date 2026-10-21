@@ -119,7 +119,8 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
     # ==================== 1. 尝试常规极速通道 (ocr_fast) ====================
     res, _ = ocr_fast(padded, use_det=False, use_cls=False)
     if res:
-        text = str(res[0][0]).strip().replace("¥", "￥")
+        # 【修改点 1】：兼容 ¥、?、？ 并统一归一化为 ￥
+        text = re.sub(r"[¥?？]", "￥", str(res[0][0]).strip())
         if re.match(r"^\d", text):
             text = "￥" + text
 
@@ -138,7 +139,8 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
             res_strong.sort(key=lambda line: line[0][0][0])
         except Exception:
             pass
-        full_text = "".join([str(line[1]).strip().replace("¥", "￥") for line in res_strong])
+        # 【修改点 2】：强力通道同样将 ¥、?、？ 统一归一化为 ￥
+        full_text = "".join([re.sub(r"[¥?？]", "￥", str(line[1]).strip()) for line in res_strong])
 
         if re.match(r"^\d", full_text):
             full_text = "￥" + full_text
@@ -158,6 +160,7 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
             return f"￥{nums[0]}"
 
     return ""
+
 def _is_box_disabled(img_bgr, box):
     """判断未选中的 SKU 框是否处于缺货/置灰不可选状态（灰底浅灰字，无深色前景像素）"""
     if _is_box_selected(img_bgr, box):
@@ -180,9 +183,12 @@ def _parse_detail_page(img_bgr):
 
     confirm_y = next((i["box"][1] for i in ocr_items if "确定" in i["text"] and i["cy"] > h_img * 0.80), None)
 
-    # 1. 常规寻找价格
-    price_boxes = [i["box"] for i in ocr_items if
-                   ("￥" in i["text"] or "¥" in i["text"]) and (h_img * 0.18 < i["cy"] < h_img * 0.55)]
+    # 1. 常规寻找价格（【修改点 3】：增加对 ? 和 ？ 后接数字如 '?82' 的价格框识别）
+    price_boxes = [
+        i["box"] for i in ocr_items
+        if ("￥" in i["text"] or "¥" in i["text"] or bool(re.search(r"[?？]\s*\d", i["text"])))
+           and (h_img * 0.18 < i["cy"] < h_img * 0.55)
+    ]
 
     # 2. 【核心隔离唤醒】：如果连确定按钮都在，但唯独 price_boxes 瞎了，让 ocr_strong 介入
     if confirm_y is not None and not price_boxes:
@@ -191,7 +197,8 @@ def _parse_detail_page(img_bgr):
             bx, by, bw, bh = item["box"]
             real_box = (bx, int(by + h_img * 0.18), bw, bh)
             t = item["text"]
-            if any(sym in t for sym in ["￥", "¥", "券后", "折后", "拼单"]) and re.search(r"\d", t):
+            # 【修改点 4】：强力唤醒同样加入对 ? 和 ？ 的支持
+            if any(sym in t for sym in ["￥", "¥", "?", "？", "券后", "折后", "拼单"]) and re.search(r"\d", t):
                 price_boxes.append(real_box)
 
     if confirm_y is None or not price_boxes:
@@ -1117,71 +1124,6 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 
     return results
 
-
 if __name__ == "__main__":
-    while True:
-        try:
-            monitored_products = read_json(
-                r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json') or {}
-            search_keywords = [
-                k for k, v in monitored_products.items()
-                if isinstance(v, dict) and v.get('is_monitoring')
-            ]
-
-            target_category_list = []
-            for search_keyword in search_keywords:
-                kw_clean = (search_keyword or "").strip().lower()
-                if not kw_clean:
-                    continue
-                words = gen_goods_segment_info(name=search_keyword)
-                clean_words = []
-                if isinstance(words, (list, tuple, set)):
-                    clean_words = [str(w).strip().lower() for w in words if str(w).strip()]
-                if not clean_words:
-                    clean_words = [kw_clean]
-                target_category_list.append(clean_words)
-
-            logger.info(target_category_list)
-
-            if target_category_list:
-                results = get_data_updated_within_24h(
-                    limit=0,
-                    extra_query={
-                        "format_status": "success",
-                        "need_update_sku": True,
-                        "$or": [
-                            {"sku_retry_count": {"$lte": 3}},
-                            {"sku_retry_count": {"$exists": False}}
-                        ]
-                    },
-                    projection={
-                        "_id": 1,
-                        "platform": 1,
-                        "product_id": 1,
-                        "name": 1,
-                        "sku_info": 1,
-                        "need_update_sku": 1,
-                        "sku_retry_count": 1
-                    }
-                )
-
-                # 过滤逻辑：
-                # 1. 满足任意一组非空分词规则（统一小写匹配，与前端搜索保持一致）
-                # 2. need_update_sku 为 True 且 sku_retry_count <= 3
-                filtered_results = [
-                    item for item in results
-                    if bool(item.get("need_update_sku"))
-                       and (item.get("sku_retry_count") or 0) <= 3
-                       and (item_name := (item.get("name") or "").lower())
-                       and any(
-                        all(keyword in item_name for keyword in keywords_group)
-                        for keywords_group in target_category_list
-                    )
-                ]
-
-                batch_runner(filtered_results)
-            else:
-                logger.info("[INFO] 当前无有效监控关键词，跳过本轮 SKU 抓取")
-        except Exception as e:
-            logger.info(f"[FATAL] 💥 主程序异常退出: {str(e)}")
-        time.sleep(600)
+    sku_info = get_pdd_sku_info(id="123456", debug=DEBUG_MODE)
+    print(sku_info)
