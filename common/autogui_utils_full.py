@@ -458,150 +458,105 @@ class PddAutomation(UIActionEngine):
 
     def ensure_transfer_clean_state(self, max_retries=3):
         """
-        【自愈核心】检测非期望弹窗并自动消除，强行将中转站恢复至干净可操作状态
+        【自愈核心】检测非期望弹窗并自动消除，强行将中转站恢复至【情况2】干净状态
         """
         for _ in range(max_retries):
             cleaned = False
 
             # 1. 检查并修复【情况3】：不支持拖入文件弹窗
             title_unsupported = self.window.TextControl(Name="当前小程序不支持拖入文件")
-            if title_unsupported.Exists(0.2, 0.1):
-                btn_ok = self.window.ButtonControl(Name="确定")
-                if not btn_ok.Exists(0.1, 0):
-                    btn_ok = self.window.TextControl(Name="确定")
-                if btn_ok.Exists(0.5, 0.1):
+            if title_unsupported.Exists(0, 0):
+                btn_ok = self.window.TextControl(Name="确定")
+                if btn_ok.Exists(0.5, 0):
                     try:
                         btn_ok.GetInvokePattern().Invoke()
                     except Exception:
                         btn_ok.Click(simulateMove=False)
                     logger.info("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
                     cleaned = True
-                    time.sleep(0.4)  # 给微信淡出动画预留缓冲
+                    time.sleep(0.1)
 
             # 2. 检查并修复【情况1】：遗留的跳转弹窗
             title_jump = self.window.TextControl(Name="即将打开“拼多多”小程序")
-            if title_jump.Exists(0.2, 0.1):
-                btn_cancel = self.window.ButtonControl(Name="取消")
-                if not btn_cancel.Exists(0.1, 0):
-                    btn_cancel = self.window.TextControl(Name="取消")
-                if btn_cancel.Exists(0.5, 0.1):
+            if title_jump.Exists(0, 0):
+                btn_cancel = self.window.TextControl(Name="取消")
+                if btn_cancel.Exists(0.5, 0):
                     try:
                         btn_cancel.GetInvokePattern().Invoke()
                     except Exception:
                         btn_cancel.Click(simulateMove=False)
                     logger.info("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
                     cleaned = True
-                    time.sleep(0.5)  # 关键：给微信弹窗彻底销毁预留充足时间
+                    time.sleep(0.1)
 
-            # 3. 检查是否有遮挡的 wrap 容器弹窗（必须带有确定/取消按钮才视为遮挡弹窗，防止误伤主界面布局）
+            # 3. 检查是否有遮挡的 wrap 容器弹窗
             wrap_modal = self.window.GroupControl(ClassName="wrap")
-            if wrap_modal.Exists(0.2, 0.1):
-                btn_cancel = wrap_modal.ButtonControl(Name="取消")
-                if not btn_cancel.Exists(0.1, 0):
-                    btn_cancel = wrap_modal.TextControl(Name="取消")
-
-                btn_ok = wrap_modal.ButtonControl(Name="确定")
-                if not btn_ok.Exists(0.1, 0):
-                    btn_ok = wrap_modal.TextControl(Name="确定")
-
+            if wrap_modal.Exists(0, 0):
+                btn_cancel = wrap_modal.TextControl(Name="取消")
+                btn_ok = wrap_modal.TextControl(Name="确定")
                 if btn_cancel.Exists(0.2, 0):
                     try:
                         btn_cancel.GetInvokePattern().Invoke()
                     except Exception:
                         btn_cancel.Click(simulateMove=False)
-                    logger.info("[HEAL] 检测到遮挡弹窗，已点击'取消'")
                     cleaned = True
-                    time.sleep(0.4)
                 elif btn_ok.Exists(0.2, 0):
                     try:
                         btn_ok.GetInvokePattern().Invoke()
                     except Exception:
                         btn_ok.Click(simulateMove=False)
-                    logger.info("[HEAL] 检测到遮挡弹窗，已点击'确定'")
                     cleaned = True
-                    time.sleep(0.4)
+                time.sleep(0.1)
 
-            # 若本轮未检测到任何遮罩弹窗，说明已恢复干净状态，提前跳出循环
             if not cleaned:
                 break
 
-        # 【核心修正】：以输入框是否可用作为环境恢复的唯一金标准！
-        # 绝不能仅凭界面存在普通的 class="wrap" 容器就误判定为弹窗异常
-        edit_box = self.window.EditControl()
-        if edit_box.Exists(1.5, 0.2):
-            return True
-
-        # 如果输入框未找到，检查是否仍有明显的弹窗标题阻挡
-        if self.window.TextControl(Name="即将打开“拼多多”小程序").Exists(0.1, 0) or \
-                self.window.TextControl(Name="当前小程序不支持拖入文件").Exists(0.1, 0):
+        wrap_modal = self.window.GroupControl(ClassName="wrap")
+        if wrap_modal.Exists(0, 0):
             return False
+        return True
 
-        # 兜底：只要跳转按钮能找到，也认定为环境正常
-        jump_btn = self.window.ButtonControl(Name="跳转到该商品")
-        return jump_btn.Exists(0.5, 0.1)
     def set_transfer_goods_id(self, goods_id, max_attempts=3):
         """
-        【输入与双向绑定保障】前置读取与强制清空 + 无Ctrl真实按键驱动 + 严格二次校验重试
+        【输入与双向绑定保障】真实按键事件驱动 + 严格值校验，彻底规避双向绑定不更新及张冠李戴
         """
-        import ctypes
         target_str = str(goods_id).strip()
         edit_box = self.window.EditControl()
         if not edit_box.Exists(2, 1):
             return False, "无法定位中转小程序的输入框"
 
-        def _force_clear_box():
-            """内部辅助：优先用 ValuePattern 清空，再读取实际残留值并用物理退格彻底清零"""
-            try:
-                vp = edit_box.GetValuePattern()
-                if vp:
-                    vp.SetValue("")
-                    time.sleep(0.02)
-            except Exception:
-                pass
+        for attempt in range(1, max_attempts + 1):
+            edit_box.Click(simulateMove=False)
+            time.sleep(0.02)
 
-            residual = self.get_control_text(edit_box).strip()
-            if residual:
-                edit_box.Click(simulateMove=False)
-                time.sleep(0.03)
-                clear_len = len(residual) + 6
-                auto.SendKeys('{End}' + '{Back}' * clear_len + '{Delete}' * 6, interval=0.005)
-                time.sleep(0.03)
+            auto.SendKeys('{Ctrl}a{Delete}')
+            time.sleep(0.02)
 
-        current_val = ""
-        try:
-            for attempt in range(1, max_attempts + 1):
-                edit_box.Click(simulateMove=False)
-                time.sleep(0.04)
+            pyperclip.copy(target_str)
+            auto.SendKeys('{Ctrl}v')
+            time.sleep(0.02)
 
-                # 1. 输入前绝不盲信全选：先读取/使用 ValuePattern 与退格强制清空输入框
-                _force_clear_box()
+            auto.SendKeys(' {Back}')
+            time.sleep(0.03)
 
-                # 2. 直接通过真实按键输入目标ID（不使用 Ctrl+V，彻底规避 Ctrl 卡死风险）
-                auto.SendKeys(target_str, interval=0.01)
-                time.sleep(0.02)
+            current_val = self.get_control_text(edit_box).strip()
+            if current_val == target_str:
+                return True, ""
 
-                # 3. 敲入空格再退格，确保触发微信小程序的 bindinput 双向数据绑定
-                auto.SendKeys(' {Back}')
-                time.sleep(0.04)
+            logger.info(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
 
-                # 4. 严格进行二次校验
-                current_val = self.get_control_text(edit_box).strip()
-                if current_val == target_str:
-                    return True, ""
+            edit_box.Click(simulateMove=False)
+            time.sleep(0.02)
+            auto.SendKeys('{Ctrl}a{Delete}')
+            time.sleep(0.02)
+            auto.SendKeys(target_str)
+            time.sleep(0.03)
 
-                logger.info(
-                    f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，准备清空并执行第 {attempt} 次重试")
-                _force_clear_box()
-                time.sleep(0.05)
+            current_val = self.get_control_text(edit_box).strip()
+            if current_val == target_str:
+                return True, ""
 
-            return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
-        finally:
-            # 硬件级兜底：强制释放左右 Ctrl 键（VK_CONTROL=0x11, VK_LCONTROL=0xA2, VK_RCONTROL=0xA3, KEYEVENTF_KEYUP=0x0002）
-            try:
-                for vk in (0x11, 0xA2, 0xA3):
-                    ctypes.windll.user32.keybd_event(vk, 0, 0x0002, 0)
-            except Exception:
-                pass
+        return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
 
     def process_single_goods(self, goods_id, index, consecutive_successes=0):
         # --- 步骤 1：确立中转站据点 ---
@@ -614,7 +569,7 @@ class PddAutomation(UIActionEngine):
 
         self.force_bring_to_front()
 
-        # --- 步骤 1.5：环境自愈（确保恢复至干净状态） ---
+        # --- 步骤 1.5：环境自愈（确保恢复至【情况2】） ---
         if not self.ensure_transfer_clean_state():
             return False, [], "中转小程序存在无法自动关闭的弹窗，环境未能恢复至正常状态"
 
@@ -712,15 +667,17 @@ class PddAutomation(UIActionEngine):
                 pass
 
         # 轮询结束，进行结果清算
-        # 【关键保护】：失败时不触发 self.click_home_button()，保留滑块验证现场给 solve_pdd_captcha()
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
+            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
             return False, [], "进入详情页失败"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
+            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
+
             return False, [], "SKU面板未完全展开或点击全部失效"
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
@@ -810,20 +767,7 @@ def batch_runner(product_list):
                         upsert=False
                     )
                     logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
-
-                    # 【核心修复时序】：现场保留在拼多多窗口，先解滑块，再点击回到首页复位！
-                    try:
-                        bot.window_name = TARGET_APP_NAME
-                        if bot.find_window(timeout=1):
-                            bot.force_bring_to_front()
-                        logger.info("[CAPTCHA] 正在尝试检测并解决拼多多滑块验证码...")
-                        solve_pdd_captcha()
-                    except Exception as cap_err:
-                        logger.info(f"[WARN] 尝试解决滑块验证码时发生异常: {cap_err}")
-                    finally:
-                        # 无论是否触发滑块或滑块是否通过，都在此时复位回首页，确保下次跳转不会串台
-                        bot.click_home_button()
-
+                    solve_pdd_captcha()
                     logger.info("-" * 40)
                     time.sleep(10)
                     batch_counts["failed"] += 1
@@ -871,7 +815,6 @@ def batch_runner(product_list):
     logger.info("=" * 50)
     logger.info(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
     logger.info("=" * 50)
-
 
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
