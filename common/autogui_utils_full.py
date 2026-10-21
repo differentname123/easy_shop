@@ -1124,6 +1124,8 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 
     return results
 
+import math
+
 if __name__ == "__main__":
     while True:
         try:
