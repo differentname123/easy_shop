@@ -869,9 +869,12 @@ def safe_batch_update(product_manager, records):
     3. 保护已被 RPA 抓取过真实多规格的商品（need_update_sku == False 或 sku_status == "success"），
        防止重复采集将真实 sku_info 覆盖回默认单规格占位，或将 need_update_sku 重置为 True。
     4. 保护库中已生成的非空 promotion_url，防止被空值覆盖。
+    5. 维护 history_price_info 历史价格列表：每次新增或更新商品时，自动追加当前时间与对应价格。
     """
     if not records:
         return {"new": 0, "update": 0}
+
+    bj_tz = timezone(timedelta(hours=8))
 
     try:
         product_ids = [
@@ -888,15 +891,20 @@ def safe_batch_update(product_manager, records):
                     "need_update_sku": 1,
                     "sku_status": 1,
                     "promotion_url": 1,
+                    "history_price_info": 1,
                 }
             )
 
             source_api_map = {}
             existing_doc_map = {}
+            history_price_map = {}
+
             if existing_docs:
                 for doc in existing_docs:
                     pid = str(doc.get("product_id"))
                     existing_doc_map[pid] = doc
+
+                    # 提取已有的 _source_api
                     old_source = doc.get("_source_api")
                     if old_source:
                         if isinstance(old_source, list):
@@ -906,10 +914,19 @@ def safe_batch_update(product_manager, records):
                         else:
                             source_api_map[pid] = [str(old_source)]
 
+                    # 提取已有的 history_price_info
+                    old_history = doc.get("history_price_info")
+                    if isinstance(old_history, list):
+                        history_price_map[pid] = [
+                            item for item in old_history if isinstance(item, dict)
+                        ]
+                    else:
+                        history_price_map[pid] = []
+
             for record in records:
                 pid = str(record.get("product_id"))
 
-                # 合并 _source_api
+                # 1. 合并 _source_api
                 current_source = record.get("_source_api")
                 if current_source is not None:
                     if isinstance(current_source, list):
@@ -924,6 +941,31 @@ def safe_batch_update(product_manager, records):
                     record["_source_api"] = combined_sources
                     source_api_map[pid] = combined_sources
 
+                # 2. 组装并追加 history_price_info（新增与更新均追加当前时间和对应价格）
+                raw_time = record.get("updated_at")
+                if isinstance(raw_time, datetime):
+                    if raw_time.tzinfo is None:
+                        raw_time = raw_time.replace(tzinfo=timezone.utc)
+                    time_str = raw_time.astimezone(bj_tz).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    time_str = datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+                raw_price = record.get("activity_price")
+                if raw_price is None:
+                    raw_price = record.get("original_price", 0.0)
+                current_price = _safe_float(raw_price, default=0.0)
+
+                price_entry = {
+                    "time": time_str,
+                    "price": current_price,
+                }
+
+                existing_history = history_price_map.get(pid, [])
+                combined_history = existing_history + [price_entry]
+                record["history_price_info"] = combined_history
+                history_price_map[pid] = combined_history
+
+                # 3. 保护已有字段不被默认占位或空值覆盖
                 old_doc = existing_doc_map.get(pid)
                 if old_doc:
                     # 若该商品已完成过 RPA 真实规格提取，绝不用默认单规格覆盖 sku_info 和 need_update_sku
@@ -936,9 +978,16 @@ def safe_batch_update(product_manager, records):
                         record.pop("promotion_url", None)
 
     except Exception as e:
-        logger.error("[安全更新/来源合并异常] 来源合并查询失败，退回直接入库模式 | 错误: %s", e)
+        logger.error("[安全更新/来源与历史价格合并异常] 查询失败，退回直接入库模式 | 错误: %s", e)
+        # 若预查询异常，移除可能半途生成的 history_price_info，防止覆盖丢失库中已有的长历史记录
+        for record in records:
+            record.pop("history_price_info", None)
 
     return product_manager.update(records)
+
+
+
+
 # ==========================================
 # 修改：UI 拦截搜索任务模块 (单个搜索与新结构适配)
 # ==========================================

@@ -1124,7 +1124,6 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 
     return results
 
-
 if __name__ == "__main__":
     while True:
         try:
@@ -1140,12 +1139,21 @@ if __name__ == "__main__":
                 kw_clean = (search_keyword or "").strip().lower()
                 if not kw_clean:
                     continue
-                words = gen_goods_segment_info(name=search_keyword, top_key=2)
+                words = gen_goods_segment_info(name=search_keyword)
+                # words 示例格式为 ['娟姗','good', '鲜牛奶']
+
+                # 1. 将 words 完全展平成单个字符列表，例如 ['娟', '姗', 'g', 'o', 'o', 'd', ...]
                 clean_words = []
                 if isinstance(words, (list, tuple, set)):
-                    clean_words = [str(w).strip().lower() for w in words if str(w).strip()]
+                    clean_words = [
+                        char
+                        for w in words
+                        if str(w).strip()
+                        for char in str(w).strip().lower()
+                        if not char.isspace()
+                    ]
                 if not clean_words:
-                    clean_words = [kw_clean]
+                    clean_words = [char for char in kw_clean if not char.isspace()]
                 target_category_list.append(clean_words)
 
             logger.info(target_category_list)
@@ -1173,7 +1181,7 @@ if __name__ == "__main__":
                 )
 
                 # 过滤逻辑：
-                # 1. 满足任意一组非空分词规则（统一小写匹配，与前端搜索保持一致）
+                # 1. 满足任意一组分词规则：匹配字符数 >= ceil(总长度 * 2 / 3)
                 # 2. need_update_sku 为 True 且 sku_retry_count <= 3
                 filtered_results = [
                     item for item in results
@@ -1181,7 +1189,7 @@ if __name__ == "__main__":
                        and (item.get("sku_retry_count") or 0) <= 3
                        and (item_name := (item.get("name") or "").lower())
                        and any(
-                        all(keyword in item_name for keyword in keywords_group)
+                        keywords_group and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 2 / 3)
                         for keywords_group in target_category_list
                     )
                 ]

@@ -41,14 +41,19 @@ def check_segment_info(segment_dict):
     return True, cleaned_results, ""
 
 
+
 def gen_goods_segment_info(
-    name,
-    prompt_text=None,
-    top_key=3,
-    model="qwen/qwen3.8-27b",
-    preset_model_group=None,
+        name,
+        prompt_text=None,
+        top_key=3,
+        model="qwen/qwen3.8-27b",
+        preset_model_group=None,
 ):
     """提取商品名称中权重最高的前 top_key 个核心词，直接返回字符串列表。
+
+    校验规则：
+      1. check_segment_info 基础结构/类型校验通过；
+      2. 模型输出的分词必须全部存在于原商品名称中（禁止模型产生同义词/幻觉词），否则触发重试。
     若模型调用异常、解析失败或无有效分词，严格兜底返回 [name]。
     """
     # 1. 入参校验与兜底初值定义
@@ -95,11 +100,19 @@ def gen_goods_segment_info(
             content = result.get("content", "")
             parsed_obj = string_to_object(content)
 
+            # 4.1 基础格式与结构校验
             valid, cleaned_results, check_error = check_segment_info(parsed_obj)
             if not valid:
-                raise ValueError(f"校验未通过: {check_error}")
+                raise ValueError(f"结构校验未通过: {check_error}")
 
-            # 按权重从大到小排序并截取 top_key 个
+            # 4.2 严格校验：分词必须存在于原商品名 clean_name 中
+            hallucinated_words = [word for word in cleaned_results if word not in clean_name]
+            if hallucinated_words:
+                raise ValueError(
+                    f"模型输出幻觉分词（不在商品原名中）: {hallucinated_words} | 原名: '{clean_name}'"
+                )
+
+            # 4.3 按权重从大到小排序并截取 top_key 个
             sorted_words = sorted(cleaned_results, key=cleaned_results.get, reverse=True)
             top_words = sorted_words[:top_key] if (top_key and top_key > 0) else sorted_words
 
