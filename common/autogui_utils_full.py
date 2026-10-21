@@ -518,45 +518,67 @@ class PddAutomation(UIActionEngine):
 
     def set_transfer_goods_id(self, goods_id, max_attempts=3):
         """
-        【输入与双向绑定保障】真实按键事件驱动 + 严格值校验，彻底规避双向绑定不更新及张冠李戴
+        【输入与双向绑定保障】前置读取与强制清空 + 无Ctrl真实按键驱动 + 严格二次校验重试
         """
+        import ctypes
         target_str = str(goods_id).strip()
         edit_box = self.window.EditControl()
         if not edit_box.Exists(2, 1):
             return False, "无法定位中转小程序的输入框"
 
-        for attempt in range(1, max_attempts + 1):
-            edit_box.Click(simulateMove=False)
-            time.sleep(0.02)
+        def _force_clear_box():
+            """内部辅助：优先用 ValuePattern 清空，再读取实际残留值并用物理退格彻底清零"""
+            try:
+                vp = edit_box.GetValuePattern()
+                if vp:
+                    vp.SetValue("")
+                    time.sleep(0.02)
+            except Exception:
+                pass
 
-            auto.SendKeys('{Ctrl}a{Delete}')
-            time.sleep(0.02)
+            residual = self.get_control_text(edit_box).strip()
+            if residual:
+                edit_box.Click(simulateMove=False)
+                time.sleep(0.03)
+                clear_len = len(residual) + 6
+                auto.SendKeys('{End}' + '{Back}' * clear_len + '{Delete}' * 6, interval=0.005)
+                time.sleep(0.03)
 
-            pyperclip.copy(target_str)
-            auto.SendKeys('{Ctrl}v')
-            time.sleep(0.02)
+        current_val = ""
+        try:
+            for attempt in range(1, max_attempts + 1):
+                edit_box.Click(simulateMove=False)
+                time.sleep(0.04)
 
-            auto.SendKeys(' {Back}')
-            time.sleep(0.03)
+                # 1. 输入前绝不盲信全选：先读取/使用 ValuePattern 与退格强制清空输入框
+                _force_clear_box()
 
-            current_val = self.get_control_text(edit_box).strip()
-            if current_val == target_str:
-                return True, ""
+                # 2. 直接通过真实按键输入目标ID（不使用 Ctrl+V，彻底规避 Ctrl 卡死风险）
+                auto.SendKeys(target_str, interval=0.01)
+                time.sleep(0.02)
 
-            logger.info(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
+                # 3. 敲入空格再退格，确保触发微信小程序的 bindinput 双向数据绑定
+                auto.SendKeys(' {Back}')
+                time.sleep(0.04)
 
-            edit_box.Click(simulateMove=False)
-            time.sleep(0.02)
-            auto.SendKeys('{Ctrl}a{Delete}')
-            time.sleep(0.02)
-            auto.SendKeys(target_str)
-            time.sleep(0.03)
+                # 4. 严格进行二次校验
+                current_val = self.get_control_text(edit_box).strip()
+                if current_val == target_str:
+                    return True, ""
 
-            current_val = self.get_control_text(edit_box).strip()
-            if current_val == target_str:
-                return True, ""
+                logger.info(
+                    f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，准备清空并执行第 {attempt} 次重试")
+                _force_clear_box()
+                time.sleep(0.05)
 
-        return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
+            return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
+        finally:
+            # 硬件级兜底：强制释放左右 Ctrl 键（VK_CONTROL=0x11, VK_LCONTROL=0xA2, VK_RCONTROL=0xA3, KEYEVENTF_KEYUP=0x0002）
+            try:
+                for vk in (0x11, 0xA2, 0xA3):
+                    ctypes.windll.user32.keybd_event(vk, 0, 0x0002, 0)
+            except Exception:
+                pass
 
     def process_single_goods(self, goods_id, index, consecutive_successes=0):
         # --- 步骤 1：确立中转站据点 ---
@@ -633,7 +655,7 @@ class PddAutomation(UIActionEngine):
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
 
-        # 将区域放大为底部 1/4，这样既能盖住详情页的“客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
+        # 将区域放大为底部 1/4，这样既能盖住详情页的“收藏/客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
         capture_region = (int(rect.left), int(rect.bottom - h // 4), int(w), int(h // 4))
         monitor = {"left": capture_region[0], "top": capture_region[1],
                    "width": capture_region[2], "height": capture_region[3]}
@@ -652,16 +674,17 @@ class PddAutomation(UIActionEngine):
                 if result:
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 状态 A：必须是在判断过 "客服" 和 "店铺" (detail_entered 为 True) 之后，才能判断 SKU
-                    if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
-                        sku_ready = True
-                        break
-
-                    # 状态 B：如果依然停留在详情页，则动态点击购买
-                    if any(kw in detected_text for kw in ["客服", "店铺"]):
+                    # 状态 B：如果有 收藏/客服/店铺 中的一个且没有 确定，说明在详情页，需要点击购买
+                    if any(kw in detected_text for kw in ["收藏", "客服", "店铺"]) and "确定" not in detected_text:
                         detail_entered = True
                         self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
                         time.sleep(0.3)
+                        continue
+
+                    # 状态 A：点击过购买后，识别到 确定/请选择/已选，说明已展开 SKU 详情页
+                    if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+                        sku_ready = True
+                        break
 
             except Exception:
                 pass
@@ -670,14 +693,13 @@ class PddAutomation(UIActionEngine):
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
+            self.click_home_button()
             return False, [], "进入详情页失败"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
-
+            self.click_home_button()
             return False, [], "SKU面板未完全展开或点击全部失效"
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
@@ -696,7 +718,6 @@ class PddAutomation(UIActionEngine):
             logger.info("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, sku_info, ""
-
 
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
