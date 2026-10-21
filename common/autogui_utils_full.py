@@ -102,7 +102,7 @@ def _is_box_selected(img_bgr, box):
 
 
 def _extract_price_fast(img_bgr, price_anchor, save_path=None):
-    """先用常规引擎整行快速识别，若失败立即激活强力配置引擎重检"""
+    """先用常规引擎整行快速识别，若失败立即激活强力配置引擎重检（采用老代码切片逻辑，不截断券后价等文字）"""
     h_img, w_img = img_bgr.shape[:2]
     px, py, pw, ph = price_anchor
 
@@ -122,28 +122,35 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
         text = str(res[0][0]).strip().replace("¥", "￥")
         if re.match(r"^\d", text):
             text = "￥" + text
-        # 白名单提取：必须是合规价格
-        m = re.search(r"￥\s*\d+(\.\d+)?(\s*-\s*\d+(\.\d+)?)?", text)
-        if m:
+
+        # 还原老代码切片逻辑：保留第一个 ￥ 及其之后所有内容（如 "￥36券后￥34"）
+        idx = text.find("￥")
+        if idx != -1 and re.search(r"\d", text[idx:]):
             if save_path:
                 cv2.imencode(".png", padded)[1].tofile(save_path)
-            return m.group(0).replace(" ", "")
+            return text[idx:].replace(" ", "").strip()
 
     # ==================== 2. 【激活强力配置】 (ocr_strong 介入) ====================
-    # 注意：此时必须 use_det=True！你的 det_limit_side_len=2000 等强力参数才能真正生效跑起来！
     res_strong, _ = ocr_strong(padded, use_det=True, use_cls=False)
     if res_strong:
-        # 将强力检测到的所有文本块拼接起来分析
+        # 按水平坐标从左向右排序，防止碎片文本颠倒
+        try:
+            res_strong.sort(key=lambda line: line[0][0][0])
+        except Exception:
+            pass
         full_text = "".join([str(line[1]).strip().replace("¥", "￥") for line in res_strong])
 
-        # 尝试标准匹配
-        m_strong = re.search(r"￥\s*\d+(\.\d+)?(\s*-\s*\d+(\.\d+)?)?", full_text)
-        if m_strong:
+        if re.match(r"^\d", full_text):
+            full_text = "￥" + full_text
+
+        # 还原老代码切片逻辑
+        idx = full_text.find("￥")
+        if idx != -1 and re.search(r"\d", full_text[idx:]):
             if save_path:
                 cv2.imencode(".png", padded)[1].tofile(save_path)
-            return m_strong.group(0).replace(" ", "")
+            return full_text[idx:].replace(" ", "").strip()
 
-        # 如果符号仍然漏检，提取纯数字金额（严格杜绝吞7漏洞）
+        # 兜底纯数字
         nums = re.findall(r"\d+\.\d+|\d+", full_text)
         if nums:
             if save_path:
@@ -151,7 +158,6 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
             return f"￥{nums[0]}"
 
     return ""
-
 def _is_box_disabled(img_bgr, box):
     """判断未选中的 SKU 框是否处于缺货/置灰不可选状态（灰底浅灰字，无深色前景像素）"""
     if _is_box_selected(img_bgr, box):
