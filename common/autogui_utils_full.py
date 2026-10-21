@@ -9,12 +9,15 @@ from contextlib import closing
 
 from common.auto_captcha import solve_pdd_captcha
 from common.goods_common_utils import gen_goods_segment_info, setup_logger
+
 logger = setup_logger(app_name="pdd_automation")
 
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 import win32gui
 import win32con
+import win32process
+import win32api
 
 # === 高性能依赖 ===
 import numpy as np
@@ -83,7 +86,8 @@ def _is_box_selected(img_bgr, box):
     if roi.size == 0:
         return False
     b, g, r = cv2.split(roi)
-    pink = (r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & ((r.astype(np.int16) - b.astype(np.int16)) >= 5)
+    pink = (r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & (
+                (r.astype(np.int16) - b.astype(np.int16)) >= 5)
     return float(np.mean(pink)) > 0.30
 
 
@@ -143,7 +147,8 @@ def _parse_detail_page(img_bgr):
     ocr_items = _run_ocr(img_bgr)
 
     confirm_y = next((i["box"][1] for i in ocr_items if "确定" in i["text"] and i["cy"] > h_img * 0.80), None)
-    price_boxes = [i["box"] for i in ocr_items if ("￥" in i["text"] or "¥" in i["text"]) and (h_img * 0.18 < i["cy"] < h_img * 0.55)]
+    price_boxes = [i["box"] for i in ocr_items if
+                   ("￥" in i["text"] or "¥" in i["text"]) and (h_img * 0.18 < i["cy"] < h_img * 0.55)]
 
     if confirm_y is None or not price_boxes:
         return False, None, []
@@ -160,7 +165,8 @@ def _parse_detail_page(img_bgr):
 
     # 分别构建已选中（浅粉）与未选中（浅灰）掩码
     b, g, r = cv2.split(img_bgr)
-    pink_mask = ((r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & ((r.astype(np.int16) - b.astype(np.int16)) >= 5)).astype(np.uint8) * 255
+    pink_mask = ((r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & (
+                (r.astype(np.int16) - b.astype(np.int16)) >= 5)).astype(np.uint8) * 255
     max_c, min_c = np.maximum(np.maximum(b, g), r), np.minimum(np.minimum(b, g), r)
     gray_mask = ((min_c >= 240) & (max_c <= 249) & ((max_c - min_c) <= 4)).astype(np.uint8) * 255
 
@@ -232,7 +238,8 @@ def get_pdd_sku_info(id, debug=True):
         hwnd = window.NativeWindowHandle
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
             win32gui.SetForegroundWindow(hwnd)
             time.sleep(0.08)
             win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
@@ -317,7 +324,7 @@ def get_pdd_sku_info(id, debug=True):
 
 
 # ==========================================
-# 🤖 RPA 核心引擎 (极致性能层)
+# 🤖 RPA 核心引擎 (极致性能与安全防御层)
 # ==========================================
 class UIActionEngine:
     def __init__(self, window_name):
@@ -333,35 +340,91 @@ class UIActionEngine:
             user32 = ctypes.windll.user32
             # 0x11: VK_CONTROL, 0x10: VK_SHIFT, 0x12: VK_MENU (Alt)
             for vk in (0x11, 0x10, 0x12):
-                user32.keybd_event(vk, 0, 2, 0)  # 2 表示 KEYEVENTF_KEYUP
+                user32.keybd_event(vk, 0, 2, 0)  # 2: KEYEVENTF_KEYUP
         except Exception:
             pass
+
+    def is_foreground(self):
+        """【最高安全防护锁】判定当前获得 Windows 前台焦点的窗口是否为本目标窗口或其子窗口"""
+        if not self.hwnd or not win32gui.IsWindow(self.hwnd):
+            return False
+        fg_hwnd = win32gui.GetForegroundWindow()
+        if fg_hwnd == self.hwnd:
+            return True
+        # 兼容子窗口句柄
+        try:
+            temp = fg_hwnd
+            while temp:
+                if temp == self.hwnd:
+                    return True
+                temp = win32gui.GetParent(temp)
+        except Exception:
+            pass
+        return False
 
     def find_window(self, timeout=3):
         self.window = auto.WindowControl(searchDepth=1, Name=self.window_name)
         if self.window.Exists(timeout, 1):
             self.hwnd = self.window.NativeWindowHandle
-            return True
+            # 严格核验句柄在 Windows 中是否存活
+            if win32gui.IsWindow(self.hwnd):
+                return True
+        self.hwnd = 0
         return False
 
     def force_bring_to_front(self):
-        """【关键需求】基于 Win32 API 的绝对霸道置顶，防任何软件抢焦点"""
-        if not self.hwnd:
-            return
+        """【工业级穿透置顶】通过 AttachThreadInput 与模拟 Alt 穿透 Windows 焦点防窃取拦截"""
+        if not self.hwnd or not win32gui.IsWindow(self.hwnd):
+            return False
         try:
-            # 1. 强行恢复窗口（如果被最小化）
-            win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-            # 2. 强行提到最前并设为 Topmost
-            win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
-            # 3. 强行接管键盘焦点
-            win32gui.SetForegroundWindow(self.hwnd)
-            time.sleep(0.02)  # 给 Windows 窗口管理器 20ms 喘息时间
-            # 4. 取消 Topmost 锁定（防止遮挡其他报错提示，但焦点已经稳了）
-            win32gui.SetWindowPos(self.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            # 1. 强行还原最小化窗口
+            if win32gui.IsIconic(self.hwnd):
+                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+            else:
+                win32gui.ShowWindow(self.hwnd, win32con.SW_SHOW)
+
+            fg_hwnd = win32gui.GetForegroundWindow()
+            if fg_hwnd == self.hwnd:
+                return True
+
+            # 2. 线程注入绑定，突破 Windows 权限限制
+            fg_thread_id, _ = win32process.GetWindowThreadProcessId(fg_hwnd)
+            curr_thread_id = win32api.GetCurrentThreadId()
+
+            attached = False
+            if fg_thread_id != curr_thread_id and fg_thread_id != 0:
+                try:
+                    import ctypes
+                    ctypes.windll.user32.AttachThreadInput(curr_thread_id, fg_thread_id, True)
+                    attached = True
+                except Exception:
+                    pass
+
+            try:
+                # 3. 模拟虚拟 Alt 键解锁焦点权限
+                import ctypes
+                user32 = ctypes.windll.user32
+                user32.keybd_event(0x12, 0, 0, 0)
+                user32.keybd_event(0x12, 0, 2, 0)
+
+                # 4. 置顶并激活前台
+                win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_SHOWWINDOW)
+                win32gui.SetForegroundWindow(self.hwnd)
+                time.sleep(0.04)
+                win32gui.SetWindowPos(self.hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                                      win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            finally:
+                if attached:
+                    try:
+                        ctypes.windll.user32.AttachThreadInput(curr_thread_id, fg_thread_id, False)
+                    except Exception:
+                        pass
+
+            return self.is_foreground()
         except Exception as e:
-            logger.info(f"[DEBUG] 置顶操作受到系统保护拦截: {e}")
+            logger.info(f"[WARN] 窗口置顶失败: {e}")
+            return False
 
     def safe_click(self, x, y, desc=""):
         """无感瞬发点击，剥离所有冗余等待"""
@@ -370,7 +433,10 @@ class UIActionEngine:
         auto.Click(int(x), int(y))
 
     def safe_input(self, text, desc=""):
-        """极速输入：通过剪贴板瞬发，带修饰键自动安全释放，杜绝 Ctrl 卡住"""
+        """极速输入：带焦点安全校验与修饰键自动安全释放"""
+        if not self.is_foreground():
+            logger.info(f"[ABORT] 焦点不在目标窗口，拦截外部输入: {desc}")
+            return
         if desc:
             logger.info(f"[INFO] 执行输入: {desc}")
         try:
@@ -534,7 +600,7 @@ class PddAutomation(UIActionEngine):
 
     def set_transfer_goods_id(self, goods_id, max_attempts=3):
         """
-        【输入与双向绑定保障】严密防粘连清空机制 + 真实按键事件驱动 + 严格值校验，杜绝 Ctrl 粘连与张冠李戴
+        【输入与双向绑定保障】严格防误击穿安全锁 + 防粘连清空 + 真实按键驱动 + 严格值比对
         """
         target_str = str(goods_id).strip()
         edit_box = self.window.EditControl()
@@ -545,6 +611,12 @@ class PddAutomation(UIActionEngine):
         for attempt in range(1, max_attempts + 1):
             try:
                 self.release_modifier_keys()
+
+                # 【防误击穿核心防御】：输入前强制确保当前焦点确实属于中转小程序，绝不允许敲击其他应用！
+                if not self.is_foreground():
+                    if not self.force_bring_to_front():
+                        return False, "【安全熔断】中转站未在前台激活，已紧急中止键盘输入，防止误改其他软件！"
+
                 edit_box.Click(simulateMove=False)
                 time.sleep(0.02)
 
@@ -561,7 +633,10 @@ class PddAutomation(UIActionEngine):
                 except Exception:
                     pass
 
-                # 配合按键清空并立即释放 Ctrl
+                # 再次确认处于前台才可按下全选
+                if not self.is_foreground():
+                    return False, "【安全熔断】输入框失焦，中止清空击键"
+
                 auto.SendKeys('{Ctrl}a{Delete}')
                 self.release_modifier_keys()
                 time.sleep(0.02)
@@ -587,9 +662,13 @@ class PddAutomation(UIActionEngine):
                 if current_val == target_str:
                     return True, ""
 
-                logger.info(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
+                logger.info(
+                    f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
 
-                # 重试方案：纯物理单字符键入前再次彻底清空
+                # 重试方案：再次彻底清空重试
+                if not self.is_foreground():
+                    return False, "【安全熔断】重输前检测到窗口失焦，中止操作"
+
                 edit_box.Click(simulateMove=False)
                 time.sleep(0.02)
                 auto.SendKeys('{Ctrl}a{Delete}')
@@ -611,13 +690,22 @@ class PddAutomation(UIActionEngine):
     def process_single_goods(self, goods_id, index, consecutive_successes=0):
         # --- 步骤 1：确立中转站据点 ---
         self.window_name = TRANSFER_APP_NAME
+
+        # 严格窗口检查：窗口不存在或非激活态则唤醒
         if not self.find_window(timeout=1):
             logger.info(f"[SYSTEM] 正在唤醒中转小程序: {TRANSFER_APP_NAME}")
             os.startfile(TRANSFER_SHORTCUT_PATH)
             if not self.find_window(timeout=5):
                 return False, [], "中转小程序启动失败"
 
-        self.force_bring_to_front()
+        # 【核心安全防护】：若未能成功置顶到前台，重新尝试唤醒拉起，绝不盲目进行输入！
+        if not self.force_bring_to_front():
+            logger.info("[WARN] 中转小程序置顶受阻，尝试重新调起快捷方式...")
+            os.startfile(TRANSFER_SHORTCUT_PATH)
+            time.sleep(1)
+            self.find_window(timeout=3)
+            if not self.force_bring_to_front():
+                return False, [], "中转小程序无法激活到前台，已终止操作以保护系统其他文件！"
 
         # --- 步骤 1.5：环境自愈（确保恢复至【情况2】） ---
         if not self.ensure_transfer_clean_state():
@@ -866,12 +954,15 @@ def batch_runner(product_list):
 
         # 判断是否连续失败 5 次
         if consecutive_failures >= 5:
-            logger.info(f"[WARN] ⚠️ 已连续发生 5 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
+            logger.info(
+                f"[WARN] ⚠️ 已连续发生 5 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
             break
 
     logger.info("=" * 50)
-    logger.info(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
+    logger.info(
+        f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
     logger.info("=" * 50)
+
 
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
@@ -900,6 +991,7 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
         )
 
     return results
+
 
 if __name__ == "__main__":
     while True:
