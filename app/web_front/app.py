@@ -4,9 +4,9 @@
 :create_date:
     2026/10/3 13:56
 :last_date:
-    2026/10/21 22:15
+    2026/10/3 13:56
 :description:
-    性价比商品搜索服务（已移除前端佣金字段传输）
+
 """
 import math
 import os
@@ -17,6 +17,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import uvicorn
 
@@ -34,7 +35,7 @@ db_instance.ping()
 product_manager = ProductManager(db_instance)
 
 app = FastAPI(title="性价比商品搜索服务")
-# 开启 GZip 压缩，大幅减少网络传输体积
+# 新增：开启 GZip 压缩，大幅减少网络传输体积（通常可压缩 80% 以上）
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 sku_unit_base_mapping = {
@@ -81,7 +82,7 @@ sku_unit_base_mapping = {
     }
 }
 
-# 预构建单位到类别、以及单位到基数乘数的反向查找字典
+# 预构建单位到类别、以及单位到基数乘数的反向查找字典（避免每次请求重复构建）
 UNIT_TO_CATEGORY = {}
 UNIT_TO_MULTIPLIER = {}
 for _cat, _units in sku_unit_base_mapping.items():
@@ -89,7 +90,7 @@ for _cat, _units in sku_unit_base_mapping.items():
         UNIT_TO_CATEGORY[_u] = _cat
         UNIT_TO_MULTIPLIER[_u] = _mul
 
-# ============== 商品分词结果本地 JSON 缓存与持久化逻辑 ==============
+# ============== 新增：商品分词结果本地 JSON 缓存与持久化逻辑 ==============
 SEGMENT_CACHE_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "segment_cache.json")
 segment_cache_lock = threading.Lock()
 _raw_gen_goods_segment_info = gen_goods_segment_info
@@ -162,7 +163,7 @@ def gen_goods_segment_info(name: str = "", *args, **kwargs):
     return words
 # =====================================================================
 
-# ============== 商品错误反馈本地 JSON 安全维护逻辑 ==============
+# ============== 新增：商品错误反馈本地 JSON 安全维护逻辑 ==============
 FEEDBACK_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback_products.json")
 feedback_file_lock = threading.Lock()
 
@@ -229,6 +230,7 @@ def api_submit_feedback(req: FeedbackRequest):
     logger.info(f"记录商品反馈: product_id=[{pid}], name=[{req.name}], content=[{req.content}]")
     return {"status": "success"}
 # =====================================================================
+
 
 
 def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
@@ -308,7 +310,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         need_update_sku = product.get("need_update_sku")
         sku_status = product.get("sku_status")
 
-        # 仅当已完成真实 SKU 抓取且完成重洗时，才标记为已确认规格 (1)
+        # 仅当已完成真实 SKU 抓取（need_update_sku 为 False 或 sku_status 为 success）且完成重洗时，才标记为已确认规格 (1)
         is_confirmed_sku = bool(
             sku_info_list
             and (need_update_sku is False or sku_status == "success")
@@ -349,11 +351,12 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                     ]
                     display_name = f"{base_name} 【{' | '.join(desc_parts)}】" if desc_parts else base_name
                     sku_price = sku_fmt.get("price")
+                    # 过滤低于 activity_price 或非法的规格
                     if not _is_valid_sku_price(sku_price, min_act_price):
                         continue
                     sku_entries.append((sku_id, display_name, sku_price, sku_fmt))
 
-            # 兜底结果也必须使用清洗通过的价格
+            # 兜底结果也必须使用清洗通过的价格，禁止使用商品基础价补位
             if not sku_entries:
                 for fallback_idx, (sku_id, sku_fmt) in enumerate(raw_format_info.items(), start=1):
                     if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
@@ -379,7 +382,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 except (ValueError, TypeError):
                     pass
 
-            # 拷贝单规格 format_info，防止后续单位换算直接修改原引用
+            # 拷贝单规格 format_info，防止后续单位换算直接修改原引用或报 KeyError
             pricing_basis_copy = dict(sku_fmt.get("pricing_basis") or {})
             format_info_copy = {
                 "pricing_basis": pricing_basis_copy,
@@ -393,6 +396,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 "platform": product.get("platform"),
                 "image_url": product.get("image_url"),
                 "product_url": product_url,
+                "has_commission": bool(product.get("promotion_url")),
                 "original_price": orig_price,
                 "saved_price": round(float(product.get("saved_price") or 0), 2),
                 "brand": product.get("brand"),
@@ -491,12 +495,13 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     valid_attributes.sort(key=lambda x: x["score"], reverse=True)
     top_filters = valid_attributes[:5]
 
-    # 精简响应结构（不再传入 has_commission 字段）
+    # 精简响应结构（去除空属性与重复关键词，控制浮点数精度以减少传输体积）
     response_products = []
     for idx, product in enumerate(final_results):
         format_info = product.get("format_info") or {}
         pricing_basis = format_info.get("pricing_basis") or {}
 
+        # 清洗并去重 decision_keywords，避免传输空值或重复项
         cleaned_keywords = []
         seen_attrs = set()
         for kw in (format_info.get("decision_keywords") or []):
@@ -522,6 +527,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "platform": product["platform"],
             "image_url": product["image_url"],
             "product_url": product["product_url"],
+            "has_commission": product["has_commission"],
             "original_price": product["original_price"],
             "saved_price": product["saved_price"],
             "brand": product["brand"] or "",
@@ -546,11 +552,11 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         ]
     }
 
-
-# ============== 商品监控本地 JSON 安全维护与统计逻辑 ==============
+# ============== 新增：商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
 monitor_file_lock = threading.Lock()
 
+# 监控商品展示数据 1 分钟缓存配置与状态
 MONITOR_CACHE_TTL_SECONDS = 60
 monitor_cache_lock = threading.Lock()
 _monitor_counts_cache = {}
@@ -596,7 +602,7 @@ def _save_monitor_data_unsafe(data: dict):
 
 
 def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hours: int = 72) -> dict:
-    """一次性查询 72 小时内更新的有效商品，通过商品名直接匹配，统计总数量及已确定真实规格的数量"""
+    """一次性查询 72 小时内更新的有效商品，通过商品名直接匹配，统计总数量及已通过 RPA 确定真实规格的数量"""
     counts = {kw: {"total": 0, "confirmed": 0} for kw in keywords}
     if not keywords:
         return counts
@@ -620,6 +626,7 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
         need_update_sku = product.get("need_update_sku")
         sku_status = product.get("sku_status")
 
+        # 必须已完成真实规格抓取（need_update_sku 为 False 或 sku_status 为 success）且完成重洗，才计入已确定数量
         is_confirmed = bool(
             sku_info
             and (need_update_sku is False or sku_status == "success")
@@ -657,7 +664,7 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
 
 
 def build_monitor_response(data: dict) -> dict:
-    """组装监控响应数据（1分钟内更新的数据直接使用缓存）"""
+    """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量，1分钟内更新的数据直接使用缓存）"""
     active_keywords = [kw for kw, info in data.items() if info.get("is_monitoring", False)]
     now_ts = datetime.now().timestamp()
 
@@ -679,6 +686,7 @@ def build_monitor_response(data: dict) -> dict:
                 keywords_to_query.append(kw)
 
     if keywords_to_query:
+        # 若已有缓存超过1分钟过期，则统一刷新全部活跃监控词以对齐缓存时间；若仅新增监控词，则只查询新增词
         target_query_keywords = active_keywords if has_expired else keywords_to_query
         fresh_counts = count_monitored_products_72h(target_query_keywords, min_match_score=10, hours=72)
         update_ts = datetime.now().timestamp()
@@ -709,6 +717,7 @@ def build_monitor_response(data: dict) -> dict:
         else:
             inactive_list.append(item)
 
+    # 按时间倒序排列
     active_list.sort(key=lambda x: x.get("added_at") or "", reverse=True)
     inactive_list.sort(key=lambda x: x.get("cancelled_at") or "", reverse=True)
 
@@ -732,10 +741,12 @@ def api_get_monitors():
 
 @app.post("/api/monitor")
 def api_add_monitor(req: MonitorRequest):
+    # 1. 仅去除首尾多余空格，保留中间内容（比如 "Green Bell 指甲刀" 原样保留）
     kw = (req.keyword or "").strip()
     if not kw:
         raise HTTPException(status_code=400, detail="商品名称不能为空")
 
+    # 2. 直接作为一个完整的监控项存入，绝不切分
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with monitor_file_lock:
         data = _load_monitor_data_unsafe()
@@ -796,7 +807,6 @@ def api_search(keyword: str = "方便面", hours: int = 72):
         "data": search_data["results"],
         "filters": search_data["filters"]
     }
-
 
 # 2. 网页路由配置
 @app.get("/", response_class=HTMLResponse)

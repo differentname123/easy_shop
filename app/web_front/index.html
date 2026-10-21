@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>智惠 · 算清真实单价</title>
-    <meta name="description" content="自动算清每克、每抽、每毫升多少钱，买东西不花冤枉钱">
+    <title>智惠 · AI购物精算师</title>
+    <meta name="description" content="AI智能核算单位价格，帮您算清单价，领券省钱">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,7 +20,7 @@
             theme: {
                 extend: {
                     fontFamily: {
-                        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'sans-serif'],
+                        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
                     },
                     colors: {
                         zinc: {
@@ -28,17 +28,17 @@
                             500: '#71717a', 600: '#52525b', 700: '#3f3f46', 800: '#27272a', 900: '#18181b',
                         },
                         brand: {
-                            50: '#eff6ff', 100: '#dbeafe', 200: '#bfdbfe', 300: '#93c5fd', 400: '#60a5fa',
-                            500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8', 900: '#1e3a8a'
+                            50: '#eef2ff', 100: '#e0e7ff', 200: '#c7d2fe', 300: '#a5b4fc', 400: '#818cf8',
+                            500: '#6366f1', 600: '#4f46e5', 700: '#4338ca', 900: '#312e81'
                         },
                         accent: {
                             50: '#ecfdf5', 100: '#d1fae5', 500: '#10b981', 600: '#059669', 700: '#047857'
                         }
                     },
                     boxShadow: {
-                        'glass': '0 4px 24px rgba(0, 0, 0, 0.04)',
-                        'float': '0 16px 32px -12px rgba(0, 0, 0, 0.08)',
-                        'drawer': '0 -12px 48px rgba(0, 0, 0, 0.14)',
+                        'glass': '0 4px 30px rgba(0, 0, 0, 0.05)',
+                        'float': '0 20px 40px -15px rgba(0,0,0,0.05)',
+                        'drawer': '0 -10px 40px rgba(0,0,0,0.1)',
                     }
                 }
             }
@@ -46,7 +46,7 @@
     </script>
 
     <style>
-        /* ============ 核心重置与 Apple 质感基础体验 ============ */
+        /* ============ 核心重置与基础体验 ============ */
         :root {
             --sat: env(safe-area-inset-top);
             --sab: env(safe-area-inset-bottom);
@@ -57,31 +57,39 @@
         }
 
         body {
-            background-color: #f5f5f7;
-            color: #1d1d1f;
+            background-color: #f4f4f5;
+            background-image: radial-gradient(circle at 50% 0%, #ffffff 0%, #f4f4f5 70%);
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
         }
 
-        /* 隐藏滚动条但保留滑动功能 */
+        @media (min-width: 640px) {
+            body {
+                background-attachment: fixed;
+            }
+        }
+
+        /* 隐藏滚动条但保留功能 */
         .no-scrollbar::-webkit-scrollbar {
             display: none;
         }
+
         .no-scrollbar {
             -ms-overflow-style: none;
             scrollbar-width: none;
         }
 
-        /* ============ 苹果风毛玻璃导航 ============ */
+        /* ============ 玻璃拟态组件 ============ */
         .glass-panel {
-            background: rgba(255, 255, 255, 0.82);
-            backdrop-filter: saturate(180%) blur(20px);
-            -webkit-backdrop-filter: saturate(180%) blur(20px);
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
         }
 
         /* ============ 动画系统 ============ */
         @keyframes scaleIn {
-            from { opacity: 0; transform: scale(0.98) translateY(6px); }
+            from { opacity: 0; transform: scale(0.95) translateY(10px); }
             to { opacity: 1; transform: scale(1) translateY(0); }
         }
 
@@ -91,26 +99,31 @@
         }
 
         .animate-card {
-            animation: scaleIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+            animation: scaleIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
         }
 
         .drawer-enter-active {
-            animation: slideUpNative 0.35s cubic-bezier(0.32, 0.72, 0, 1);
+            animation: slideUpNative 0.4s cubic-bezier(0.32, 0.72, 0, 1);
         }
 
         .drawer-leave-active {
-            animation: slideUpNative 0.25s cubic-bezier(0.32, 0.72, 0, 1) reverse;
+            animation: slideUpNative 0.3s cubic-bezier(0.32, 0.72, 0, 1) reverse;
         }
 
-        /* ============ 卡片触感反馈 ============ */
+        .delay-0 { animation-delay: 0ms; }
+        .delay-1 { animation-delay: 50ms; }
+        .delay-2 { animation-delay: 100ms; }
+        .delay-3 { animation-delay: 150ms; }
+
+        /* ============ 卡片交互 ============ */
         .product-card {
-            transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+            transition: transform 0.25s ease, box-shadow 0.25s ease;
         }
 
         @media (min-width: 640px) {
             .product-card:hover {
-                transform: translateY(-3px);
-                box-shadow: 0 14px 28px -10px rgba(0, 0, 0, 0.08);
+                transform: translateY(-4px);
+                box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.1);
             }
         }
 
@@ -120,7 +133,7 @@
 
         /* ============ 骨架屏 ============ */
         .skeleton-pulse {
-            background: linear-gradient(90deg, #e5e5ea 25%, #f2f2f7 50%, #e5e5ea 75%);
+            background: linear-gradient(90deg, #e4e4e7 25%, #f4f4f5 50%, #e4e4e7 75%);
             background-size: 200% 100%;
             animation: skeleton-loading 1.5s infinite;
         }
@@ -136,8 +149,9 @@
         }
 
         .search-wrap:focus-within {
-            border-color: #2563eb;
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+            background: linear-gradient(white, white) padding-box,
+            linear-gradient(135deg, #6366f1, #a855f7) border-box;
+            border-color: transparent;
         }
     </style>
 </head>
@@ -147,22 +161,22 @@
     <!-- ============ 顶部导航/搜索栏 ============ -->
     <header
         ref="headerRef"
-        class="fixed left-0 right-0 top-0 z-40 glass-panel border-b border-zinc-200/70 pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-in-out"
+        class="fixed left-0 right-0 top-0 z-40 glass-panel border-b border-zinc-200/50 pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-in-out shadow-sm"
         :class="showHeader ? 'translate-y-0' : '-translate-y-full'"
     >
-        <div class="max-w-5xl mx-auto px-3.5 sm:px-6 py-2.5 sm:py-3.5">
-            <div class="flex items-center gap-2.5 w-full">
-                <!-- 品牌标识：点击回到初始首页 -->
-                <div class="cursor-pointer hidden sm:flex flex-col flex-shrink-0 mr-1" @click="switchView('search'); resetView()">
-                    <h1 class="text-lg font-extrabold leading-tight tracking-tight text-zinc-900">智惠比价</h1>
-                    <p class="text-[10px] font-semibold text-zinc-400">算清每份多少钱</p>
+        <div class="max-w-5xl mx-auto px-4 py-3 sm:py-4">
+            <div class="flex items-center gap-3 w-full">
+                <!-- 纯文字 Logo -->
+                <div class="cursor-pointer hidden sm:block flex-shrink-0" @click="switchView('search'); resetView()">
+                    <h1 class="text-lg font-bold leading-tight tracking-tight">智惠</h1>
+                    <p class="text-[10px] font-semibold text-brand-600 uppercase tracking-widest">Value Engine</p>
                 </div>
 
                 <!-- 搜索输入框 -->
                 <form @submit.prevent="switchView('search'); search()" class="flex-1 w-full relative">
-                    <div class="search-wrap flex items-center bg-white border border-zinc-300/90 rounded-2xl transition-all duration-200 shadow-sm">
-                        <div class="pl-3.5 text-zinc-400">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div class="search-wrap flex items-center bg-white border-2 border-zinc-200 rounded-2xl transition-all duration-300 shadow-sm">
+                        <div class="pl-4 text-zinc-400">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                       d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                             </svg>
@@ -173,14 +187,13 @@
                                 type="text"
                                 :placeholder="placeholderText"
                                 @focus="showHeader = true"
-                                class="w-full bg-transparent border-none focus:ring-0 py-3 px-2.5 text-base sm:text-sm font-medium outline-none placeholder-zinc-400"
+                                class="w-full bg-transparent border-none focus:ring-0 py-3.5 px-3 text-base sm:text-sm font-medium outline-none placeholder-zinc-400"
                         >
                         <button
                                 v-if="keyword"
                                 type="button"
                                 @click="keyword = ''; $refs.searchInputRef.focus()"
-                                class="p-1.5 mr-0.5 text-zinc-300 hover:text-zinc-500"
-                                aria-label="清空输入"
+                                class="p-2 mr-1 text-zinc-400 hover:text-zinc-600"
                         >
                             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                                 <path fill-rule="evenodd"
@@ -191,55 +204,55 @@
                         <button
                                 type="submit"
                                 :disabled="loading"
-                                class="mr-1.5 px-4 py-2 bg-zinc-900 text-white rounded-xl text-sm font-bold shadow-sm hover:bg-zinc-800 active:scale-95 transition-all disabled:opacity-50 whitespace-nowrap"
+                                class="mr-1.5 px-4 py-2 bg-zinc-900 text-white rounded-xl text-sm font-semibold shadow-sm hover:bg-zinc-800 active:scale-95 transition-all disabled:opacity-50"
                         >
-                            {{ loading ? '比价中...' : '比价' }}
+                            {{ loading ? '计算中...' : '核算单价' }}
                         </button>
                     </div>
                 </form>
 
-                <!-- 常买盯价入口按钮（手机端也显示文字，消除纯图标认知门槛） -->
+                <!-- 新增：商品监控页面入口按钮 -->
                 <button
                         type="button"
                         @click="switchView(currentView === 'monitor' ? 'search' : 'monitor')"
-                        class="flex-shrink-0 flex items-center gap-1.5 px-3 sm:px-3.5 py-3 rounded-2xl text-xs sm:text-sm font-bold border transition-all shadow-sm active:scale-95"
+                        class="flex-shrink-0 flex items-center gap-1.5 px-3.5 py-3.5 rounded-2xl text-sm font-bold border-2 transition-all shadow-sm active:scale-95"
                         :class="currentView === 'monitor'
-                            ? 'bg-zinc-900 text-white border-zinc-900'
-                            : 'bg-white text-zinc-700 border-zinc-300/90 hover:border-zinc-900'"
+                            ? 'bg-brand-600 text-white border-brand-600'
+                            : 'bg-white text-zinc-700 border-zinc-200 hover:border-brand-500 hover:text-brand-600'"
                 >
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                              d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+                              d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
                     </svg>
-                    <span>{{ currentView === 'monitor' ? '返回比价' : '常买盯价' }}</span>
+                    <span class="hidden sm:inline">{{ currentView === 'monitor' ? '返回搜索' : '商品监控' }}</span>
                 </button>
             </div>
 
-            <!-- 大家常搜快捷标签 -->
-            <div class="mt-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5"
+            <!-- 快捷标签 -->
+            <div class="mt-3 flex items-center gap-2 overflow-x-auto no-scrollbar pb-1"
                  v-if="currentView === 'search' && (!hasSearched || products.length === 0)">
-                <span class="text-xs font-medium text-zinc-400 whitespace-nowrap pl-1">大家常搜:</span>
+                <span class="text-xs font-medium text-zinc-400 whitespace-nowrap pl-1">精算热门:</span>
                 <button
                         v-for="term in hotKeywords"
                         :key="term"
                         @click="keyword = term; search()"
-                        class="whitespace-nowrap px-3 py-1 bg-white border border-zinc-200/90 rounded-full text-xs font-medium text-zinc-700 hover:border-zinc-900 transition-colors shadow-sm"
+                        class="whitespace-nowrap px-3 py-1.5 bg-white border border-zinc-200 rounded-lg text-xs font-medium text-zinc-600 hover:border-brand-500 hover:text-brand-600 transition-colors shadow-sm"
                 >
                     {{ term }}
                 </button>
             </div>
 
-            <!-- ============ 直觉化筛选栏（已移除佣金筛选项，术语全面口语化） ============ -->
+            <!-- ============ 动态维度与单位过滤栏 ============ -->
             <div v-if="currentView === 'search' && hasSearched && products.length > 0"
-                 class="mt-2.5 flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                 class="mt-3 flex gap-3 overflow-x-auto no-scrollbar pb-1">
 
-                <!-- 结果内二次搜词 -->
+                <!-- 新增：自定义商品名多关键字过滤输入框 -->
                 <div class="flex-shrink-0 relative">
                     <input
                             v-model="nameKeywordFilter"
                             type="text"
-                            placeholder="结果内筛选 (如: 整箱 无香)"
-                            class="appearance-none bg-white border border-zinc-200/90 text-xs sm:text-sm font-medium text-zinc-800 rounded-xl pl-3 pr-7 py-1.5 outline-none focus:border-brand-600 shadow-sm transition-all w-44 sm:w-52 placeholder-zinc-400"
+                            placeholder="商品名含关键字(空格隔开)"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-7 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all w-48 sm:w-56 placeholder-zinc-400"
                     >
                     <button
                             v-if="nameKeywordFilter"
@@ -255,78 +268,91 @@
                     </button>
                 </div>
 
-                <!-- 计量单位切换 -->
                 <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
                     <select
                             v-model="activeUnitFilter"
-                            class="appearance-none bg-brand-50 border border-brand-200 text-xs sm:text-sm font-bold text-brand-700 rounded-xl pl-3 pr-7 py-1.5 outline-none focus:border-brand-500 shadow-sm transition-all cursor-pointer"
+                            class="appearance-none bg-brand-50 border border-brand-200 text-sm font-bold text-brand-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
                     >
-                        <option value="">全部单位</option>
-                        <option v-for="unit in availableUnits" :key="unit" :value="unit">按「{{ unit }}」比价</option>
+                        <option value="">计量单位 (全选)</option>
+                        <option v-for="unit in availableUnits" :key="unit" :value="unit">仅看 {{ unit }}</option>
                     </select>
-                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-brand-600">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-brand-500">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                         </svg>
                     </div>
                 </div>
 
-                <!-- 核验状态筛选（原：全部/可疑/正常/已人工确定，转化为用户秒懂的表达） -->
+                <!-- 新增：是否有佣金筛选 -->
+                <div class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeCommissionFilter"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">是否有佣金 (全部)</option>
+                        <option value="yes">有佣金</option>
+                        <option value="no">无佣金</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
+                <!-- 变更需求：相应选项变成4个，分别是 全部 可疑 正常 和 已人工确定 -->
                 <div class="flex-shrink-0 relative">
                     <select
                             v-model="activeSuspiciousFilter"
-                            class="appearance-none bg-white border border-zinc-200/90 text-xs sm:text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-7 py-1.5 outline-none focus:border-brand-600 shadow-sm transition-all cursor-pointer"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
                     >
-                        <option value="">核验状态 (全部)</option>
-                        <option value="1">✓ 人工已核对</option>
-                        <option value="0">系统自动算</option>
-                        <option value="-1">⚠️ 低价待核实</option>
+                        <option value="">全部</option>
+                        <option value="-1">可疑</option>
+                        <option value="0">正常</option>
+                        <option value="1">已人工确定</option>
                     </select>
                     <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                         </svg>
                     </div>
                 </div>
 
-                <!-- 动态商品属性筛选（如品牌、香型、尺寸等） -->
+                <!-- 新增：来源筛选 -->
+                <div class="flex-shrink-0 relative">
+                    <select
+                            v-model="activeSourceFilter"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
+                    >
+                        <option value="">来源 (全部)</option>
+                        <option v-for="source in availableSources" :key="source" :value="source">{{ source }}</option>
+                    </select>
+                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                        </svg>
+                    </div>
+                </div>
+
                 <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
                     <select
                             v-model="activeFilters[filter.attribute_name]"
-                            class="appearance-none bg-white border border-zinc-200/90 text-xs sm:text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-7 py-1.5 outline-none focus:border-brand-600 shadow-sm transition-all cursor-pointer"
+                            class="appearance-none bg-white border border-zinc-200 text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-8 py-2 outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 shadow-sm transition-all cursor-pointer"
                     >
                         <option value="">{{ filter.attribute_name }} (全部)</option>
                         <option v-for="opt in filter.options" :key="opt" :value="opt">{{ opt }}</option>
                     </select>
                     <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                         </svg>
                     </div>
                 </div>
 
-                <!-- 渠道来源筛选（将英文代码 group/no_group 转化为直观中文） -->
-                <div v-if="availableSources.length > 1" class="flex-shrink-0 relative">
-                    <select
-                            v-model="activeSourceFilter"
-                            class="appearance-none bg-white border border-zinc-200/90 text-xs sm:text-sm font-medium text-zinc-700 rounded-xl pl-3 pr-7 py-1.5 outline-none focus:border-brand-600 shadow-sm transition-all cursor-pointer"
-                    >
-                        <option value="">渠道来源 (全部)</option>
-                        <option v-for="source in availableSources" :key="source" :value="source">
-                            {{ formatSourceLabel(source) }}
-                        </option>
-                    </select>
-                    <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-400">
-                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-                        </svg>
-                    </div>
-                </div>
-
-                <div v-if="hasActiveFilter" class="flex items-center flex-shrink-0">
+                <div v-if="hasActiveFilter" class="flex items-center">
                     <button @click="clearFilters"
-                            class="text-xs font-bold text-brand-600 hover:text-brand-700 px-2.5 py-1.5 bg-brand-50 rounded-xl transition-colors whitespace-nowrap">
-                        清空筛选
+                            class="text-xs font-semibold text-zinc-500 hover:text-brand-600 px-2 py-2 transition-colors whitespace-nowrap">
+                        重置筛选
                     </button>
                 </div>
             </div>
@@ -334,71 +360,72 @@
         </div>
     </header>
 
-    <!-- 动态占位符：防止 Fixed Header 遮挡主内容 -->
-    <div :style="{ height: headerHeight + 'px' }" class="flex-shrink-0 w-full"></div>
+    <!-- 用于防止 Fixed Header 遮挡主内容的动态占位符 -->
+    <div :style="{ height: headerHeight + 'px' }" class="flex-shrink-0 w-full transition-all duration-300"></div>
 
-    <!-- ============ 主体内容：常买盯价（原商品监控）页面 ============ -->
-    <main v-if="currentView === 'monitor'" class="flex-1 max-w-5xl mx-auto w-full px-3.5 sm:px-6 py-5 sm:py-8 animate-card">
-        <div class="mb-6 bg-white rounded-3xl p-5 sm:p-6 shadow-sm border border-zinc-200/80">
+    <!-- ============ 主体内容：商品监控页面 ============ -->
+    <main v-if="currentView === 'monitor'" class="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8 animate-card">
+        <!-- 顶部上传/添加监控卡片 -->
+        <div class="mb-6 glass-panel rounded-3xl p-5 sm:p-6 shadow-sm border border-zinc-200">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
                 <div>
-                    <h2 class="text-xl font-extrabold text-zinc-900 flex items-center gap-2.5 flex-wrap">
-                        <span>🔔 常买商品盯价</span>
-                        <span class="px-2.5 py-0.5 text-xs font-bold bg-zinc-100 text-zinc-700 rounded-full num-font">
-                            正在盯价 {{ monitoredList.length }} 项
+                    <h2 class="text-xl font-bold text-zinc-900 flex items-center gap-2 flex-wrap">
+                        <span>📡 商品监控（自动抓价 + 人工核实）</span>
+                        <span class="px-2.5 py-0.5 text-xs font-bold bg-brand-50 text-brand-600 rounded-full border border-brand-200 num-font">
+                            {{ monitoredList.length }} 项监控中
                         </span>
                     </h2>
-                    <p class="text-sm text-zinc-500 mt-1 font-medium leading-relaxed">
-                        把平时常买的东西加进来，系统全天自动找好价，并由人工帮您核对真实份量与单价。
+                    <p class="text-sm text-zinc-600 mt-1.5 font-medium leading-relaxed">
+                        添加您关注的商品后，系统会在后台自动拉取最新商品数据，再由人工逐一核对规格与真实单价。
                     </p>
                 </div>
                 <button
                         @click="fetchMonitors"
                         :disabled="monitorLoading"
-                        class="self-start sm:self-auto px-3.5 py-2 bg-zinc-100 hover:bg-zinc-200/80 rounded-xl text-xs font-bold text-zinc-700 transition-all flex items-center gap-1.5 disabled:opacity-50 flex-shrink-0"
+                        class="self-start sm:self-auto px-3.5 py-2 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-700 hover:border-brand-500 hover:text-brand-600 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50 flex-shrink-0"
                 >
                     <svg class="w-3.5 h-3.5" :class="monitorLoading ? 'animate-spin' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                     </svg>
-                    {{ monitorLoading ? '正在刷新...' : '刷新最新数据' }}
+                    {{ monitorLoading ? '刷新中...' : '刷新数据' }}
                 </button>
             </div>
 
-            <form @submit.prevent="addMonitorItem" class="flex flex-col sm:flex-row gap-2.5">
+            <form @submit.prevent="addMonitorItem" class="flex flex-col sm:flex-row gap-3">
                 <input
                         v-model="newMonitorKeyword"
                         type="text"
-                        placeholder="输入您常买的商品，例如：维达抽纸、可乐、猫粮"
-                        class="flex-1 bg-zinc-50 border border-zinc-200 rounded-2xl px-4 py-3 text-sm font-medium outline-none focus:bg-white focus:border-brand-600 transition-all placeholder-zinc-400"
+                        placeholder="输入想买的商品名称，如：可乐、插座（支持用空格或逗号一次添加多个）"
+                        class="flex-1 bg-white border-2 border-zinc-200 rounded-2xl px-4 py-3 text-sm font-medium outline-none focus:border-brand-500 transition-all placeholder-zinc-400 shadow-sm"
                 >
                 <button
                         type="submit"
                         :disabled="monitorSubmitting || !newMonitorKeyword.trim()"
                         class="px-6 py-3 bg-zinc-900 text-white rounded-2xl text-sm font-bold shadow-sm hover:bg-zinc-800 active:scale-95 transition-all disabled:opacity-50 whitespace-nowrap"
                 >
-                    {{ monitorSubmitting ? '添加中...' : '+ 添加到盯价清单' }}
+                    {{ monitorSubmitting ? '提交中...' : '+ 添加监控商品' }}
                 </button>
             </form>
         </div>
 
-        <!-- 监控加载骨架屏 -->
+        <!-- 加载骨架屏 -->
         <div v-if="monitorLoading && monitoredList.length === 0" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <div v-for="i in 6" :key="i" class="bg-white rounded-2xl p-4 border border-zinc-100 shadow-sm">
                 <div class="h-5 w-1/2 skeleton-pulse rounded mb-3"></div>
-                <div class="h-14 w-full skeleton-pulse rounded mb-3"></div>
-                <div class="h-9 w-full skeleton-pulse rounded"></div>
+                <div class="h-12 w-full skeleton-pulse rounded mb-3"></div>
+                <div class="h-8 w-full skeleton-pulse rounded"></div>
             </div>
         </div>
 
-        <!-- 监控商品列表 -->
+        <!-- 当前监控商品列表（聚焦核心数量与人工核实进度，去除运维时间和已取消列表） -->
         <div v-else>
             <div v-if="monitoredList.length === 0" class="bg-white rounded-3xl p-12 text-center border border-zinc-200/80 shadow-sm">
                 <div class="w-14 h-14 bg-zinc-100 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <span class="text-2xl">🛍️</span>
+                    <span class="text-2xl">📦</span>
                 </div>
-                <h3 class="text-base font-bold text-zinc-900 mb-1">还没有盯价中的商品</h3>
-                <p class="text-xs text-zinc-500">在上方输入您平时常买的商品，我们会持续帮您盯住全网低价</p>
+                <h3 class="text-base font-bold text-zinc-900 mb-1">暂无正在监控的商品</h3>
+                <p class="text-xs text-zinc-500">在上方输入框添加商品（如“可乐”、“插座”），后台将自动拉取商品并由人工核实单价</p>
             </div>
 
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -406,46 +433,48 @@
                         v-for="item in monitoredList"
                         :key="item.keyword"
                         @click="jumpToSearch(item.keyword)"
-                        class="product-card bg-white rounded-2xl p-4 border border-zinc-200/80 shadow-sm flex flex-col justify-between gap-3.5 cursor-pointer"
+                        class="product-card bg-white rounded-2xl p-4 border border-zinc-200 shadow-sm flex flex-col justify-between gap-3.5 cursor-pointer"
                 >
                     <div class="flex items-center justify-between gap-2">
                         <div class="flex items-center gap-2 min-w-0">
                             <h3 class="text-lg font-extrabold text-zinc-900 truncate">{{ item.keyword }}</h3>
-                            <span class="flex-shrink-0 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[11px] font-bold">
-                                盯价中
+                            <span class="flex-shrink-0 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md text-[11px] font-bold">
+                                监控中
                             </span>
                         </div>
 
                         <button
                                 @click.stop="openRemoveConfirm(item.keyword)"
                                 class="flex-shrink-0 text-xs font-semibold text-zinc-400 hover:text-red-600 hover:bg-red-50 px-2.5 py-1 rounded-lg transition-colors"
+                                title="停止监控该商品"
                         >
                             移除
                         </button>
                     </div>
 
+                    <!-- 核心数据区：并列展示后台拉取商品总数与已人工确定数量 -->
                     <div class="grid grid-cols-2 gap-2.5">
-                        <div class="bg-zinc-50 border border-zinc-200/60 rounded-xl p-3">
-                            <p class="text-[11px] font-semibold text-zinc-500">已收录比价</p>
-                            <p class="text-2xl font-extrabold text-zinc-900 num-font mt-0.5">
+                        <div class="bg-brand-50/60 border border-brand-100 rounded-xl p-3">
+                            <p class="text-[11px] font-semibold text-brand-600/80">后台已拉取商品</p>
+                            <p class="text-2xl font-extrabold text-brand-600 num-font mt-0.5">
                                 {{ item.count_72h || 0 }}
-                                <span class="text-xs font-medium text-zinc-400">款</span>
+                                <span class="text-xs font-medium text-brand-600/70">件</span>
                             </p>
                         </div>
                         <div class="bg-emerald-50/70 border border-emerald-200/80 rounded-xl p-3">
-                            <p class="text-[11px] font-semibold text-emerald-700">✓ 人工已核对</p>
+                            <p class="text-[11px] font-semibold text-emerald-700">已人工确定</p>
                             <p class="text-2xl font-extrabold text-emerald-600 num-font mt-0.5">
                                 {{ item.confirmed_count_72h || 0 }}
-                                <span class="text-xs font-medium text-emerald-600/80">款</span>
+                                <span class="text-xs font-medium text-emerald-600/80">件</span>
                             </p>
                         </div>
                     </div>
 
                     <button
                             @click.stop="jumpToSearch(item.keyword)"
-                            class="w-full py-2.5 bg-zinc-900 text-white rounded-xl text-xs font-bold hover:bg-zinc-800 active:scale-[0.99] transition-all shadow-sm flex items-center justify-center gap-1"
+                            class="w-full py-2.5 bg-zinc-900 text-white rounded-xl text-xs font-bold hover:bg-brand-600 active:scale-[0.99] transition-all shadow-sm flex items-center justify-center gap-1"
                     >
-                        <span>查看哪家最划算</span>
+                        <span>查看比价结果</span>
                         <span>→</span>
                     </button>
                 </div>
@@ -453,41 +482,40 @@
         </div>
     </main>
 
-    <!-- ============ 主体内容：比价搜索页面 ============ -->
-    <main v-else class="flex-1 max-w-5xl mx-auto w-full px-3.5 sm:px-6 py-4 sm:py-7">
+    <!-- ============ 主体内容：原有搜索页面 ============ -->
+    <main v-else class="flex-1 max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
 
-        <!-- 初始空状态引导 -->
+        <!-- 初始化/空状态 (巨幕引导) -->
         <div v-if="!hasSearched && !loading"
              class="flex flex-col items-center justify-center py-12 sm:py-24 text-center animate-card">
-            <div class="mb-5">
-                <div class="w-16 h-16 sm:w-20 sm:h-20 bg-white rounded-3xl shadow-float flex items-center justify-center border border-zinc-200/60">
-                    <span class="text-3xl sm:text-4xl">⚖️</span>
+            <div class="mb-6 relative">
+                <div class="absolute inset-0 bg-brand-500 blur-3xl opacity-20 rounded-full"></div>
+                <div class="w-20 h-20 bg-white rounded-2xl shadow-xl flex items-center justify-center relative border border-zinc-100">
+                    <span class="text-3xl">🧮</span>
                 </div>
             </div>
-            <h2 class="text-2xl sm:text-4xl font-extrabold text-zinc-900 tracking-tight mb-3">
-                买大包还是买小包？<span class="text-brand-600">一搜算清真单价</span>
+            <h2 class="text-3xl sm:text-4xl font-extrabold text-zinc-900 tracking-tight mb-4">
+                全网好物，<span
+                    class="text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-purple-600">一键精算单价</span>
             </h2>
-            <p class="text-zinc-500 text-sm sm:text-base max-w-md mx-auto mb-8 font-medium leading-relaxed">
-                不论商家怎么包装规格，自动帮您换算成「每克、每抽、每毫升」多少钱，谁最划算一目了然。
+            <p class="text-zinc-500 text-base sm:text-lg max-w-md mx-auto mb-8 font-medium">
+                支持输入关键词或粘贴商品链接进行智能解析。<br class="hidden sm:block">自动提取规格换算单价，让您的每一分钱都花在刀刃上。
             </p>
         </div>
 
         <!-- 加载骨架屏 -->
         <div v-if="loading" class="flex flex-col gap-4">
-            <div class="h-28 w-full bg-white rounded-3xl p-5 border border-zinc-100 shadow-sm flex flex-col justify-between">
-                <div class="h-6 w-48 skeleton-pulse rounded-lg"></div>
-                <div class="h-10 w-full skeleton-pulse rounded-xl"></div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 sm:gap-5">
+            <div class="h-8 w-48 skeleton-pulse rounded-lg mb-2"></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 <div v-for="i in 6" :key="i"
-                     class="bg-white rounded-2xl p-3.5 flex gap-3.5 border border-zinc-100 shadow-sm">
+                     class="bg-white rounded-2xl p-3 flex gap-4 border border-zinc-100 shadow-sm">
                     <div class="w-28 h-28 rounded-xl skeleton-pulse flex-shrink-0"></div>
                     <div class="flex-1 py-1 flex flex-col justify-between">
                         <div>
                             <div class="h-4 w-full skeleton-pulse rounded mb-2"></div>
                             <div class="h-4 w-2/3 skeleton-pulse rounded"></div>
                         </div>
-                        <div class="h-10 w-full skeleton-pulse rounded-lg"></div>
+                        <div class="h-6 w-1/2 skeleton-pulse rounded"></div>
                     </div>
                 </div>
             </div>
@@ -496,184 +524,179 @@
         <!-- 搜索结果区 -->
         <div v-if="hasSearched && products.length > 0 && !loading" class="animate-card">
 
-            <!-- 顶部比价总结卡片（Apple 风格干净呈现） -->
-            <div class="mb-4 sm:mb-6 bg-white rounded-3xl p-4 sm:p-6 shadow-sm border border-zinc-200/80">
-                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 mb-4">
+            <!-- 数据洞察大盘 -->
+            <div class="mb-6 glass-panel rounded-3xl p-5 sm:p-6 shadow-sm border border-zinc-200">
+                <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-4">
                     <div>
-                        <h3 class="text-lg sm:text-xl font-extrabold text-zinc-900">
-                            「<span class="text-brand-600">{{ currentKeyword }}</span>」共 {{ sortedProducts.length }} 款比价结果
+                        <h3 class="text-xl font-bold text-zinc-900">
+                            找到 {{ sortedProducts.length }} 个「<span class="text-brand-600">{{ currentKeyword }}</span>」
                         </h3>
-                        <p class="text-xs sm:text-sm text-zinc-500 mt-0.5 font-medium">
-                            {{ sortBy === 'value' ? '已把单价最划算的排在最前面（每' + stats.baseUnit + '最便宜）' : '已把付款总价最低的排在最前面' }}
+                        <p class="text-sm text-zinc-500 mt-1 font-medium">
+                            {{ sortBy === 'value' ? '已按 AI 测算的单位价格为您智能排序' : '已按商品预估到手总价从低到高排序' }}
                         </p>
                     </div>
-
-                    <!-- Apple 分段控制器风格排序切换 -->
-                    <div class="grid grid-cols-2 sm:flex gap-1 bg-zinc-100 p-1 rounded-xl w-full sm:w-auto">
+                    <!-- 排序维度 -->
+                    <div class="flex gap-2 bg-zinc-100 p-1 rounded-xl self-start sm:self-auto">
                         <button
                                 v-for="option in sortOptions"
                                 :key="option.value"
                                 type="button"
                                 @click="changeSort(option.value)"
-                                class="px-3 py-2 sm:py-1.5 rounded-lg text-xs sm:text-sm font-bold transition-all text-center"
-                                :class="sortBy === option.value ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500 hover:text-zinc-800'"
+                                class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all"
+                                :class="sortBy === option.value ? 'bg-white shadow-sm text-zinc-900' : 'text-zinc-500 hover:text-zinc-700'"
                         >
                             {{ option.label }}
                         </button>
                     </div>
                 </div>
 
-                <!-- 直观比价行情条 -->
-                <div class="grid grid-cols-3 gap-2.5 sm:gap-4 p-3 sm:p-4 bg-zinc-50 rounded-2xl border border-zinc-200/60">
+                <!-- 洞察数据条 -->
+                <div class="grid grid-cols-3 gap-4 p-4 bg-zinc-50 rounded-2xl border border-zinc-100">
                     <div>
-                        <p class="text-[11px] text-zinc-500 font-semibold mb-0.5">平时均价</p>
-                        <p class="text-base sm:text-lg font-extrabold text-zinc-800 num-font">
-                            ¥{{ stats.avgUnitPrice.toFixed(2) }}<span class="text-xs text-zinc-400 font-normal">/{{ stats.baseUnit }}</span>
+                        <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">大盘均价</p>
+                        <p class="text-lg font-bold text-zinc-800 num-font">
+                            ¥{{ stats.avgUnitPrice.toFixed(2) }}<span
+                                class="text-xs text-zinc-400 font-medium">/{{ stats.baseUnit }}</span>
                         </p>
                     </div>
                     <div>
-                        <p class="text-[11px] text-emerald-700 font-semibold mb-0.5">最划算单价</p>
-                        <p class="text-base sm:text-lg font-extrabold text-emerald-600 num-font">
-                            ¥{{ stats.minUnitPrice.toFixed(2) }}<span class="text-xs text-emerald-600/70 font-normal">/{{ stats.baseUnit }}</span>
+                        <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">精选好价</p>
+                        <p class="text-lg font-bold text-accent-600 num-font">
+                            ¥{{ stats.minUnitPrice.toFixed(2) }}<span
+                                class="text-xs text-accent-600/70 font-medium">/{{ stats.baseUnit }}</span>
                         </p>
                     </div>
                     <div>
-                        <p class="text-[11px] text-zinc-500 font-semibold mb-0.5">买对最高能省</p>
-                        <p class="text-base sm:text-lg font-extrabold text-brand-600 num-font">
-                            {{ stats.maxSavePercent }}%
+                        <p class="text-[11px] text-zinc-400 font-semibold uppercase tracking-wider mb-1">最高差价</p>
+                        <p class="text-lg font-bold text-zinc-800 num-font">
+                            {{ stats.minUnitPrice > 0 ? (((stats.maxUnitPrice - stats.minUnitPrice) / stats.minUnitPrice) * 100).toFixed(0) : 0 }}%
                         </p>
                     </div>
                 </div>
+
+                <!-- 保护性免责声明 -->
+                <div class="mt-4 text-center">
+                    <p class="text-[10px] text-zinc-400 font-medium">
+                        💡 价格受平台实时活动及个人优惠权益(如88VIP/Plus)影响，最终成交价请以官方结算页为准
+                    </p>
+                </div>
             </div>
 
-            <!-- 筛选为空时的提示 -->
-            <div v-if="sortedProducts.length === 0" class="bg-white rounded-3xl p-12 flex flex-col items-center justify-center text-center border border-zinc-200/70">
-                <span class="text-4xl mb-3">🔍</span>
-                <h3 class="text-base font-bold text-zinc-900 mb-1">没有符合当前筛选条件的商品</h3>
-                <p class="text-xs text-zinc-500 mb-4">您可以放宽筛选条件再看看</p>
-                <button @click="clearFilters" class="px-4 py-2 bg-zinc-900 text-white rounded-xl text-xs font-bold">
-                    查看全部结果
-                </button>
+            <!-- 筛选为空时的状态 -->
+            <div v-if="sortedProducts.length === 0" class="flex flex-col items-center justify-center py-16 text-center">
+                <span class="text-4xl mb-4">📭</span>
+                <h3 class="text-base font-bold text-zinc-800 mb-1">没有符合当前筛选的商品</h3>
+                <p class="text-sm text-zinc-500">请尝试清除某些过滤条件</p>
             </div>
 
-            <!-- 商品列表 -->
+            <!-- 商品列表（使用唯一 uid 作为 key，配合增量渲染保障手机端丝滑与排序准确） -->
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-5">
                 <article
                         v-for="(item, index) in visibleProducts"
                         :key="item._uid"
                         @click="openDetail(item)"
-                        class="product-card bg-white rounded-2xl p-3 sm:p-4 flex sm:flex-col gap-3 sm:gap-3.5 border border-zinc-200/80 shadow-sm cursor-pointer relative overflow-hidden"
+                        class="product-card bg-white rounded-2xl p-3 sm:p-4 flex sm:flex-col gap-3 sm:gap-4 border border-zinc-200 shadow-sm cursor-pointer relative overflow-hidden"
                 >
-                    <!-- 图片与平台/排名标识 -->
-                    <div class="w-28 h-28 sm:w-full sm:h-48 rounded-xl bg-zinc-50 relative flex-shrink-0 overflow-hidden border border-zinc-100">
-                        <img :src="item.image_url" :alt="item.name" loading="lazy" decoding="async" class="w-full h-full object-cover mix-blend-multiply">
-
-                        <!-- 直观的前三名划算奖牌 -->
-                        <div v-if="sortBy === 'value' && index < 3" class="absolute top-1.5 left-1.5 z-10">
-                            <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold text-white shadow-sm flex items-center gap-0.5"
-                                  :class="index === 0 ? 'bg-amber-500' : (index === 1 ? 'bg-zinc-600' : 'bg-amber-700')">
-                                {{ index === 0 ? '🏆 第1划算' : (index === 1 ? '🥈 第2划算' : '🥉 第3划算') }}
-                            </span>
+                    <!-- 排名角标 -->
+                    <div v-if="sortBy === 'value' && index < 3"
+                         class="absolute top-0 right-0 w-12 h-12 overflow-hidden z-10 pointer-events-none">
+                        <div class="absolute top-1 right-[-14px] w-16 text-center rotate-45 text-[10px] font-bold py-0.5 text-white shadow-sm"
+                             :class="index === 0 ? 'bg-gradient-to-r from-amber-400 to-orange-500' : (index === 1 ? 'bg-gradient-to-r from-slate-300 to-slate-400' : 'bg-gradient-to-r from-amber-600 to-orange-700')">
+                            TOP {{ index + 1 }}
                         </div>
+                    </div>
 
-                        <!-- 平台标签 -->
+                    <!-- 图片与平台 -->
+                    <div class="w-28 h-28 sm:w-full sm:h-48 rounded-xl bg-zinc-50 relative flex-shrink-0 overflow-hidden">
+                        <img :src="item.image_url" :alt="item.name" loading="lazy" decoding="async" class="w-full h-full object-cover mix-blend-multiply">
                         <div class="absolute bottom-1.5 left-1.5">
-                            <span class="px-1.5 py-0.5 rounded-md text-[10px] font-bold text-white shadow-sm"
+                            <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-white shadow-sm"
                                   :style="{ backgroundColor: item._platformColor }">
                                 {{ item._platformName }}
                             </span>
                         </div>
                     </div>
 
-                    <!-- 核心商品信息与清晰的价格对比 -->
+                    <!-- 核心信息 -->
                     <div class="flex-1 flex flex-col justify-between min-w-0">
                         <div>
                             <h3 class="text-sm font-bold text-zinc-900 leading-snug line-clamp-2 mb-1.5">{{ item.name }}</h3>
-
-                            <!-- 状态与规格标签 -->
                             <div class="flex flex-wrap gap-1 mb-2">
-                                <span v-if="item.is_suspicious === 1"
-                                      class="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-[10px] font-bold border border-emerald-200">
-                                    ✓ 人工已核对
+                                <span v-if="item.is_suspicious === -1"
+                                      title="原价与活动价的比值大于 3"
+                                      class="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded text-[10px] font-medium border border-amber-200">
+                                    可疑
                                 </span>
-                                <span v-else-if="item.is_suspicious === -1"
-                                      class="px-1.5 py-0.5 bg-amber-50 text-amber-700 rounded-md text-[10px] font-bold border border-amber-200">
-                                    ⚠️ 低价待核实
+                                <span v-else-if="item.is_suspicious === 1"
+                                      title="已人工确定"
+                                      class="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded text-[10px] font-medium border border-emerald-200">
+                                    已人工确定
                                 </span>
                                 <span v-for="kw in item._topKeywords" :key="kw.attribute_name"
-                                      class="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded-md text-[10px] font-medium">
+                                      class="px-1.5 py-0.5 bg-zinc-100 text-zinc-600 rounded text-[10px] font-medium border border-zinc-200">
                                     {{ kw.attribute_value }}
                                 </span>
                             </div>
                         </div>
 
-                        <!-- 零认知门槛价格盒：上面看单价，下面看「到手总价 + 到手总量」 -->
-                        <div class="bg-zinc-50 rounded-xl p-2.5 border border-zinc-200/70 mt-1">
-                            <div class="flex items-baseline justify-between gap-1">
-                                <div class="flex items-baseline gap-1 min-w-0">
-                                    <span class="text-[11px] text-brand-600 font-bold">单价</span>
-                                    <span class="text-lg font-extrabold text-brand-600 leading-none num-font">¥{{ item._unitPriceStr }}</span>
-                                    <span class="text-[11px] text-zinc-500 font-semibold">/{{ item.base_unit }}</span>
-                                </div>
-                                <span v-if="getCompareIndicator(item)"
-                                      class="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-md"
-                                      :class="getCompareIndicator(item).better ? 'bg-emerald-100 text-emerald-800' : 'bg-zinc-200/80 text-zinc-600'">
-                                    {{ getCompareIndicator(item).text }}
-                                </span>
+                        <!-- 价格核算区 -->
+                        <div class="bg-brand-50/50 rounded-lg p-2 border border-brand-100/50 mt-1">
+                            <div class="flex items-end gap-1 mb-1.5">
+                                <span class="text-[10px] text-brand-600 font-semibold mb-0.5">折算单价</span>
+                                <span class="text-lg font-bold text-brand-600 leading-none num-font">¥{{ item._unitPriceStr }}</span>
+                                <span class="text-[10px] text-brand-600/70 font-medium mb-0.5">/{{ item.base_unit }}</span>
                             </div>
-
-                            <div class="flex items-center justify-between mt-1.5 pt-1.5 border-t border-zinc-200/60 text-xs">
-                                <div class="flex items-baseline gap-1">
-                                    <span class="text-[11px] text-zinc-500 font-medium">到手</span>
-                                    <span class="font-extrabold text-zinc-900 num-font">¥{{ item._activityPriceStr }}</span>
+                            <div class="flex items-center justify-between mt-1 pt-1 border-t border-brand-100">
+                                <div class="flex items-center gap-1.5">
+                                    <span class="text-xs font-bold text-zinc-800 num-font">¥{{ item._activityPriceStr }}</span>
                                     <span class="text-[10px] text-zinc-400 line-through num-font" v-if="item.original_price > item._activityPriceNum">¥{{ item.original_price }}</span>
                                 </div>
-                                <div class="text-[11px] font-bold text-zinc-600 num-font">
-                                    共 {{ item._totalValueStr }}{{ item.base_unit }}
-                                </div>
+                                <span v-if="getCompareIndicator(item)"
+                                      class="text-[9px] font-bold px-1.5 py-0.5 rounded"
+                                      :class="getCompareIndicator(item).better ? 'bg-accent-100 text-accent-700' : 'bg-red-100 text-red-600'">
+                                    {{ getCompareIndicator(item).text }}
+                                </span>
                             </div>
                         </div>
                     </div>
                 </article>
             </div>
 
-            <!-- 增量加载更多 -->
+            <!-- 增量加载提示区 -->
             <div v-if="visibleProducts.length < sortedProducts.length" class="py-6 text-center">
                 <button
                         type="button"
                         @click="loadMoreProducts"
-                        class="px-5 py-2.5 bg-white border border-zinc-200 rounded-2xl text-xs font-bold text-zinc-700 hover:border-zinc-900 shadow-sm transition-all"
+                        class="px-5 py-2 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-600 hover:border-brand-500 hover:text-brand-600 shadow-sm transition-all"
                 >
-                    显示更多商品 ({{ visibleProducts.length }} / {{ sortedProducts.length }})
+                    正在加载更多 ({{ visibleProducts.length }} / {{ sortedProducts.length }})...
                 </button>
             </div>
         </div>
 
         <!-- 无结果状态 -->
         <div v-if="hasSearched && products.length === 0 && !loading"
-             class="flex flex-col items-center justify-center py-20 animate-card text-center">
-            <div class="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-sm border border-zinc-200/60">
-                <span class="text-2xl">📦</span>
+             class="flex flex-col items-center justify-center py-20 animate-card">
+            <div class="w-16 h-16 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
+                <span class="text-2xl">🕵️</span>
             </div>
-            <h3 class="text-lg font-extrabold text-zinc-900 mb-1">暂时没有找到「{{ currentKeyword }}」</h3>
-            <p class="text-sm text-zinc-500 mb-5">您可以换个简短的词试试（例如把“维达超韧抽纸”换成“抽纸”），或者添加到盯价清单</p>
-            <button
-                    type="button"
-                    @click="newMonitorKeyword = currentKeyword; switchView('monitor')"
-                    class="px-5 py-2.5 bg-zinc-900 text-white rounded-2xl text-xs font-bold shadow-sm hover:bg-zinc-800"
-            >
-                + 添加「{{ currentKeyword }}」到常买盯价
-            </button>
+            <h3 class="text-lg font-bold text-zinc-900 mb-1">AI 没找到该商品数据</h3>
+            <p class="text-sm text-zinc-500 mb-6">换个大类词试试，或者直接粘贴商品分享链接</p>
         </div>
     </main>
 
-    <!-- ============ 移除盯价商品确认弹窗 ============ -->
+    <!-- ============ 新增：移除监控商品确认框 ============ -->
     <Teleport to="body">
-        <div v-if="pendingRemoveKeyword" class="fixed inset-0 bg-zinc-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4" @click="cancelRemoveMonitor()">
+        <div v-if="pendingRemoveKeyword" class="fixed inset-0 bg-zinc-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 transition-opacity" @click="cancelRemoveMonitor()">
             <div class="bg-white rounded-3xl p-6 max-w-sm w-full shadow-float border border-zinc-100 animate-card" @click.stop>
-                <h3 class="text-lg font-extrabold text-zinc-900 text-center mb-2">不再盯价该商品？</h3>
+                <div class="w-12 h-12 rounded-2xl bg-red-50 border border-red-100 flex items-center justify-center text-red-600 mb-4 mx-auto">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg font-extrabold text-zinc-900 text-center mb-1.5">确认移除监控？</h3>
                 <p class="text-xs text-zinc-500 text-center leading-relaxed mb-6">
-                    确定要从常买盯价清单中移除「<span class="font-bold text-zinc-800">{{ pendingRemoveKeyword }}</span>」吗？
+                    确定要停止监控「<span class="font-bold text-zinc-800">{{ pendingRemoveKeyword }}</span>」吗？
                 </p>
                 <div class="grid grid-cols-2 gap-3">
                     <button
@@ -681,7 +704,7 @@
                             @click="cancelRemoveMonitor()"
                             class="py-2.5 px-4 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl text-xs font-bold transition-colors"
                     >
-                        保留
+                        取消
                     </button>
                     <button
                             type="button"
@@ -695,7 +718,7 @@
         </div>
     </Teleport>
 
-    <!-- ============ 沉浸式商品详情抽屉 ============ -->
+    <!-- ============ 沉浸式详情抽屉（修复底部按钮重叠、增加商品错误反馈功能） ============ -->
     <Teleport to="body">
         <div v-if="selectedProduct" class="fixed inset-0 bg-zinc-900/50 backdrop-blur-sm z-50 transition-opacity" @click="closeDetail()"></div>
 
@@ -704,156 +727,160 @@
                  class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[92vh] max-w-2xl mx-auto flex flex-col overflow-hidden"
                  style="padding-bottom: var(--sab);">
 
-                <!-- 顶部返回导航条 -->
-                <div class="w-full flex-shrink-0 flex items-center justify-between px-5 pt-3.5 pb-2.5 border-b border-zinc-100 bg-white z-20">
-                    <button @click="closeDetail()" type="button" class="flex items-center gap-1 text-xs font-bold text-zinc-600 hover:text-zinc-900 py-1 px-2 -ml-2 rounded-lg active:bg-zinc-100">
+                <!-- 顶部下拉关闭条与返回关闭按钮 -->
+                <div class="w-full flex-shrink-0 flex items-center justify-between px-5 pt-3 pb-2 border-b border-zinc-100 bg-white z-20">
+                    <button @click="closeDetail()" type="button" class="flex items-center gap-1 text-xs font-bold text-zinc-500 hover:text-zinc-900 py-1 px-2 -ml-2 rounded-lg active:bg-zinc-100">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/>
                         </svg>
-                        <span>返回比价列表</span>
+                        <span>返回列表</span>
                     </button>
                     <div class="w-10 h-1.5 bg-zinc-200 rounded-full cursor-pointer" @click="closeDetail()"></div>
-                    <button @click="closeDetail()" type="button" class="text-xs font-bold text-zinc-400 hover:text-zinc-700 px-2 py-1">
-                        关闭
-                    </button>
+                    <div class="w-14"></div>
                 </div>
 
-                <!-- 中间独立滚动内容区 -->
+                <!-- 中间独立滚动内容区（与底部直达按钮物理隔离，彻底杜绝重叠透底） -->
                 <div class="flex-1 overflow-y-auto px-5 pt-3 pb-6 no-scrollbar">
-                    <!-- 商品大图 -->
-                    <div class="w-full h-60 sm:h-68 rounded-2xl bg-zinc-50 border border-zinc-100 mb-4 flex items-center justify-center overflow-hidden relative p-2">
+                    <!-- 放大展示的商品主图区域 -->
+                    <div class="w-full h-64 sm:h-72 rounded-2xl bg-zinc-50 border border-zinc-100 mb-4 flex items-center justify-center overflow-hidden relative p-2">
                         <img :src="selectedProduct.image_url" :alt="selectedProduct.name" class="w-full h-full object-contain mix-blend-multiply">
                         <div class="absolute top-3 left-3 flex flex-wrap gap-1.5">
-                            <span class="px-2.5 py-1 rounded-lg text-xs font-bold text-white shadow-sm" :style="{ backgroundColor: selectedProduct._platformColor }">
-                                {{ selectedProduct._platformName }}
+                            <span class="px-2.5 py-1 rounded-lg text-xs font-bold text-white shadow-sm" :style="{ backgroundColor: getPlatformColor(selectedProduct.platform) }">
+                                {{ getPlatformName(selectedProduct.platform) }}
                             </span>
-                            <span v-if="selectedProduct.is_suspicious === 1"
-                                  class="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-600 text-white shadow-sm">
-                                ✓ 人工已核对真价
-                            </span>
-                            <span v-else-if="selectedProduct.is_suspicious === -1"
+                            <span v-if="selectedProduct.is_suspicious === -1"
+                                  title="原价与活动价的比值大于 3"
                                   class="px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300 shadow-sm">
-                                ⚠️ 价格过低，请核对规格
+                                价格可疑
+                            </span>
+                            <span v-else-if="selectedProduct.is_suspicious === 1"
+                                  title="已人工确定"
+                                  class="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500 text-white shadow-sm">
+                                ✓ 已人工确定
                             </span>
                         </div>
                     </div>
 
-                    <!-- 商品完整标题 -->
-                    <div class="mb-4">
-                        <h2 class="text-base sm:text-lg font-extrabold text-zinc-900 leading-snug select-all">
+                    <!-- 完整突出的商品名称与核心标签 -->
+                    <div class="mb-5">
+                        <h2 class="text-lg sm:text-xl font-extrabold text-zinc-900 leading-snug select-all">
                             {{ selectedProduct.name }}
                         </h2>
                     </div>
 
-                    <!-- 核心区域：零门槛单价算式卡片 -->
-                    <div class="bg-zinc-900 rounded-3xl p-5 mb-5 text-white relative overflow-hidden shadow-float">
-                        <div class="flex items-center justify-between mb-3.5">
-                            <span class="text-xs font-bold text-zinc-300">单价是怎么算出来的？</span>
+                    <!-- 核心区域：AI 精算报告 -->
+                    <div class="bg-zinc-900 rounded-3xl p-5 mb-6 text-white relative overflow-hidden shadow-float">
+                        <div class="absolute -right-10 -top-10 w-32 h-32 bg-brand-500 rounded-full blur-3xl opacity-30"></div>
+                        <div class="flex items-center justify-between mb-4 relative z-10">
+                            <div class="flex items-center gap-2">
+                                <svg class="w-4 h-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                </svg>
+                                <span class="text-xs font-bold tracking-widest text-zinc-200">单价精算明细</span>
+                            </div>
                             <span v-if="getCompareIndicator(selectedProduct)"
-                                  class="text-xs font-bold px-2.5 py-0.5 rounded-full"
-                                  :class="getCompareIndicator(selectedProduct).better ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-white/10 text-zinc-300'">
+                                  class="text-xs font-bold px-2 py-0.5 rounded-md"
+                                  :class="getCompareIndicator(selectedProduct).better ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-red-500/20 text-red-300 border border-red-500/30'">
                                 {{ getCompareIndicator(selectedProduct).text }}
                             </span>
                         </div>
 
-                        <!-- 突出展示：最终每单位多少钱 -->
-                        <div class="bg-white/10 border border-white/15 rounded-2xl p-4 mb-3 flex justify-between items-center">
-                            <div>
-                                <span class="text-sm font-extrabold text-amber-300 block">算下来每{{ selectedProduct.base_unit }}只要</span>
-                                <span class="text-xs text-zinc-300 mt-1 block num-font">
-                                    ¥{{ selectedProduct._activityPriceStr }} (总价) ÷ {{ selectedProduct._totalValueStr }}{{ selectedProduct.base_unit }} (总量)
-                                </span>
-                            </div>
-                            <div class="text-right flex-shrink-0 pl-2">
-                                <span class="text-3xl sm:text-4xl font-extrabold text-amber-400 num-font">¥{{ selectedProduct._unitPriceStr }}</span>
-                                <span class="text-sm font-bold text-zinc-200 ml-0.5">/{{ selectedProduct.base_unit }}</span>
-                            </div>
-                        </div>
-
-                        <!-- 付款总价与总份量拆解 -->
-                        <div class="grid grid-cols-2 gap-2.5">
-                            <div class="bg-white/5 border border-white/10 rounded-xl p-3">
-                                <span class="text-xs text-zinc-400 block mb-1">预估付款总价</span>
-                                <div class="flex items-baseline gap-1.5">
-                                    <span class="text-xl font-extrabold text-white num-font">¥{{ selectedProduct._activityPriceStr }}</span>
-                                    <span v-if="selectedProduct.original_price > selectedProduct._activityPriceNum" class="text-xs text-zinc-400 line-through num-font">
-                                        ¥{{ selectedProduct.original_price }}
-                                    </span>
-                                </div>
-                            </div>
-
-                            <div class="bg-white/5 border border-white/10 rounded-xl p-3">
-                                <span class="text-xs text-zinc-400 block mb-1">到手总份量</span>
+                        <div class="flex flex-col gap-3 relative z-10">
+                            <!-- 突出显示：折算真实单价 -->
+                            <div class="bg-white/10 border border-white/15 rounded-2xl p-4 flex justify-between items-center backdrop-blur-md">
                                 <div>
-                                    <span class="text-xl font-extrabold text-white num-font">{{ selectedProduct._totalValueStr }}</span>
-                                    <span class="text-xs font-bold text-zinc-300 ml-1">{{ selectedProduct.base_unit }}</span>
+                                    <span class="text-sm font-bold text-amber-300 block">折算真实单价</span>
+                                    <span class="text-[11px] text-zinc-300 mt-0.5 block">到手总价 ÷ 实际总量</span>
                                 </div>
-                                <div v-if="getPricingStructure(selectedProduct).length > 0" class="text-[11px] text-zinc-300 mt-0.5 font-medium">
-                                    含: <span v-for="(struct, i) in getPricingStructure(selectedProduct)" :key="i">
-                                        {{ struct.value }}{{ struct.unit }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
-                                    </span>
+                                <div class="text-right">
+                                    <span class="text-3xl sm:text-4xl font-extrabold text-amber-400 num-font">¥{{ getUnitPrice(selectedProduct) }}</span>
+                                    <span class="text-sm font-bold text-zinc-200 ml-1">/{{ selectedProduct.base_unit }}</span>
+                                </div>
+                            </div>
+
+                            <!-- 关键计算拆解：到手总价 & 提取总量 -->
+                            <div class="grid grid-cols-2 gap-2.5">
+                                <div class="bg-white/5 border border-white/10 rounded-xl p-3">
+                                    <span class="text-xs text-zinc-400 block mb-1">预估到手总价</span>
+                                    <div class="flex items-baseline gap-1.5">
+                                        <span class="text-xl font-extrabold text-white num-font">¥{{ selectedProduct._activityPriceStr }}</span>
+                                        <span v-if="selectedProduct.original_price > selectedProduct._activityPriceNum" class="text-xs text-zinc-400 line-through num-font">
+                                            ¥{{ selectedProduct.original_price }}
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <div class="bg-white/5 border border-white/10 rounded-xl p-3">
+                                    <span class="text-xs text-zinc-400 block mb-1">核定实际总量</span>
+                                    <div>
+                                        <span class="text-xl font-extrabold text-white num-font">{{ getTotalValue(selectedProduct) }}</span>
+                                        <span class="text-xs font-bold text-zinc-300 ml-1">{{ selectedProduct.base_unit }}</span>
+                                    </div>
+                                    <div v-if="getPricingStructure(selectedProduct).length > 0" class="text-[11px] text-zinc-300 mt-0.5 font-medium">
+                                        规格: <span v-for="(struct, i) in getPricingStructure(selectedProduct)" :key="i">
+                                            {{ struct.value }}{{ struct.unit }}{{ i < getPricingStructure(selectedProduct).length - 1 ? ' × ' : '' }}
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 规格参数列表 -->
-                    <div v-if="selectedProduct.brand || getDecisionKeywords(selectedProduct).length > 0" class="mb-5">
-                        <h3 class="text-xs font-bold text-zinc-500 mb-2.5 px-1">商品特点与规格</h3>
+                    <!-- 规格参数透明化 -->
+                    <div class="mb-6">
+                        <h3 class="text-sm font-bold text-zinc-900 mb-3 px-1">关键规格信息</h3>
                         <div class="flex flex-wrap gap-2">
-                            <div v-if="selectedProduct.brand" class="flex items-center bg-zinc-100 rounded-xl px-3 py-2">
+                            <div v-if="selectedProduct.brand" class="flex items-center bg-zinc-100 border border-zinc-200 rounded-xl px-3.5 py-2">
                                 <span class="text-xs text-zinc-500 mr-2">品牌</span>
-                                <span class="text-xs font-extrabold text-zinc-900">{{ selectedProduct.brand }}</span>
+                                <span class="text-sm font-extrabold text-zinc-900">{{ selectedProduct.brand }}</span>
                             </div>
-                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name" class="flex items-center bg-zinc-100 rounded-xl px-3 py-2">
+                            <div v-for="kw in getDecisionKeywords(selectedProduct)" :key="kw.attribute_name" class="flex items-center bg-zinc-100 border border-zinc-200 rounded-xl px-3.5 py-2">
                                 <span class="text-xs text-zinc-500 mr-2">{{ kw.attribute_name }}</span>
-                                <span class="text-xs font-extrabold text-zinc-900">{{ kw.attribute_value }}</span>
+                                <span class="text-sm font-extrabold text-zinc-900">{{ kw.attribute_value }}</span>
                             </div>
                         </div>
                     </div>
 
-                    <!-- 极其顺手的报错反馈区（支持一键点选原因） -->
-                    <div class="pt-3 border-t border-zinc-100">
+                    <div v-if="selectedProduct.saved_price > 0" class="bg-accent-50 rounded-2xl p-4 border border-accent-100 flex items-center justify-between mb-6">
+                        <div>
+                            <p class="text-xs text-accent-700 font-bold mb-0.5">联盟专属优惠</p>
+                            <p class="text-[10px] text-accent-600/80">结合各项优惠为您省下</p>
+                        </div>
+                        <div class="text-xl font-extrabold text-accent-600 num-font">¥{{ Number(selectedProduct.saved_price).toFixed(2) }}</div>
+                    </div>
+
+                    <!-- 新增：商品信息有误反馈区域（置于详情最底部） -->
+                    <div class="pt-2 border-t border-zinc-100">
                         <div v-if="feedbackSuccess" class="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 text-center text-xs font-bold text-emerald-700">
-                            ✓ 感谢纠正，已帮您屏蔽该商品
+                            ✓ 已收到您的反馈，该商品已从列表中移除
                         </div>
 
                         <div v-else-if="!showFeedbackForm" class="flex justify-center">
                             <button
                                     type="button"
                                     @click="showFeedbackForm = true"
-                                    class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-zinc-500 hover:text-red-600 hover:bg-red-50 border border-zinc-200/80 transition-all"
+                                    class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-zinc-500 hover:text-red-600 hover:bg-red-50 border border-zinc-200/80 hover:border-red-200 transition-all"
                             >
-                                <span>算错了或价格不对？点此屏蔽该商品</span>
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                                </svg>
+                                <span>商品信息有误？点击反馈</span>
                             </button>
                         </div>
 
                         <div v-else class="bg-zinc-50 border border-zinc-200 rounded-2xl p-4">
-                            <p class="text-xs font-bold text-zinc-800 mb-2.5">点选原因后立即为您从列表中屏蔽：</p>
-                            <!-- 快捷原因胶囊：免打字 -->
-                            <div class="flex flex-wrap gap-2 mb-3">
-                                <button
-                                        v-for="reason in ['份量算错了', '价格对不上', '商品已下架/没货', '不是我要搜的商品']"
-                                        :key="reason"
-                                        type="button"
-                                        @click="feedbackContent = reason"
-                                        class="px-3 py-1.5 rounded-xl text-xs font-bold border transition-all"
-                                        :class="feedbackContent === reason ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 border-zinc-200'"
-                                >
-                                    {{ reason }}
-                                </button>
-                            </div>
-                            <input
+                            <p class="text-xs font-bold text-zinc-800 mb-2">反馈商品信息有误（提交后将不再展示该商品）</p>
+                            <textarea
                                     v-model="feedbackContent"
-                                    type="text"
-                                    placeholder="也可补充其他说明（选填，可直接点右侧确认）"
-                                    class="w-full bg-white border border-zinc-200 rounded-xl px-3 py-2 text-xs text-zinc-800 outline-none focus:border-zinc-900 mb-3"
-                            >
+                                    rows="2"
+                                    placeholder="选填：请简单说明哪里有误（如规格提取错误、价格不符等），也可留空直接提交"
+                                    class="w-full bg-white border border-zinc-200 rounded-xl p-2.5 text-xs text-zinc-800 outline-none focus:border-brand-500 transition-all placeholder-zinc-400 mb-3 resize-none"
+                            ></textarea>
                             <div class="flex justify-end gap-2">
                                 <button
                                         type="button"
                                         @click="showFeedbackForm = false; feedbackContent = ''"
-                                        class="px-3.5 py-2 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-600"
+                                        class="px-3.5 py-1.5 bg-white border border-zinc-200 rounded-xl text-xs font-semibold text-zinc-600 hover:bg-zinc-100 transition-colors"
                                 >
                                     取消
                                 </button>
@@ -861,27 +888,23 @@
                                         type="button"
                                         :disabled="feedbackSubmitting"
                                         @click="submitFeedback"
-                                        class="px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-700 active:scale-95 transition-all disabled:opacity-50"
+                                        class="px-4 py-1.5 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-700 active:scale-95 transition-all disabled:opacity-50"
                                 >
-                                    {{ feedbackSubmitting ? '正在屏蔽...' : '确认屏蔽该商品' }}
+                                    {{ feedbackSubmitting ? '提交中...' : '确认提交' }}
                                 </button>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 底部直达购买按钮（点击前强制保存搜索快照，防止外跳返回丢失列表） -->
+                <!-- 底部独立固底按钮栏（纯白不透明背景 + 物理隔离不重叠） -->
                 <div class="flex-shrink-0 p-4 bg-white border-t border-zinc-200/80 flex flex-col items-center relative z-30">
-                    <a :href="selectedProduct.product_url"
-                       target="_blank"
-                       rel="noopener noreferrer"
-                       @click="saveSearchSnapshot()"
-                       class="flex flex-col items-center justify-center w-full py-3.5 bg-zinc-900 text-white rounded-2xl shadow-float hover:bg-zinc-800 active:scale-[0.98] transition-all">
-                        <div class="flex items-center font-extrabold text-base">
-                            去 {{ selectedProduct._platformName }} 查看并购买
+                    <a :href="selectedProduct.product_url" target="_blank" rel="noopener noreferrer" class="flex flex-col items-center justify-center w-full py-3 bg-gradient-to-r from-zinc-900 to-zinc-800 text-white rounded-2xl shadow-float hover:from-zinc-800 hover:to-zinc-700 active:scale-[0.98] transition-all relative overflow-hidden">
+                        <div class="flex items-center font-bold text-base">
+                            直达 {{ getPlatformName(selectedProduct.platform) }} 领券购买
                             <svg class="w-4 h-4 ml-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
                         </div>
-                        <span class="text-[11px] text-zinc-300 font-medium mt-0.5">最终付款金额以官方结算页为准</span>
+                        <span class="text-[10px] text-zinc-300 font-medium mt-0.5">跳转至对应 App 完成安全交易</span>
                     </a>
                 </div>
             </div>
@@ -891,22 +914,20 @@
 </div>
 
 <script>
-    const { createApp, ref, shallowRef, computed, watch, nextTick, onMounted, onUnmounted } = Vue
-
-    // 本地会话存储 Key：确保手机端点击详情或外跳 App 后返回 100% 恢复原列表与位置
-    const SNAPSHOT_STORAGE_KEY = 'zhihui_search_state_v2'
+    const { createApp, ref, shallowRef, computed, watch, onMounted, onUnmounted } = Vue
 
     createApp({
         setup() {
+            // ======== 页面滚动交互与增量渲染状态 ========
             const showHeader = ref(true)
             const headerRef = ref(null)
-            const headerHeight = ref(96)
+            const headerHeight = ref(100)
             const lastScrollTop = ref(0)
             const PAGE_SIZE = 36
             const displayLimit = ref(PAGE_SIZE)
             let resizeObserver = null
 
-            // ======== 视图切换与常买盯价状态 ========
+            // ======== 新增：视图切换与商品监控状态 ========
             const currentView = ref(window.location.pathname === '/monitor' ? 'monitor' : 'search')
             const monitoredList = ref([])
             const monitorHistoryList = ref([])
@@ -984,11 +1005,25 @@
                 }
             }
 
+            const restoreMonitorItem = async (kw) => {
+                try {
+                    const response = await fetch('/api/monitor', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ keyword: kw })
+                    })
+                    const res = await response.json()
+                    if (res.status === 'success') {
+                        monitoredList.value = res.data || []
+                        monitorHistoryList.value = res.history || []
+                    }
+                } catch (e) {
+                    console.error('Restore Monitor Error', e)
+                }
+            }
+
             const switchView = (viewName) => {
                 if (currentView.value === viewName) return
-                if (currentView.value === 'search' && hasSearched.value) {
-                    saveSearchSnapshot()
-                }
                 currentView.value = viewName
                 showHeader.value = true
                 window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -1003,12 +1038,54 @@
                 currentView.value = 'search'
                 search()
             }
+            // ==========================================
 
-            // ======== 搜索与过滤核心状态（已移除 activeCommissionFilter） ========
+            const loadMoreProducts = () => {
+                if (displayLimit.value < sortedProducts.value.length) {
+                    displayLimit.value += PAGE_SIZE
+                }
+            }
+
+            // 处理滚动的核心逻辑（合并滚动隐藏 Header 与触底自动分批加载）
+            const handleScroll = () => {
+                const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop
+                const docHeight = document.documentElement.scrollHeight
+                const winHeight = window.innerHeight
+
+                // 触底前 600px 自动追加渲染下一批商品，消除一次性渲染上千节点带来的卡顿
+                if (currentView.value === 'search' && docHeight - (currentScrollTop + winHeight) < 600) {
+                    loadMoreProducts()
+                }
+
+                // 1. 到达顶部时必须显示
+                if (currentScrollTop <= 0) {
+                    showHeader.value = true
+                    lastScrollTop.value = currentScrollTop
+                    return
+                }
+
+                // 2. 忽略 iOS 的橡皮筋过度滚动
+                if (currentScrollTop > docHeight - winHeight) {
+                    return
+                }
+
+                // 3. 判断滚动方向及阈值 (大于 10px 视为有效意图)
+                if (Math.abs(currentScrollTop - lastScrollTop.value) < 10) return
+
+                if (currentScrollTop > lastScrollTop.value && currentScrollTop > headerHeight.value) {
+                    showHeader.value = false
+                } else if (currentScrollTop < lastScrollTop.value) {
+                    showHeader.value = true
+                }
+
+                lastScrollTop.value = currentScrollTop
+            }
+
             const keyword = ref('')
             const currentKeyword = ref('')
             const products = shallowRef([])
 
+            // 新增：商品名自定义关键字过滤（带防抖，防止移动端输入卡顿）
             const nameKeywordFilter = ref('')
             const debouncedNameFilter = ref('')
             let nameFilterTimer = null
@@ -1017,7 +1094,6 @@
                 nameFilterTimer = setTimeout(() => {
                     debouncedNameFilter.value = val.trim().toLowerCase()
                     displayLimit.value = PAGE_SIZE
-                    saveSearchSnapshot()
                 }, 180)
             })
             const clearNameFilter = () => {
@@ -1025,7 +1101,6 @@
                 nameKeywordFilter.value = ''
                 debouncedNameFilter.value = ''
                 displayLimit.value = PAGE_SIZE
-                saveSearchSnapshot()
             }
 
             const availableUnits = computed(() => {
@@ -1033,6 +1108,7 @@
                 return [...new Set(units)]
             })
             const activeUnitFilter = ref('')
+            const activeCommissionFilter = ref('yes')
             const activeSuspiciousFilter = ref('')
 
             const availableSources = computed(() => {
@@ -1040,12 +1116,6 @@
                 return [...new Set(sources)]
             })
             const activeSourceFilter = ref('')
-
-            const formatSourceLabel = (source) => {
-                if (source === 'group') return '社群好价'
-                if (source === 'no_group') return '全网发现'
-                return source
-            }
 
             const availableFilters = ref([])
             const activeFilters = ref({})
@@ -1055,7 +1125,7 @@
             const selectedProduct = ref(null)
             const searchInputRef = ref(null)
 
-            // ======== 商品错误反馈逻辑 ========
+            // ======== 新增：商品错误反馈状态与提交逻辑 ========
             const showFeedbackForm = ref(false)
             const feedbackContent = ref('')
             const feedbackSubmitting = ref(false)
@@ -1080,10 +1150,9 @@
                     if (res.status === 'success') {
                         feedbackSuccess.value = true
                         products.value = products.value.filter(p => String(p.product_id) !== targetPid)
-                        saveSearchSnapshot()
                         setTimeout(() => {
                             closeDetail()
-                        }, 500)
+                        }, 600)
                     }
                 } catch (e) {
                     console.error('Submit Feedback Error', e)
@@ -1091,56 +1160,47 @@
                     feedbackSubmitting.value = false
                 }
             }
+            // ================================================
 
-            // ======== 直觉化排序选项 ========
             const sortBy = ref('value')
             const sortOptions = [
-                { label: '按单价 · 最划算', value: 'value' },
-                { label: '按总价 · 最便宜', value: 'price' }
+                {label: '综合性价比', value: 'value'},
+                {label: '总价最低', value: 'price'}
             ]
 
             const changeSort = (val) => {
                 if (sortBy.value === val) return
                 sortBy.value = val
                 displayLimit.value = PAGE_SIZE
-                saveSearchSnapshot()
             }
 
             const hotKeywords = ref(['抽纸', '洗衣液', '纯牛奶', '巴旦木', '猫粮', '可乐'])
             const placeholderIndex = ref(0)
-            const placeholders = [
-                '输入想买的商品（如：抽纸、牛奶、洗衣液）',
-                '自动算清每克、每抽、每毫升多少钱...',
-                '支持按单价最划算或总价最便宜排序...'
-            ]
+            const placeholders = ['输入商品或粘贴链接，AI帮你算真单价...', '买纸巾洗衣液前，先来算算每克多少钱...', '智能提取规格，一键还原真实性价比...']
             const placeholderText = computed(() => placeholders[placeholderIndex.value % placeholders.length])
 
             const getPlatformName = (platform) => {
                 const p = platform?.toLowerCase() || ''
-                if (p.includes('pdd') || p.includes('拼多多')) return '拼多多'
-                if (p.includes('jd') || p.includes('京东')) return '京东'
-                if (p.includes('tb') || p.includes('淘宝') || p.includes('tmall') || p.includes('天猫')) return '淘宝/天猫'
-                return platform || '商城'
+                if (p.includes('pdd') || p.includes('拼多多')) return '拼多多官方'
+                if (p.includes('jd') || p.includes('京东')) return '京东官方'
+                if (p.includes('tb') || p.includes('淘宝') || p.includes('tmall') || p.includes('天猫')) return '淘宝官方'
+                return platform || '官方商城'
             }
 
             const getPlatformColor = (platform) => {
                 const name = getPlatformName(platform)
-                if (name.includes('拼多多')) return '#e11d48'
+                if (name.includes('拼多多')) return '#ef4444'
                 if (name.includes('京东')) return '#dc2626'
-                if (name.includes('淘宝')) return '#ea580c'
+                if (name.includes('淘宝')) return '#f97316'
                 return '#18181b'
             }
 
             const formatUnitPrice = (num) => {
                 if (num >= 0.1) return num.toFixed(2)
-                return parseFloat(num.toPrecision(2)).toString()
+                return parseFloat(num.toPrecision(3)).toString()
             }
 
-            const formatTotalValue = (num) => {
-                const n = Number(num) || 1
-                return Number.isInteger(n) ? n.toString() : parseFloat(n.toFixed(2)).toString()
-            }
-
+            // 预计算每个商品的衍生属性，避免在排序和渲染阶段重复计算
             const preprocessProducts = (rawList) => {
                 return (rawList || []).map((item, idx) => {
                     const actPrice = Number(item.activity_price) > 0 ? Number(item.activity_price) : 0.01
@@ -1160,8 +1220,6 @@
                         _nameLower: (item.name || '').toLowerCase(),
                         _activityPriceNum: actPrice,
                         _activityPriceStr: actPrice.toFixed(2),
-                        _totalValueNum: totalVal,
-                        _totalValueStr: formatTotalValue(totalVal),
                         _unitPriceNum: unitPriceNum,
                         _unitPriceStr: formatUnitPrice(unitPriceNum),
                         _topKeywords: kws.slice(0, 3),
@@ -1173,8 +1231,9 @@
             }
 
             const getUnitPriceNum = (item) => item._unitPriceNum ?? ((item.activity_price || 0.01) / (item.format_info?.pricing_basis?.total_value || 1))
+            const getUnitPrice = (item) => item._unitPriceStr ?? formatUnitPrice(getUnitPriceNum(item))
 
-            // 1. 过滤后的商品列表
+            // 1. 先计算过滤后的商品列表（与排序解耦，切换排序时无需重新过滤和重算大盘统计）
             const filteredProducts = computed(() => {
                 let arr = products.value
                 if (arr.length === 0) return []
@@ -1183,6 +1242,7 @@
                     ? debouncedNameFilter.value.split(/[\s,，]+/).filter(Boolean)
                     : []
                 const unitVal = activeUnitFilter.value
+                const commVal = activeCommissionFilter.value
                 const suspVal = activeSuspiciousFilter.value !== '' ? Number(activeSuspiciousFilter.value) : null
                 const srcVal = activeSourceFilter.value
                 const activeAttrEntries = Object.entries(activeFilters.value).filter(([, v]) => v !== '')
@@ -1190,6 +1250,8 @@
                 return arr.filter(p => {
                     if (terms.length > 0 && !terms.every(t => p._nameLower.includes(t))) return false
                     if (unitVal && p.base_unit !== unitVal) return false
+                    if (commVal === 'yes' && !p.has_commission) return false
+                    if (commVal === 'no' && p.has_commission) return false
                     if (suspVal !== null && p.is_suspicious !== suspVal) return false
                     if (srcVal && p._source_api !== srcVal) return false
                     for (let i = 0; i < activeAttrEntries.length; i++) {
@@ -1200,12 +1262,12 @@
                 })
             })
 
-            watch([activeUnitFilter, activeSuspiciousFilter, activeSourceFilter, activeFilters], () => {
+            // 监听过滤条件变化，重置分页展示数量
+            watch([activeUnitFilter, activeCommissionFilter, activeSuspiciousFilter, activeSourceFilter, activeFilters], () => {
                 displayLimit.value = PAGE_SIZE
-                saveSearchSnapshot()
             }, { deep: true })
 
-            // 2. 排序后的商品列表
+            // 2. 独立排序计算属性：保证手机端和电脑端按总价/单价排序 100% 稳定生效
             const sortedProducts = computed(() => {
                 const arr = filteredProducts.value.slice()
                 if (sortBy.value === 'price') {
@@ -1214,42 +1276,32 @@
                 return arr.sort((a, b) => (a._unitPriceNum - b._unitPriceNum) || (a._activityPriceNum - b._activityPriceNum))
             })
 
-            // 3. 当前分页可见商品
+            // 3. 当前视口渲染的商品切片
             const visibleProducts = computed(() => {
                 return sortedProducts.value.slice(0, displayLimit.value)
             })
 
-            const loadMoreProducts = () => {
-                if (displayLimit.value < sortedProducts.value.length) {
-                    displayLimit.value += PAGE_SIZE
-                }
-            }
-
             const hasActiveFilter = computed(() => {
-                return nameKeywordFilter.value.trim() !== '' ||
-                    activeUnitFilter.value !== '' ||
-                    activeSuspiciousFilter.value !== '' ||
-                    activeSourceFilter.value !== '' ||
-                    Object.values(activeFilters.value).some(val => val !== '')
+                return nameKeywordFilter.value.trim() !== '' || activeUnitFilter.value !== '' || activeCommissionFilter.value !== '' || activeSuspiciousFilter.value !== '' || activeSourceFilter.value !== '' || Object.values(activeFilters.value).some(val => val !== '')
             })
 
             const clearFilters = () => {
                 clearNameFilter()
                 activeUnitFilter.value = ''
+                activeCommissionFilter.value = 'yes'
                 activeSuspiciousFilter.value = ''
                 activeSourceFilter.value = ''
                 for (const key in activeFilters.value) {
                     activeFilters.value[key] = ''
                 }
                 displayLimit.value = PAGE_SIZE
-                saveSearchSnapshot()
             }
 
-            // 直观大盘统计：新增 maxSavePercent（买对最高能省百分比，符合日常直觉）
+            // 大盘统计仅依赖 filteredProducts，切换排序时不触发重复计算
             const stats = computed(() => {
                 const list = filteredProducts.value
                 if (list.length === 0) return {
-                    avgUnitPrice: 0, minUnitPrice: 0, maxUnitPrice: 0, maxSavePercent: 0, baseUnit: '件'
+                    avgUnitPrice: 0, minUnitPrice: 0, maxUnitPrice: 0, baseUnit: '件'
                 }
 
                 const unitCounts = {}
@@ -1269,99 +1321,26 @@
 
                 const mid = Math.floor(unitPrices.length / 2)
                 const medianPrice = unitPrices.length % 2 !== 0 ? unitPrices[mid] : (unitPrices[mid - 1] + unitPrices[mid]) / 2
-                const minP = unitPrices[0] || 0
-                const maxP = unitPrices[unitPrices.length - 1] || 0
-                const maxSavePercent = maxP > minP && maxP > 0 ? Math.round((1 - minP / maxP) * 100) : 0
 
                 return {
-                    minUnitPrice: minP,
-                    maxUnitPrice: maxP,
+                    minUnitPrice: unitPrices[0],
+                    maxUnitPrice: unitPrices[unitPrices.length - 1],
                     avgUnitPrice: medianPrice,
-                    maxSavePercent,
                     baseUnit: dominantUnit
                 }
             })
 
             const getDecisionKeywords = (item) => item.format_info?.decision_keywords || []
             const getPricingStructure = (item) => item.format_info?.pricing_basis?.structure || []
+            const getTotalValue = (item) => item.format_info?.pricing_basis?.total_value || 1
 
             const getCompareIndicator = (item) => {
                 const uPrice = getUnitPriceNum(item)
                 const avg = stats.value.avgUnitPrice
-                if (!avg || item.base_unit !== stats.value.baseUnit) return null
-                if (uPrice < avg * 0.92) return { better: true, text: `比均价省 ${Math.round((1 - uPrice / avg) * 100)}%` }
-                if (uPrice > avg * 1.15) return { better: false, text: `偏贵 ${Math.round((uPrice / avg - 1) * 100)}%` }
+                if (!avg) return null
+                if (uPrice < avg * 0.9) return {better: true, text: `比均价低 ${Math.round((1 - uPrice / avg) * 100)}%`}
+                if (uPrice > avg * 1.1) return {better: false, text: `比均价高 ${Math.round((uPrice / avg - 1) * 100)}%`}
                 return null
-            }
-
-            // ======== 核心：搜索状态快照保存与 0ms 恢复（彻底解决手机返回丢失结果问题） ========
-            const saveSearchSnapshot = () => {
-                if (!hasSearched.value || !currentKeyword.value) return
-                try {
-                    const snapshot = {
-                        keyword: keyword.value,
-                        currentKeyword: currentKeyword.value,
-                        products: products.value,
-                        availableFilters: availableFilters.value,
-                        activeFilters: activeFilters.value,
-                        activeUnitFilter: activeUnitFilter.value,
-                        activeSuspiciousFilter: activeSuspiciousFilter.value,
-                        activeSourceFilter: activeSourceFilter.value,
-                        nameKeywordFilter: nameKeywordFilter.value,
-                        debouncedNameFilter: debouncedNameFilter.value,
-                        sortBy: sortBy.value,
-                        displayLimit: displayLimit.value,
-                        scrollY: window.pageYOffset || document.documentElement.scrollTop || 0,
-                        savedAt: Date.now()
-                    }
-                    sessionStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot))
-                } catch (e) {
-                    // 忽略超大列表超出 sessionStorage 容量的异常，URL 参数依然会兜底
-                }
-            }
-
-            const restoreSearchSnapshot = (expectedKeyword = '') => {
-                try {
-                    const raw = sessionStorage.getItem(SNAPSHOT_STORAGE_KEY)
-                    if (!raw) return false
-                    const snap = JSON.parse(raw)
-                    // 缓存有效期 60 分钟
-                    if (!snap || !snap.currentKeyword || (Date.now() - (snap.savedAt || 0)) > 3600 * 1000) {
-                        return false
-                    }
-                    if (expectedKeyword && snap.currentKeyword !== expectedKeyword) {
-                        return false
-                    }
-
-                    keyword.value = snap.keyword || snap.currentKeyword
-                    currentKeyword.value = snap.currentKeyword
-                    products.value = Array.isArray(snap.products) ? snap.products : []
-                    availableFilters.value = snap.availableFilters || []
-                    activeFilters.value = snap.activeFilters || {}
-                    activeUnitFilter.value = snap.activeUnitFilter || ''
-                    activeSuspiciousFilter.value = snap.activeSuspiciousFilter || ''
-                    activeSourceFilter.value = snap.activeSourceFilter || ''
-                    nameKeywordFilter.value = snap.nameKeywordFilter || ''
-                    debouncedNameFilter.value = snap.debouncedNameFilter || ''
-                    sortBy.value = snap.sortBy || 'value'
-                    displayLimit.value = snap.displayLimit || PAGE_SIZE
-                    hasSearched.value = true
-
-                    // 同步地址栏参数，防止刷新丢失
-                    const targetUrl = `/?q=${encodeURIComponent(snap.currentKeyword)}`
-                    if (window.location.pathname === '/' && window.location.search !== `?q=${encodeURIComponent(snap.currentKeyword)}`) {
-                        window.history.replaceState({ view: 'search', q: snap.currentKeyword }, '', targetUrl)
-                    }
-
-                    nextTick(() => {
-                        if (snap.scrollY > 0) {
-                            window.scrollTo({ top: snap.scrollY, behavior: 'instant' })
-                        }
-                    })
-                    return true
-                } catch (e) {
-                    return false
-                }
             }
 
             const search = async () => {
@@ -1374,11 +1353,6 @@
                 searchInputRef.value?.blur()
                 showHeader.value = true
 
-                // 将搜索词同步到 URL 地址栏（使用 replaceState 不污染多余历史栈）
-                if (currentView.value === 'search') {
-                    window.history.replaceState({ view: 'search', q: term }, '', `/?q=${encodeURIComponent(term)}`)
-                }
-
                 try {
                     const response = await fetch(`/api/search?keyword=${encodeURIComponent(term)}`)
                     const res = await response.json()
@@ -1388,12 +1362,6 @@
                         const initialFilters = {}
                         availableFilters.value.forEach(f => initialFilters[f.attribute_name] = '')
                         activeFilters.value = initialFilters
-                        activeUnitFilter.value = ''
-                        activeSuspiciousFilter.value = ''
-                        activeSourceFilter.value = ''
-                        clearNameFilter()
-                        window.scrollTo({ top: 0, behavior: 'instant' })
-                        saveSearchSnapshot()
                     } else {
                         products.value = []
                         availableFilters.value = []
@@ -1407,33 +1375,28 @@
 
             const resetView = () => {
                 keyword.value = ''
-                currentKeyword.value = ''
                 hasSearched.value = false
                 products.value = []
                 availableFilters.value = []
                 activeFilters.value = {}
                 clearNameFilter()
                 activeUnitFilter.value = ''
+                activeCommissionFilter.value = 'yes'
                 activeSuspiciousFilter.value = ''
                 activeSourceFilter.value = ''
                 displayLimit.value = PAGE_SIZE
-                sessionStorage.removeItem(SNAPSHOT_STORAGE_KEY)
-                window.history.replaceState({ view: 'search' }, '', '/')
                 window.scrollTo({ top: 0, behavior: 'smooth' })
             }
 
-            // ======== 移动端安全的详情抽屉与返回键拦截 ========
+            // ======== 移动端友好的详情打开与返回键拦截逻辑 ========
             const openDetail = (item) => {
-                // 打开详情前先保存当前滚动条和搜索快照
-                saveSearchSnapshot()
                 showFeedbackForm.value = false
                 feedbackContent.value = ''
                 feedbackSubmitting.value = false
                 feedbackSuccess.value = false
                 selectedProduct.value = item
                 document.body.style.overflow = 'hidden'
-                // 在当前带 ?q= 的地址基础上压入详情状态
-                window.history.pushState({ view: 'search', q: currentKeyword.value, detailModal: true }, '')
+                window.history.pushState({ detailModal: true }, '')
             }
 
             const closeDetail = (fromPopState = false) => {
@@ -1449,85 +1412,21 @@
                 }
             }
 
-            const handlePopState = (event) => {
-                // 1. 如果详情抽屉正打开着，按手机返回键优先关闭详情抽屉，保留底层列表
+            const handlePopState = () => {
                 if (selectedProduct.value) {
                     closeDetail(true)
-                    return
-                }
-                // 2. 如果在常买盯价页按返回键，切回搜索页并恢复之前的搜索结果
-                if (currentView.value === 'monitor') {
+                } else if (currentView.value === 'monitor') {
                     currentView.value = 'search'
                     showHeader.value = true
-                    if (!hasSearched.value) {
-                        restoreSearchSnapshot()
-                    }
-                    return
                 }
-                // 3. 如果在搜索页触发返回，确保 URL 带有 q 或缓存存在时不丢失列表
-                const urlParams = new URLSearchParams(window.location.search)
-                const qParam = (urlParams.get('q') || '').trim()
-                if (qParam && (!hasSearched.value || currentKeyword.value !== qParam)) {
-                    if (!restoreSearchSnapshot(qParam)) {
-                        keyword.value = qParam
-                        search()
-                    }
-                }
-            }
-
-            // 监听页面隐藏/外跳 App 事件，实时保存滚动高度与搜索快照
-            const handlePageHide = () => {
-                if (hasSearched.value) {
-                    saveSearchSnapshot()
-                }
-            }
-
-            // 处理滚动与触底自动加载
-            const handleScroll = () => {
-                const currentScrollTop = window.pageYOffset || document.documentElement.scrollTop
-                const docHeight = document.documentElement.scrollHeight
-                const winHeight = window.innerHeight
-
-                if (currentView.value === 'search' && docHeight - (currentScrollTop + winHeight) < 600) {
-                    loadMoreProducts()
-                }
-
-                if (currentScrollTop <= 0) {
-                    showHeader.value = true
-                    lastScrollTop.value = currentScrollTop
-                    return
-                }
-
-                if (currentScrollTop > docHeight - winHeight) return
-                if (Math.abs(currentScrollTop - lastScrollTop.value) < 10) return
-
-                if (currentScrollTop > lastScrollTop.value && currentScrollTop > headerHeight.value) {
-                    showHeader.value = false
-                } else if (currentScrollTop < lastScrollTop.value) {
-                    showHeader.value = true
-                }
-
-                lastScrollTop.value = currentScrollTop
             }
 
             onMounted(() => {
-                setInterval(() => placeholderIndex.value++, 3500)
-
+                setInterval(() => placeholderIndex.value++, 3000)
                 if (currentView.value === 'monitor') {
                     fetchMonitors()
-                } else {
-                    // 优先检查 URL 查询词或 sessionStorage 缓存，瞬间恢复之前的状态
-                    const urlParams = new URLSearchParams(window.location.search)
-                    const urlQuery = (urlParams.get('q') || '').trim()
-
-                    if (urlQuery) {
-                        if (!restoreSearchSnapshot(urlQuery)) {
-                            keyword.value = urlQuery
-                            search()
-                        }
-                    } else {
-                        restoreSearchSnapshot()
-                    }
+                } else if (keyword.value) {
+                    search()
                 }
 
                 if (headerRef.value) {
@@ -1539,16 +1438,13 @@
                     })
                     resizeObserver.observe(headerRef.value)
                 }
-
                 window.addEventListener('scroll', handleScroll, { passive: true })
                 window.addEventListener('popstate', handlePopState)
-                window.addEventListener('pagehide', handlePageHide)
             })
 
             onUnmounted(() => {
                 window.removeEventListener('scroll', handleScroll)
                 window.removeEventListener('popstate', handlePopState)
-                window.removeEventListener('pagehide', handlePageHide)
                 if (resizeObserver && headerRef.value) {
                     resizeObserver.unobserve(headerRef.value)
                 }
@@ -1559,7 +1455,7 @@
                 currentView, monitoredList, monitorHistoryList, newMonitorKeyword,
                 monitorLoading, monitorSubmitting,
                 pendingRemoveKeyword, openRemoveConfirm, cancelRemoveMonitor, confirmRemoveMonitor,
-                fetchMonitors, addMonitorItem, removeMonitorItem,
+                fetchMonitors, addMonitorItem, removeMonitorItem, restoreMonitorItem,
                 switchView, jumpToSearch,
                 keyword, currentKeyword, products, loading, hasSearched,
                 selectedProduct, searchInputRef,
@@ -1567,12 +1463,13 @@
                 sortBy, sortOptions, changeSort, hotKeywords,
                 placeholderText, sortedProducts, visibleProducts, loadMoreProducts, stats,
                 nameKeywordFilter, clearNameFilter,
-                availableUnits, activeUnitFilter,
+                availableUnits, activeUnitFilter, activeCommissionFilter,
                 activeSuspiciousFilter,
-                availableSources, activeSourceFilter, formatSourceLabel,
+                availableSources, activeSourceFilter,
                 availableFilters, activeFilters, hasActiveFilter, clearFilters,
-                search, resetView, openDetail, closeDetail, saveSearchSnapshot,
-                getDecisionKeywords, getPricingStructure, getCompareIndicator
+                search, resetView, openDetail, closeDetail,
+                getUnitPrice, getDecisionKeywords, getPricingStructure, getTotalValue,
+                getPlatformName, getPlatformColor, getCompareIndicator
             }
         }
     }).mount('#app')
