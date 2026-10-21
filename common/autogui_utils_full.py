@@ -790,18 +790,19 @@ class PddAutomation(UIActionEngine):
                 if result:
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 【核心修复优先级】：优先判定是否处于 SKU 规格弹窗！
-                    # 只要包含 "确定" / "请选择" / "已选"，即便界面同时包含 "联系客服"，也必然是在 SKU 页面
-                    if any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
-                        detail_entered = True
-                        sku_ready = True
-                        break
-
-                    # 其次判定是否处于未展开规格的商品详情页
-                    if any(kw in detected_text for kw in ["客服", "店铺"]):
-                        detail_entered = True
-                        self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
-                        time.sleep(0.3)
+                    # 【第一阶段：严格校验原生详情页】
+                    # 必须包含 客服/店铺/收藏 且绝对不能包含 确定（杜绝上一件商品的残留弹窗误判）
+                    if not detail_entered:
+                        if any(kw in detected_text for kw in ["客服", "店铺", "收藏"]) and (
+                                "确定" not in detected_text):
+                            detail_entered = True
+                            self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
+                            time.sleep(0.3)
+                    # 【第二阶段：必须点击购买之后，才开始识别 SKU 规格抽屉】
+                    else:
+                        if any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+                            sku_ready = True
+                            break
 
             except Exception:
                 pass
