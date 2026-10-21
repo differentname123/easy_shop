@@ -1141,7 +1141,10 @@ if __name__ == "__main__":
                 kw_clean = (search_keyword or "").strip().lower()
                 if not kw_clean:
                     continue
-                words = gen_goods_segment_info(name=search_keyword)
+                # words = gen_goods_segment_info(name=search_keyword)
+
+                words = [search_keyword]
+
                 # words 示例格式为 ['娟姗','good', '鲜牛奶']
 
                 # 1. 将 words 完全展平成单个字符列表，例如 ['娟', '姗', 'g', 'o', 'o', 'd', ...]
