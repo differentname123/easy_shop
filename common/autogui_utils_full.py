@@ -458,64 +458,87 @@ class PddAutomation(UIActionEngine):
 
     def ensure_transfer_clean_state(self, max_retries=3):
         """
-        【自愈核心】检测非期望弹窗并自动消除，强行将中转站恢复至【情况2】干净状态
+        【自愈核心】检测非期望弹窗并自动消除，强行将中转站恢复至干净可操作状态
         """
         for _ in range(max_retries):
             cleaned = False
 
             # 1. 检查并修复【情况3】：不支持拖入文件弹窗
             title_unsupported = self.window.TextControl(Name="当前小程序不支持拖入文件")
-            if title_unsupported.Exists(0, 0):
-                btn_ok = self.window.TextControl(Name="确定")
-                if btn_ok.Exists(0.5, 0):
+            if title_unsupported.Exists(0.2, 0.1):
+                btn_ok = self.window.ButtonControl(Name="确定")
+                if not btn_ok.Exists(0.1, 0):
+                    btn_ok = self.window.TextControl(Name="确定")
+                if btn_ok.Exists(0.5, 0.1):
                     try:
                         btn_ok.GetInvokePattern().Invoke()
                     except Exception:
                         btn_ok.Click(simulateMove=False)
                     logger.info("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
                     cleaned = True
-                    time.sleep(0.1)
+                    time.sleep(0.4)  # 给微信淡出动画预留缓冲
 
             # 2. 检查并修复【情况1】：遗留的跳转弹窗
             title_jump = self.window.TextControl(Name="即将打开“拼多多”小程序")
-            if title_jump.Exists(0, 0):
-                btn_cancel = self.window.TextControl(Name="取消")
-                if btn_cancel.Exists(0.5, 0):
+            if title_jump.Exists(0.2, 0.1):
+                btn_cancel = self.window.ButtonControl(Name="取消")
+                if not btn_cancel.Exists(0.1, 0):
+                    btn_cancel = self.window.TextControl(Name="取消")
+                if btn_cancel.Exists(0.5, 0.1):
                     try:
                         btn_cancel.GetInvokePattern().Invoke()
                     except Exception:
                         btn_cancel.Click(simulateMove=False)
                     logger.info("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
                     cleaned = True
-                    time.sleep(0.1)
+                    time.sleep(0.5)  # 关键：给微信弹窗彻底销毁预留充足时间
 
-            # 3. 检查是否有遮挡的 wrap 容器弹窗
+            # 3. 检查是否有遮挡的 wrap 容器弹窗（必须带有确定/取消按钮才视为遮挡弹窗，防止误伤主界面布局）
             wrap_modal = self.window.GroupControl(ClassName="wrap")
-            if wrap_modal.Exists(0, 0):
-                btn_cancel = wrap_modal.TextControl(Name="取消")
-                btn_ok = wrap_modal.TextControl(Name="确定")
+            if wrap_modal.Exists(0.2, 0.1):
+                btn_cancel = wrap_modal.ButtonControl(Name="取消")
+                if not btn_cancel.Exists(0.1, 0):
+                    btn_cancel = wrap_modal.TextControl(Name="取消")
+
+                btn_ok = wrap_modal.ButtonControl(Name="确定")
+                if not btn_ok.Exists(0.1, 0):
+                    btn_ok = wrap_modal.TextControl(Name="确定")
+
                 if btn_cancel.Exists(0.2, 0):
                     try:
                         btn_cancel.GetInvokePattern().Invoke()
                     except Exception:
                         btn_cancel.Click(simulateMove=False)
+                    logger.info("[HEAL] 检测到遮挡弹窗，已点击'取消'")
                     cleaned = True
+                    time.sleep(0.4)
                 elif btn_ok.Exists(0.2, 0):
                     try:
                         btn_ok.GetInvokePattern().Invoke()
                     except Exception:
                         btn_ok.Click(simulateMove=False)
+                    logger.info("[HEAL] 检测到遮挡弹窗，已点击'确定'")
                     cleaned = True
-                time.sleep(0.1)
+                    time.sleep(0.4)
 
+            # 若本轮未检测到任何遮罩弹窗，说明已恢复干净状态，提前跳出循环
             if not cleaned:
                 break
 
-        wrap_modal = self.window.GroupControl(ClassName="wrap")
-        if wrap_modal.Exists(0, 0):
-            return False
-        return True
+        # 【核心修正】：以输入框是否可用作为环境恢复的唯一金标准！
+        # 绝不能仅凭界面存在普通的 class="wrap" 容器就误判定为弹窗异常
+        edit_box = self.window.EditControl()
+        if edit_box.Exists(1.5, 0.2):
+            return True
 
+        # 如果输入框未找到，检查是否仍有明显的弹窗标题阻挡
+        if self.window.TextControl(Name="即将打开“拼多多”小程序").Exists(0.1, 0) or \
+                self.window.TextControl(Name="当前小程序不支持拖入文件").Exists(0.1, 0):
+            return False
+
+        # 兜底：只要跳转按钮能找到，也认定为环境正常
+        jump_btn = self.window.ButtonControl(Name="跳转到该商品")
+        return jump_btn.Exists(0.5, 0.1)
     def set_transfer_goods_id(self, goods_id, max_attempts=3):
         """
         【输入与双向绑定保障】前置读取与强制清空 + 无Ctrl真实按键驱动 + 严格二次校验重试
@@ -591,7 +614,7 @@ class PddAutomation(UIActionEngine):
 
         self.force_bring_to_front()
 
-        # --- 步骤 1.5：环境自愈（确保恢复至【情况2】） ---
+        # --- 步骤 1.5：环境自愈（确保恢复至干净状态） ---
         if not self.ensure_transfer_clean_state():
             return False, [], "中转小程序存在无法自动关闭的弹窗，环境未能恢复至正常状态"
 
@@ -655,7 +678,7 @@ class PddAutomation(UIActionEngine):
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
 
-        # 将区域放大为底部 1/4，这样既能盖住详情页的“收藏/客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
+        # 将区域放大为底部 1/4，这样既能盖住详情页的“客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
         capture_region = (int(rect.left), int(rect.bottom - h // 4), int(w), int(h // 4))
         monitor = {"left": capture_region[0], "top": capture_region[1],
                    "width": capture_region[2], "height": capture_region[3]}
@@ -674,32 +697,30 @@ class PddAutomation(UIActionEngine):
                 if result:
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 状态 B：如果有 收藏/客服/店铺 中的一个且没有 确定，说明在详情页，需要点击购买
-                    if any(kw in detected_text for kw in ["收藏", "客服", "店铺"]) and "确定" not in detected_text:
-                        detail_entered = True
-                        self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
-                        time.sleep(0.3)
-                        continue
-
-                    # 状态 A：点击过购买后，识别到 确定/请选择/已选，说明已展开 SKU 详情页
+                    # 状态 A：必须是在判断过 "客服" 和 "店铺" (detail_entered 为 True) 之后，才能判断 SKU
                     if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
                         sku_ready = True
                         break
+
+                    # 状态 B：如果依然停留在详情页，则动态点击购买
+                    if any(kw in detected_text for kw in ["客服", "店铺"]):
+                        detail_entered = True
+                        self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
+                        time.sleep(0.3)
 
             except Exception:
                 pass
 
         # 轮询结束，进行结果清算
+        # 【关键保护】：失败时不触发 self.click_home_button()，保留滑块验证现场给 solve_pdd_captcha()
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.click_home_button()
             return False, [], "进入详情页失败"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.click_home_button()
             return False, [], "SKU面板未完全展开或点击全部失效"
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
@@ -718,6 +739,7 @@ class PddAutomation(UIActionEngine):
             logger.info("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, sku_info, ""
+
 
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
@@ -788,7 +810,20 @@ def batch_runner(product_list):
                         upsert=False
                     )
                     logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
-                    solve_pdd_captcha()
+
+                    # 【核心修复时序】：现场保留在拼多多窗口，先解滑块，再点击回到首页复位！
+                    try:
+                        bot.window_name = TARGET_APP_NAME
+                        if bot.find_window(timeout=1):
+                            bot.force_bring_to_front()
+                        logger.info("[CAPTCHA] 正在尝试检测并解决拼多多滑块验证码...")
+                        solve_pdd_captcha()
+                    except Exception as cap_err:
+                        logger.info(f"[WARN] 尝试解决滑块验证码时发生异常: {cap_err}")
+                    finally:
+                        # 无论是否触发滑块或滑块是否通过，都在此时复位回首页，确保下次跳转不会串台
+                        bot.click_home_button()
+
                     logger.info("-" * 40)
                     time.sleep(10)
                     batch_counts["failed"] += 1
@@ -836,6 +871,7 @@ def batch_runner(product_list):
     logger.info("=" * 50)
     logger.info(f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
     logger.info("=" * 50)
+
 
 def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
     """
