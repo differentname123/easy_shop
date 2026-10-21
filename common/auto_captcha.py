@@ -1,6 +1,6 @@
 import ctypes
 
-from common.common_utils import setup_logger
+from common.common_utils import setup_logger, read_file_to_str, string_to_object
 from common.model_api import generate_content
 
 # 强行开启进程 DPI 感知，防止屏幕 125%/150% 缩放导致坐标错位
@@ -482,12 +482,7 @@ def llm_recognize_best_match(image_paths):
     fallback_index = (total - 1) // 2
 
     # ---------- 优化提示词：强约束输出格式，降低解析难度 ----------
-    prompt = (
-        "这些图片是滑块验证码滑动过程中的逐帧截图，拼图在左侧，缺口在右侧。"
-        "请找出拼图块与缺口完全对齐、匹配度最高的那一张图片。"
-        "**严格要求**：只返回对应图片的完整文件名（例如 step_05.png），"
-        "禁止输出任何解释、说明、序号、标点或其他多余内容。"
-    )
+    prompt_text = read_file_to_str(r'W:\project\python_project\easy_shop\prompt\找到最匹配的滑动验证截图.txt')
 
     max_retries = 2  # 最大重试次数，应对偶发接口故障
     best_index = None
@@ -497,44 +492,18 @@ def llm_recognize_best_match(image_paths):
         try:
             logger.info(f"[INFO] 第 {attempt + 1} 次调用多模态大模型识别...")
             result = generate_content(
-                prompt=prompt,
+                prompt=prompt_text,
                 model="gemini-web-3.5-flash-lite-thinking",
                 file_paths=image_paths
             )
             result = result.get("content")
-            # 空结果/非字符串结果校验
-            if not result or not isinstance(result, str):
-                logger.info(f"[WARN] 第 {attempt + 1} 次返回结果为空或格式错误")
-                time.sleep(0.5)
-                continue
+            result = string_to_object(result)
+            best_index = result.get("best_image_index")
 
-            result_text = result.strip()
-            text_lower = result_text.lower()
-
-            # ---------- 多层鲁棒解析 ----------
-            # 第1层：匹配文件名（支持带/不带后缀、不区分大小写）
-            for idx, path in enumerate(image_paths):
-                filename = os.path.basename(path)
-                name_no_ext = os.path.splitext(filename)[0]
-                if filename.lower() in text_lower or name_no_ext.lower() in text_lower:
-                    best_index = idx
-                    break
-
-            # 第2层：提取数字序号（兼容返回「第X张」「X号」等不规范格式）
-            if best_index is None:
-                num_matches = re.findall(r'\d+', result_text)
-                for num_str in num_matches:
-                    num = int(num_str)
-                    if 1 <= num <= total:
-                        best_index = num - 1  # 转为0-based索引
-                        break
 
             # 解析成功直接跳出重试
             if best_index is not None:
                 break
-            else:
-                logger.info(f"[WARN] 第 {attempt + 1} 次返回结果无法解析：{result_text[:50]}...")
-                time.sleep(0.5)
 
         except Exception as e:
             logger.info(f"[ERROR] 第 {attempt + 1} 次大模型调用异常：{str(e)}")
@@ -987,4 +956,11 @@ def check_captcha_exist(window_rect):
         return True, "unknown"
 
 if __name__ == "__main__":
-    solve_pdd_captcha(max_retries=5)
+    image_paths = []
+    for step in range(1, 10 + 1):
+        img_path = f"temp_data/step_{step}.png"
+        image_paths.append(img_path)
+
+
+
+    llm_recognize_best_match(image_paths)
