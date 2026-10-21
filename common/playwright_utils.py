@@ -712,7 +712,7 @@ if __name__ == "__main__":
     # USER_DATA_DIR = r"W:\\project\\python_project\\easy_shop\\temp_data\\browser_data\\taobao_browser_myself"
     # TEST_URL = "https://pub.alimama.com/portal/v2/pages/promo/goods/index.htm"
     #
-    # # 场景二：携带环境自由操作 (按需打开) 拼多多 多人团 网页版
+    # # 场景二：携带环境自由操作 (按需打开) 淘宝联盟 网页版
     # open_browser_for_manual_use(
     #     user_data_dir=USER_DATA_DIR,
     #     home_url=TEST_URL
@@ -720,7 +720,7 @@ if __name__ == "__main__":
 
 
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
-    USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
+    USER_DATA_DIR = r"W:\temp\biance_pdd_mama"
 
 
 

@@ -1140,7 +1140,7 @@ if __name__ == "__main__":
                 kw_clean = (search_keyword or "").strip().lower()
                 if not kw_clean:
                     continue
-                words = gen_goods_segment_info(name=search_keyword)
+                words = gen_goods_segment_info(name=search_keyword, top_key=2)
                 clean_words = []
                 if isinstance(words, (list, tuple, set)):
                     clean_words = [str(w).strip().lower() for w in words if str(w).strip()]
