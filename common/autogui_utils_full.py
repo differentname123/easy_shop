@@ -325,6 +325,18 @@ class UIActionEngine:
         self.window = None
         self.hwnd = 0
 
+    @staticmethod
+    def release_modifier_keys():
+        """【防按键粘连核心】强制向系统发送 Ctrl/Shift/Alt 的 KeyUp 弹起事件，彻底解决 Ctrl 粘连"""
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            # 0x11: VK_CONTROL, 0x10: VK_SHIFT, 0x12: VK_MENU (Alt)
+            for vk in (0x11, 0x10, 0x12):
+                user32.keybd_event(vk, 0, 2, 0)  # 2 表示 KEYEVENTF_KEYUP
+        except Exception:
+            pass
+
     def find_window(self, timeout=3):
         self.window = auto.WindowControl(searchDepth=1, Name=self.window_name)
         if self.window.Exists(timeout, 1):
@@ -358,13 +370,17 @@ class UIActionEngine:
         auto.Click(int(x), int(y))
 
     def safe_input(self, text, desc=""):
-        """极速输入：通过剪贴板瞬发，规避敲击延迟"""
+        """极速输入：通过剪贴板瞬发，带修饰键自动安全释放，杜绝 Ctrl 卡住"""
         if desc:
             logger.info(f"[INFO] 执行输入: {desc}")
-        pyperclip.copy(text)
-        auto.SendKeys('{Ctrl}v')
-        time.sleep(0.01)
-        auto.SendKeys('{Enter}')
+        try:
+            self.release_modifier_keys()
+            pyperclip.copy(text)
+            auto.SendKeys('{Ctrl}v')
+            time.sleep(0.01)
+            auto.SendKeys('{Enter}')
+        finally:
+            self.release_modifier_keys()
 
     def fast_screenshot_save(self, save_path, region=None):
         """使用 mss 极速保存全图/区域截图"""
@@ -510,7 +526,7 @@ class PddAutomation(UIActionEngine):
 
             if not cleaned:
                 break
-
+        time.sleep(0.3)
         wrap_modal = self.window.GroupControl(ClassName="wrap")
         if wrap_modal.Exists(0, 0):
             return False
@@ -518,43 +534,77 @@ class PddAutomation(UIActionEngine):
 
     def set_transfer_goods_id(self, goods_id, max_attempts=3):
         """
-        【输入与双向绑定保障】真实按键事件驱动 + 严格值校验，彻底规避双向绑定不更新及张冠李戴
+        【输入与双向绑定保障】严密防粘连清空机制 + 真实按键事件驱动 + 严格值校验，杜绝 Ctrl 粘连与张冠李戴
         """
         target_str = str(goods_id).strip()
         edit_box = self.window.EditControl()
         if not edit_box.Exists(2, 1):
             return False, "无法定位中转小程序的输入框"
 
+        current_val = ""
         for attempt in range(1, max_attempts + 1):
-            edit_box.Click(simulateMove=False)
-            time.sleep(0.02)
+            try:
+                self.release_modifier_keys()
+                edit_box.Click(simulateMove=False)
+                time.sleep(0.02)
 
-            auto.SendKeys('{Ctrl}a{Delete}')
-            time.sleep(0.02)
+                # 1. 前置读取：如果当前值已完全等于目标值，无需重复输入
+                cur_before = self.get_control_text(edit_box).strip()
+                if cur_before == target_str:
+                    return True, ""
 
-            pyperclip.copy(target_str)
-            auto.SendKeys('{Ctrl}v')
-            time.sleep(0.02)
+                # 2. 深度强制清空，杜绝字符串追加粘连
+                try:
+                    vp = edit_box.GetValuePattern()
+                    if vp:
+                        vp.SetValue("")
+                except Exception:
+                    pass
 
-            auto.SendKeys(' {Back}')
-            time.sleep(0.03)
+                # 配合按键清空并立即释放 Ctrl
+                auto.SendKeys('{Ctrl}a{Delete}')
+                self.release_modifier_keys()
+                time.sleep(0.02)
 
-            current_val = self.get_control_text(edit_box).strip()
-            if current_val == target_str:
-                return True, ""
+                # 校验是否清空彻底，若依然有残留字符，采用退格键强行抹除
+                remained = self.get_control_text(edit_box).strip()
+                if remained:
+                    auto.SendKeys('{End}' + '{Back}' * (len(remained) + 3))
+                    time.sleep(0.02)
 
-            logger.info(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
+                # 3. 写入目标内容并触发双向绑定
+                pyperclip.copy(target_str)
+                auto.SendKeys('{Ctrl}v')
+                self.release_modifier_keys()
+                time.sleep(0.02)
 
-            edit_box.Click(simulateMove=False)
-            time.sleep(0.02)
-            auto.SendKeys('{Ctrl}a{Delete}')
-            time.sleep(0.02)
-            auto.SendKeys(target_str)
-            time.sleep(0.03)
+                # 触发 Vue / 小程序数据绑定变更事件
+                auto.SendKeys(' {Back}')
+                time.sleep(0.03)
 
-            current_val = self.get_control_text(edit_box).strip()
-            if current_val == target_str:
-                return True, ""
+                # 4. 严格二次校验
+                current_val = self.get_control_text(edit_box).strip()
+                if current_val == target_str:
+                    return True, ""
+
+                logger.info(f"[WARN] 输入校验不匹配 (期望: '{target_str}', 实际: '{current_val}')，尝试第 {attempt} 次全按键重输")
+
+                # 重试方案：纯物理单字符键入前再次彻底清空
+                edit_box.Click(simulateMove=False)
+                time.sleep(0.02)
+                auto.SendKeys('{Ctrl}a{Delete}')
+                self.release_modifier_keys()
+                time.sleep(0.02)
+                auto.SendKeys(target_str)
+                auto.SendKeys(' {Back}')
+                time.sleep(0.03)
+
+                current_val = self.get_control_text(edit_box).strip()
+                if current_val == target_str:
+                    return True, ""
+
+            finally:
+                self.release_modifier_keys()
 
         return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
 
@@ -652,12 +702,14 @@ class PddAutomation(UIActionEngine):
                 if result:
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 状态 A：必须是在判断过 "客服" 和 "店铺" (detail_entered 为 True) 之后，才能判断 SKU
-                    if detail_entered and any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+                    # 【核心修复优先级】：优先判定是否处于 SKU 规格弹窗！
+                    # 只要包含 "确定" / "请选择" / "已选"，即便界面同时包含 "联系客服"，也必然是在 SKU 页面
+                    if any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
+                        detail_entered = True
                         sku_ready = True
                         break
 
-                    # 状态 B：如果依然停留在详情页，则动态点击购买
+                    # 其次判定是否处于未展开规格的商品详情页
                     if any(kw in detected_text for kw in ["客服", "店铺"]):
                         detail_entered = True
                         self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
@@ -667,17 +719,15 @@ class PddAutomation(UIActionEngine):
                 pass
 
         # 轮询结束，进行结果清算
+        # 【核心修复】：超时失败时绝不能提前点击 click_home_button()，保留现场供验证码 solve_pdd_captcha 识别！
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
             return False, [], "进入详情页失败"
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            self.click_home_button()  # <---【仅加这一行】超时失败立刻回首页，消灭旧页面
-
             return False, [], "SKU面板未完全展开或点击全部失效"
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
@@ -767,7 +817,13 @@ def batch_runner(product_list):
                         upsert=False
                     )
                     logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
+
+                    # 【核心修复时序】：
+                    # 1. 此时拼多多仍停留在失败现场（滑块页面未被提前摧毁），先执行滑块破解
                     solve_pdd_captcha()
+                    # 2. 验证码处理完毕后，再将拼多多复位回首页，确保下次任务不受旧页面干扰
+                    bot.click_home_button()
+
                     logger.info("-" * 40)
                     time.sleep(10)
                     batch_counts["failed"] += 1
@@ -776,6 +832,7 @@ def batch_runner(product_list):
 
         except Exception as e:
             logger.info(f"[FATAL] 💥 发生严重异常: {str(e)}")
+            bot.release_modifier_keys()  # 异常发生时兜底释放修饰键
             batch_counts["failed"] += 1
             consecutive_successes = 0
             consecutive_failures += 1
