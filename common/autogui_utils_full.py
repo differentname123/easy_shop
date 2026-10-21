@@ -49,9 +49,19 @@ for d in [SKU_DEBUG_DIR, ERROR_DIR]:
 # 实例化电竞级截图抓取器 (全局单例，极速)
 sct = mss()
 
-logger.info("[SYSTEM] 正在初始化 RapidOCR 轻量级引擎...")
-ocr = RapidOCR()
+logger.info("[SYSTEM] 正在初始化 RapidOCR 极速引擎与强力引擎...")
+# 1. 极速引擎：负责高频轮询与全屏稳定切框，0 粘连、速度快
+ocr_fast = RapidOCR()
 
+# 2. 强力引擎：高分辨率 + 高召回率，专门对付红字、微小价格、难缠字体
+ocr_strong = RapidOCR(
+    params={
+        "det_limit_side_len": 2000,
+        "det_limit_type": "max",
+        "det_db_unclip_ratio": 1.75,
+        "det_db_box_thresh": 0.45,
+    }
+)
 
 # ==========================================
 # 🔍 SKU 规格与价格极速提取模块
@@ -67,9 +77,9 @@ def _capture_full_window(window):
     return cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR), left, top
 
 
-def _run_ocr(img_bgr):
-    """执行 OCR 并返回结构化文本块列表（关闭方向分类器以提速）"""
-    res, _ = ocr(img_bgr, use_cls=False)
+def _run_ocr(img_bgr, engine=ocr_fast):
+    """执行 OCR 并返回结构化文本块列表"""
+    res, _ = engine(img_bgr, use_cls=False)
     items = []
     for line in (res or []):
         pts, text = line[0], str(line[1]).strip()
@@ -92,40 +102,55 @@ def _is_box_selected(img_bgr, box):
 
 
 def _extract_price_fast(img_bgr, price_anchor, save_path=None):
-    """截取价格单行区域，自适应切除右侧空白后直接整行识别（不切框、零特判）"""
+    """先用常规引擎整行快速识别，若失败立即激活强力配置引擎重检"""
     h_img, w_img = img_bgr.shape[:2]
     px, py, pw, ph = price_anchor
 
-    # 1. 上下留 4px 余量防切边，初筛截取到窗口 0.85 宽度（避开最右侧关闭按钮 'X'）
-    crop = img_bgr[max(0, py - 4):min(h_img, py + ph + 4), max(0, px - 4):int(w_img * 0.85)]
-
-    # 2. 自适应切除右侧纯白背景：无论这行字有多长，精准裁到最后一个非白像素为止
+    # 基础裁剪
+    crop = img_bgr[max(0, py - 6):min(h_img, py + ph + 6), max(0, px - 8):int(w_img * 0.85)]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     non_white_cols = np.where(np.min(gray, axis=0) < 235)[0]
     if len(non_white_cols) > 0:
-        crop = crop[:, :min(crop.shape[1], int(non_white_cols[-1]) + 6)]
+        crop = crop[:, max(0, int(non_white_cols[0]) - 4):min(crop.shape[1], int(non_white_cols[-1]) + 6)]
 
-    # =====================【仅在这里加这一行，放大 2 倍】=====================
-    crop = cv2.resize(crop, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-    # =====================================================================
+    crop_2x = cv2.resize(crop, (0, 0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    padded = cv2.copyMakeBorder(crop_2x, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=(255, 255, 255))
 
-    padded = cv2.copyMakeBorder(crop, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    # ==================== 1. 尝试常规极速通道 (ocr_fast) ====================
+    res, _ = ocr_fast(padded, use_det=False, use_cls=False)
+    if res:
+        text = str(res[0][0]).strip().replace("¥", "￥")
+        if re.match(r"^\d", text):
+            text = "￥" + text
+        # 白名单提取：必须是合规价格
+        m = re.search(r"￥\s*\d+(\.\d+)?(\s*-\s*\d+(\.\d+)?)?", text)
+        if m:
+            if save_path:
+                cv2.imencode(".png", padded)[1].tofile(save_path)
+            return m.group(0).replace(" ", "")
 
-    # 3. 保存用于识别价格的图片，方便排查
-    if save_path:
-        ok, buf = cv2.imencode(".png", padded, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        if ok:
-            buf.tofile(save_path)
+    # ==================== 2. 【激活强力配置】 (ocr_strong 介入) ====================
+    # 注意：此时必须 use_det=True！你的 det_limit_side_len=2000 等强力参数才能真正生效跑起来！
+    res_strong, _ = ocr_strong(padded, use_det=True, use_cls=False)
+    if res_strong:
+        # 将强力检测到的所有文本块拼接起来分析
+        full_text = "".join([str(line[1]).strip().replace("¥", "￥") for line in res_strong])
 
-    # 4. 核心：use_det=False 关闭切框检测，整行直接识别（完全保持你原来的代码）
-    res, _ = ocr(padded, use_det=False, use_cls=False)
-    if not res:
-        return ""
+        # 尝试标准匹配
+        m_strong = re.search(r"￥\s*\d+(\.\d+)?(\s*-\s*\d+(\.\d+)?)?", full_text)
+        if m_strong:
+            if save_path:
+                cv2.imencode(".png", padded)[1].tofile(save_path)
+            return m_strong.group(0).replace(" ", "")
 
-    text = str(res[0][0]).strip().replace("¥", "￥")
-    idx = text.find("￥")
-    return text[idx:].strip() if idx != -1 else text
+        # 如果符号仍然漏检，提取纯数字金额（严格杜绝吞7漏洞）
+        nums = re.findall(r"\d+\.\d+|\d+", full_text)
+        if nums:
+            if save_path:
+                cv2.imencode(".png", padded)[1].tofile(save_path)
+            return f"￥{nums[0]}"
 
+    return ""
 
 def _is_box_disabled(img_bgr, box):
     """判断未选中的 SKU 框是否处于缺货/置灰不可选状态（灰底浅灰字，无深色前景像素）"""
@@ -144,11 +169,27 @@ def _is_box_disabled(img_bgr, box):
 def _parse_detail_page(img_bgr):
     """验证详情页并一次性解析价格锚点、规格分类及所有 SKU 框完整内容"""
     h_img, w_img = img_bgr.shape[:2]
-    ocr_items = _run_ocr(img_bgr)
+    # 全屏常规扫描依然使用 ocr_fast，保证规格框不粘连
+    ocr_items = _run_ocr(img_bgr, engine=ocr_fast)
 
     confirm_y = next((i["box"][1] for i in ocr_items if "确定" in i["text"] and i["cy"] > h_img * 0.80), None)
+
+    # 1. 常规寻找价格
     price_boxes = [i["box"] for i in ocr_items if
                    ("￥" in i["text"] or "¥" in i["text"]) and (h_img * 0.18 < i["cy"] < h_img * 0.55)]
+
+    # 2. 【核心隔离唤醒】：如果连确定按钮都在，但唯独 price_boxes 瞎了，让 ocr_strong 介入
+    if confirm_y is not None and not price_boxes:
+        # 仅拿强力引擎在价格大概区间 (0.18~0.55) 重新透视扫描
+        strong_items = _run_ocr(img_bgr[int(h_img * 0.18):int(h_img * 0.55), :], engine=ocr_strong)
+        for item in strong_items:
+            # 还原全局 Y 坐标
+            bx, by, bw, bh = item["box"]
+            real_box = (bx, int(by + h_img * 0.18), bw, bh)
+            real_cy = real_box[1] + bh / 2.0
+            t = item["text"]
+            if any(sym in t for sym in ["￥", "¥", "券后", "折后", "拼单"]) and re.search(r"\d", t):
+                price_boxes.append(real_box)
 
     if confirm_y is None or not price_boxes:
         return False, None, []
@@ -157,16 +198,15 @@ def _parse_detail_page(img_bgr):
     price_anchor = price_boxes[0]
     _, py, _, _ = price_anchor
 
-    # 确定规格区上边界：跳过价格、促销框、“已选”及数量加减行
+    # --- 下面所有的 SKU 提取代码原封不动，安全度 100% ---
     sku_top = py + 140
     for item in ocr_items:
         if "已选" in item["text"] and py < item["cy"] < py + 150:
             sku_top = max(sku_top, int(item["box"][1] + item["box"][3] + 50))
 
-    # 分别构建已选中（浅粉）与未选中（浅灰）掩码
     b, g, r = cv2.split(img_bgr)
     pink_mask = ((r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & (
-                (r.astype(np.int16) - b.astype(np.int16)) >= 5)).astype(np.uint8) * 255
+            (r.astype(np.int16) - b.astype(np.int16)) >= 5)).astype(np.uint8) * 255
     max_c, min_c = np.maximum(np.maximum(b, g), r), np.minimum(np.minimum(b, g), r)
     gray_mask = ((min_c >= 240) & (max_c <= 249) & ((max_c - min_c) <= 4)).astype(np.uint8) * 255
 
@@ -184,7 +224,6 @@ def _parse_detail_page(img_bgr):
 
     raw_boxes.sort(key=lambda b: (b[1] // 18, b[0]))
 
-    # 匹配每个 SKU 框内的所有 OCR 文本块，按先上后下、先左后右排序拼接（兼容多行规格文本）
     used_ocr = set()
     sku_items = []
     for bx, by, bw, bh in raw_boxes:
@@ -201,7 +240,6 @@ def _parse_detail_page(img_bgr):
     if not sku_items:
         return True, price_anchor, []
 
-    # 提取左侧未被 SKU 框消费的文字作为规格类型标题
     cat_top = max(py + 120, min(i["box"][1] for i in sku_items) - 65)
     categories = []
     for idx, item in enumerate(ocr_items):
@@ -221,7 +259,6 @@ def _parse_detail_page(img_bgr):
         target_cat["items"].append(sku)
 
     return True, price_anchor, [c for c in categories if c["items"]]
-
 
 def get_pdd_sku_info(id, debug=True):
     """
@@ -459,7 +496,7 @@ class UIActionEngine:
         img_cv = cv2.cvtColor(np.array(sct_img), cv2.COLOR_BGRA2BGR)
         cv2.imwrite(save_path, img_cv)
 
-    def safe_ocr_wait(self, target_texts, timeout=5, region=None):
+    def safe_ocr_wait(self, target_texts, timeout=5, region=None, ocr=ocr_fast):
         """【性能核心】基于 mss 的超高频视觉捕捉！毫秒级响应"""
         if isinstance(target_texts, str):
             target_texts = [target_texts]
@@ -687,7 +724,7 @@ class PddAutomation(UIActionEngine):
 
         return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
 
-    def process_single_goods(self, goods_id, index, consecutive_successes=0):
+    def process_single_goods(self, goods_id, index, consecutive_successes=0, ocr=ocr_fast):
         # --- 步骤 1：确立中转站据点 ---
         self.window_name = TRANSFER_APP_NAME
 
