@@ -524,8 +524,11 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
         if source in item:
             record[target] = round((item[source] or 0) / 100, 2)
 
-    act_price = record.get("activity_price", 0.0)
-
+    # 【修复】：多多进宝 API 的 min_group_price 为券前拼团价，需减去 coupon_discount (saved_price) 得到真实券后价
+    raw_group_price = record.get("activity_price", 0.0)
+    saved_price = record.get("saved_price", 0.0)
+    act_price = round(max(0.0, raw_group_price - saved_price), 2)
+    record["activity_price"] = act_price
     # 统一构造默认单规格 sku_info，并增加 need_update_sku 字段
     record["sku_info"] = [
         {
