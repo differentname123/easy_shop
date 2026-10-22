@@ -384,15 +384,17 @@
                         <span>✓ 真人已核实</span>
                     </button>
 
-                    <!-- 3. 计量单位切换（有多个单位时才显示） -->
-                    <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
+                    <!-- 3. 计量单位切换（显示单位及对应规格数量，默认选中数量最多单位） -->
+                    <div v-if="unitOptions.length > 0" class="flex-shrink-0 relative">
                         <select
                             v-model="activeUnitFilter"
                             class="appearance-none h-[30px] bg-white border text-xs font-bold rounded-full pl-2.5 pr-6 outline-none transition-all cursor-pointer"
                             :class="activeUnitFilter ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-zinc-200/90 text-zinc-700'"
                         >
-                            <option value="">按单位 ({{ stats.baseUnit }})</option>
-                            <option v-for="unit in availableUnits" :key="unit" :value="unit">只看按「{{ unit }}」算</option>
+                            <option value="">全部单位 (共 {{ products.length }} 款)</option>
+                            <option v-for="item in unitOptions" :key="item.unit" :value="item.unit">
+                                按「{{ item.unit }}」算 ({{ item.count }}款)
+                            </option>
                         </select>
                         <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1312,9 +1314,21 @@
                 return (!isNaN(minV) && minV > 0) || (!isNaN(maxV) && maxV > 0)
             })
 
+            // 统计并按数量从大到小排列各个规格单位及其款数
+            const unitOptions = computed(() => {
+                const counts = {}
+                const list = products.value
+                for (let i = 0; i < list.length; i++) {
+                    const u = list[i].base_unit || '件'
+                    counts[u] = (counts[u] || 0) + 1
+                }
+                return Object.keys(counts)
+                    .sort((a, b) => counts[b] - counts[a])
+                    .map(u => ({ unit: u, count: counts[u] }))
+            })
+
             const availableUnits = computed(() => {
-                const units = products.value.map(p => p.base_unit).filter(Boolean)
-                return [...new Set(units)]
+                return unitOptions.value.map(item => item.unit)
             })
 
             const toggleConfirmedOnly = () => {
@@ -1484,7 +1498,19 @@
                         const initialFilters = {}
                         availableFilters.value.forEach(f => initialFilters[f.attribute_name] = '')
                         activeFilters.value = initialFilters
-                        activeUnitFilter.value = ''
+
+                        // 自动定位并默认选中数量最多的规格单位（如搜索可乐时默认选 ml）
+                        let dominant = res.dominant_unit || ''
+                        if (!dominant && products.value.length > 0) {
+                            const counts = {}
+                            products.value.forEach(p => {
+                                const u = p.base_unit || '件'
+                                counts[u] = (counts[u] || 0) + 1
+                            })
+                            dominant = Object.keys(counts).reduce((a, b) => counts[a] >= counts[b] ? a : b, '')
+                        }
+                        activeUnitFilter.value = dominant
+
                         activeSuspiciousFilter.value = ''
                         clearNameFilter()
                         clearExcludeFilter()
@@ -1706,7 +1732,7 @@
                 nameKeywordFilter, clearNameFilter,
                 excludeKeywordFilter, clearExcludeFilter,
                 minPriceFilter, maxPriceFilter, hasPriceFilter, clearPriceFilter,
-                availableUnits, activeUnitFilter,
+                availableUnits, unitOptions, activeUnitFilter,
                 activeSuspiciousFilter, toggleConfirmedOnly,
                 availableFilters, activeFilters, hasActiveFilter, clearFilters,
                 search, resetView, openDetail, closeDetail, saveSearchSnapshot,

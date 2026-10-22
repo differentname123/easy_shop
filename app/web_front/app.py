@@ -247,7 +247,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         search_terms = [target_kw]
 
     if not search_terms:
-        return {"results": [], "filters": []}
+        return {"results": [], "dominant_unit": "", "unit_counts": {}, "filters": []}
 
     # 读取已反馈有误的商品列表，用于后续过滤
     with feedback_file_lock:
@@ -540,14 +540,25 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             }
         })
 
+    # 统计最终所有商品归一化后的规格单位数量，并选出数量最多的规格单位
+    unit_counts = {}
+    for p in response_products:
+        u = p.get("base_unit") or "件"
+        unit_counts[u] = unit_counts.get(u, 0) + 1
+
+    dominant_unit = ""
+    if unit_counts:
+        dominant_unit = max(unit_counts.items(), key=lambda x: x[1])[0]
+
     return {
         "results": response_products,
+        "dominant_unit": dominant_unit,
+        "unit_counts": unit_counts,
         "filters": [
             {"attribute_name": item["attribute_name"], "options": item["options"]}
             for item in top_filters
         ]
     }
-
 
 # ============== 商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
@@ -877,9 +888,10 @@ def api_search(keyword: str = "方便面", hours: int = 72):
     return {
         "status": "success",
         "data": search_data["results"],
+        "dominant_unit": search_data.get("dominant_unit", ""),
+        "unit_counts": search_data.get("unit_counts", {}),
         "filters": search_data["filters"]
     }
-
 
 # 2. 网页路由配置
 @app.get("/", response_class=HTMLResponse)
