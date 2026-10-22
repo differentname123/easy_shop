@@ -928,7 +928,7 @@ class PddAutomation(UIActionEngine):
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
                     # 1. 【优先检查终止态】：只要底部出现了“确定”或“确认”，说明 SKU 面板已成功展开
-                    if any(kw in detected_text for kw in ["确定", "确认"]):
+                    if detail_entered and any(kw in detected_text for kw in ["确定", "确认"]):
                         sku_ready = True
                         logger.info(f"[INFO] ✅ 检测到 SKU 面板已完全展开 (耗时: {time.time() - start_time:.2f}s)")
                         break
