@@ -52,6 +52,12 @@
             --sab: env(safe-area-inset-bottom);
         }
 
+        html {
+            font-size: 16px;
+            -webkit-text-size-adjust: 100%;
+            text-size-adjust: 100%;
+        }
+
         * {
             -webkit-tap-highlight-color: transparent;
             box-sizing: border-box;
@@ -63,6 +69,29 @@
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* 移除移动端 search 输入框自带的原生装饰与清除图标，防止挤压输入文字可视区 */
+        input[type="search"] {
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        input[type="search"]::-webkit-search-decoration,
+        input[type="search"]::-webkit-search-cancel-button,
+        input[type="search"]::-webkit-search-results-button,
+        input[type="search"]::-webkit-search-results-decoration {
+            display: none;
+            -webkit-appearance: none;
+        }
+
+        /* 移除数字输入框上下微调箭头，保证价格胶囊紧凑清晰 */
+        input[type="number"]::-webkit-inner-spin-button,
+        input[type="number"]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
         }
 
         /* 隐藏滚动条但保留顺滑滚动 */
@@ -144,19 +173,19 @@
         class="fixed left-0 right-0 top-0 z-40 glass-header border-b border-zinc-200/70 pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-out"
         :class="showHeader ? 'translate-y-0' : '-translate-y-full'"
     >
-        <div class="max-w-4xl mx-auto px-3.5 sm:px-6 py-2.5 sm:py-3.5">
-            <div class="flex items-center gap-2 sm:gap-3 w-full">
+        <div class="max-w-4xl mx-auto px-3 sm:px-6 py-2 sm:py-3">
+            <div class="flex items-center gap-1.5 sm:gap-3 w-full">
                 <!-- 品牌标识（点击回到初始状态） -->
                 <div class="cursor-pointer hidden sm:flex flex-col flex-shrink-0 mr-1" @click="switchView('search'); resetView()">
                     <h1 class="text-lg font-extrabold leading-none tracking-tight text-zinc-900">智惠比价</h1>
                     <span class="text-[10px] font-semibold text-zinc-400 mt-0.5">算清每份多少钱</span>
                 </div>
 
-                <!-- 搜索输入框 -->
+                <!-- 搜索输入框（固定紧凑高度 + 保障小屏与大字号手机完整显示输入内容） -->
                 <form @submit.prevent="switchView('search'); search()" class="flex-1 min-w-0">
-                    <div class="flex items-center bg-zinc-100/90 focus-within:bg-white border border-transparent focus-within:border-brand-600 focus-within:ring-2 focus-within:ring-brand-600/15 rounded-2xl transition-all duration-200">
-                        <div class="pl-3.5 text-zinc-400 flex-shrink-0">
-                            <svg class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <div class="flex items-center h-[38px] sm:h-[42px] bg-zinc-100/90 focus-within:bg-white border border-transparent focus-within:border-brand-600 focus-within:ring-2 focus-within:ring-brand-600/15 rounded-xl sm:rounded-2xl transition-all duration-200">
+                        <div class="pl-2.5 sm:pl-3.5 text-zinc-400 flex-shrink-0">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2"
                                       d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                             </svg>
@@ -168,13 +197,13 @@
                             enterkeyhint="search"
                             :placeholder="placeholderText"
                             @focus="showHeader = true"
-                            class="w-full bg-transparent border-none focus:ring-0 py-2.5 sm:py-3 px-2.5 text-[15px] font-medium text-zinc-900 outline-none placeholder-zinc-400"
+                            class="flex-1 min-w-0 w-full h-full bg-transparent border-none focus:ring-0 px-2 text-[14px] sm:text-[15px] font-medium text-zinc-900 outline-none placeholder-zinc-400"
                         >
                         <button
                             v-if="keyword"
                             type="button"
                             @click="keyword = ''; $refs.searchInputRef.focus()"
-                            class="p-1.5 text-zinc-400 active:text-zinc-600 flex-shrink-0"
+                            class="p-1 text-zinc-400 active:text-zinc-600 flex-shrink-0"
                             aria-label="清空输入"
                         >
                             <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
@@ -186,23 +215,23 @@
                         <button
                             type="submit"
                             :disabled="loading"
-                            class="mr-1.5 px-3.5 sm:px-4 py-1.5 sm:py-2 bg-brand-600 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm active:scale-95 transition-all disabled:opacity-50 flex-shrink-0"
+                            class="mr-1 px-2.5 sm:px-3.5 h-[28px] sm:h-[32px] bg-brand-600 text-white rounded-lg sm:rounded-xl text-[12px] sm:text-xs font-bold shadow-sm active:scale-95 transition-all disabled:opacity-50 flex-shrink-0 whitespace-nowrap"
                         >
                             {{ loading ? '计算中' : '算单价' }}
                         </button>
                     </div>
                 </form>
 
-                <!-- 常买清单（原商品监控）切换按钮 -->
+                <!-- 常买清单切换按钮 -->
                 <button
                     type="button"
                     @click="switchView(currentView === 'monitor' ? 'search' : 'monitor')"
-                    class="flex-shrink-0 flex items-center gap-1 px-3 py-2.5 rounded-2xl text-xs sm:text-sm font-bold border transition-all active:scale-95"
+                    class="flex-shrink-0 flex items-center gap-1 px-2.5 sm:px-3 h-[38px] sm:h-[42px] rounded-xl sm:rounded-2xl text-[12px] sm:text-xs font-bold border transition-all active:scale-95 whitespace-nowrap"
                     :class="currentView === 'monitor'
                         ? 'bg-zinc-900 text-white border-zinc-900'
                         : 'bg-white text-zinc-700 border-zinc-200/90 shadow-sm'"
                 >
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg class="w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                               d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
                     </svg>
@@ -211,7 +240,7 @@
             </div>
 
             <!-- 大家常搜快捷词（未搜索或无结果时展示） -->
-            <div class="mt-2.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5"
+            <div class="mt-2 flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5"
                  v-if="currentView === 'search' && (!hasSearched || products.length === 0)">
                 <span class="text-xs font-medium text-zinc-400 whitespace-nowrap pl-0.5">常搜好物:</span>
                 <button
@@ -224,18 +253,17 @@
                 </button>
             </div>
 
-            <!-- ============ 二次精筛与胶囊过滤栏（仅在有搜索结果时展示） ============ -->
+            <!-- ============ 精简重构后的双层搜索过滤栏（仅在有搜索结果时展示） ============ -->
             <div v-if="currentView === 'search' && hasSearched && products.length > 0"
-                 class="mt-2.5 pt-2.5 border-t border-zinc-200/60 flex flex-col gap-2">
+                 class="mt-2 pt-2 border-t border-zinc-200/60 flex flex-col gap-1.5">
 
-                <!-- 第一层：独立通栏“结果中再搜”输入框 + 固定右侧重置按钮 -->
-                <div class="flex items-center gap-2">
-                    <div class="flex-1 flex items-center bg-white border border-zinc-200/90 focus-within:border-brand-600 focus-within:ring-2 focus-within:ring-brand-600/15 rounded-xl px-2 py-1.5 shadow-2xs transition-all">
-                        <span class="flex items-center gap-1 px-2 py-0.5 bg-brand-50 text-brand-600 rounded-lg text-[11px] font-extrabold whitespace-nowrap flex-shrink-0">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"/>
-                            </svg>
-                            结果中再搜
+                <!-- 第一层：一体化「包含 + 排除」双联关键词精筛栏 + 右侧重置按钮 -->
+                <div class="flex items-center gap-1.5">
+                    <!-- 正向包含过滤（结果中再搜，聚焦时自动拓宽） -->
+                    <div class="flex-1 focus-within:flex-[1.85] min-w-0 flex items-center h-[34px] bg-white border rounded-xl px-2 transition-all duration-200"
+                         :class="nameKeywordFilter ? 'border-brand-600/80 ring-1 ring-brand-600/10' : 'border-zinc-200/90 focus-within:border-brand-600'">
+                        <span class="px-1.5 py-0.5 bg-brand-50 text-brand-600 rounded text-[11px] font-extrabold whitespace-nowrap flex-shrink-0">
+                            包含
                         </span>
                         <input
                             v-model="nameKeywordFilter"
@@ -243,45 +271,112 @@
                             enterkeyhint="search"
                             @focus="showHeader = true"
                             @keydown.enter.prevent="$event.target.blur()"
-                            :placeholder="`在 ${products.length} 款结果中搜品牌、规格（多词空格隔开）`"
-                            class="w-full bg-transparent border-none focus:ring-0 pl-2 pr-1 py-0.5 text-xs sm:text-sm font-medium text-zinc-900 outline-none placeholder-zinc-400"
+                            placeholder="搜品牌/规格 (空格隔开)"
+                            class="flex-1 min-w-0 w-full bg-transparent border-none focus:ring-0 pl-1.5 pr-1 text-[12px] sm:text-xs font-medium text-zinc-900 outline-none placeholder-zinc-400"
                         >
-                        <span v-if="nameKeywordFilter" class="text-[11px] font-bold text-brand-600 whitespace-nowrap mr-1 num-font">
-                            {{ sortedProducts.length }}款
-                        </span>
                         <button
                             v-if="nameKeywordFilter"
                             @click="clearNameFilter"
                             type="button"
-                            class="p-1 text-zinc-400 active:text-zinc-600 flex-shrink-0"
-                            aria-label="清空二次搜索"
+                            class="p-0.5 text-zinc-400 active:text-zinc-600 flex-shrink-0"
+                            aria-label="清空正向搜索"
                         >
-                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                                <path fill-rule="evenodd"
-                                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                                      clip-rule="evenodd"/>
+                            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
                             </svg>
                         </button>
                     </div>
 
-                    <!-- 重置筛选按钮固定在右侧，无需横向滑动即可随时点击 -->
+                    <!-- 反向排除过滤（多词空格隔开，命中任意一词即剔除，聚焦时自动拓宽） -->
+                    <div class="flex-1 focus-within:flex-[1.85] min-w-0 flex items-center h-[34px] bg-white border rounded-xl px-2 transition-all duration-200"
+                         :class="excludeKeywordFilter ? 'border-rose-500/80 ring-1 ring-rose-500/10' : 'border-zinc-200/90 focus-within:border-rose-500'">
+                        <span class="px-1.5 py-0.5 bg-rose-50 text-rose-600 rounded text-[11px] font-extrabold whitespace-nowrap flex-shrink-0">
+                            排除
+                        </span>
+                        <input
+                            v-model="excludeKeywordFilter"
+                            type="search"
+                            enterkeyhint="search"
+                            @focus="showHeader = true"
+                            @keydown.enter.prevent="$event.target.blur()"
+                            placeholder="屏蔽词:如 塑料 不带盖"
+                            class="flex-1 min-w-0 w-full bg-transparent border-none focus:ring-0 pl-1.5 pr-1 text-[12px] sm:text-xs font-medium text-zinc-900 outline-none placeholder-zinc-400"
+                        >
+                        <button
+                            v-if="excludeKeywordFilter"
+                            @click="clearExcludeFilter"
+                            type="button"
+                            class="p-0.5 text-zinc-400 active:text-zinc-600 flex-shrink-0"
+                            aria-label="清空排除词"
+                        >
+                            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- 重置筛选按钮固定在右侧 -->
                     <button
                         v-if="hasActiveFilter"
                         @click="clearFilters"
                         type="button"
-                        class="flex-shrink-0 px-3 py-2 bg-brand-50 text-brand-600 border border-brand-200/80 rounded-xl text-xs font-bold whitespace-nowrap active:scale-95 transition-all"
+                        class="flex-shrink-0 h-[34px] px-2.5 bg-brand-50 text-brand-600 border border-brand-200/80 rounded-xl text-[12px] font-bold whitespace-nowrap active:scale-95 transition-all"
                     >
                         重置筛选
                     </button>
                 </div>
 
-                <!-- 第二层：快捷胶囊与属性下拉筛选 -->
-                <div class="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
-                    <!-- 1. 一键切换“只看真人核实”胶囊开关 -->
+                <!-- 第二层：价格区间胶囊 + 真人核实 + 计量单位 + 动态规格属性 -->
+                <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
+                    <!-- 1. 价格(¥) 最低 ~ 不限 区间筛选胶囊（自动联动常买好物清单最高限价） -->
+                    <div
+                        class="flex-shrink-0 inline-flex items-center gap-1 h-[30px] px-2.5 rounded-full text-xs border transition-all"
+                        :class="hasPriceFilter
+                            ? 'bg-brand-50/70 border-brand-600 text-brand-700 font-bold'
+                            : 'bg-white border-zinc-200/90 text-zinc-700 font-semibold'"
+                    >
+                        <span class="whitespace-nowrap text-[11px]">价格(¥)</span>
+                        <input
+                            v-model="minPriceFilter"
+                            type="number"
+                            inputmode="decimal"
+                            min="0"
+                            step="any"
+                            placeholder="最低"
+                            @focus="showHeader = true"
+                            @keydown.enter.prevent="$event.target.blur()"
+                            class="w-11 sm:w-12 h-[20px] bg-zinc-100/90 focus:bg-white rounded px-1 text-center text-[11px] font-bold text-zinc-900 outline-none focus:ring-1 focus:ring-brand-600 num-font placeholder-zinc-400"
+                        >
+                        <span class="text-zinc-400 font-normal text-[11px]">~</span>
+                        <input
+                            v-model="maxPriceFilter"
+                            type="number"
+                            inputmode="decimal"
+                            min="0"
+                            step="any"
+                            placeholder="不限"
+                            @focus="showHeader = true"
+                            @keydown.enter.prevent="$event.target.blur()"
+                            class="w-11 sm:w-12 h-[20px] bg-zinc-100/90 focus:bg-white rounded px-1 text-center text-[11px] font-bold text-zinc-900 outline-none focus:ring-1 focus:ring-brand-600 num-font placeholder-zinc-400"
+                        >
+                        <button
+                            v-if="hasPriceFilter"
+                            type="button"
+                            @click.stop="clearPriceFilter"
+                            class="text-brand-600/70 hover:text-brand-700 active:scale-90"
+                            aria-label="清空价格区间"
+                        >
+                            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+                            </svg>
+                        </button>
+                    </div>
+
+                    <!-- 2. 一键切换“只看真人核实”胶囊开关 -->
                     <button
                         type="button"
                         @click="toggleConfirmedOnly"
-                        class="flex-shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border transition-all active:scale-95"
+                        class="flex-shrink-0 flex items-center gap-1 h-[30px] px-2.5 rounded-full text-xs font-bold border transition-all active:scale-95"
                         :class="activeSuspiciousFilter === '1'
                             ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
                             : 'bg-white text-zinc-700 border-zinc-200/90'"
@@ -289,11 +384,11 @@
                         <span>✓ 真人已核实</span>
                     </button>
 
-                    <!-- 2. 计量单位切换（有多个单位时才显示） -->
+                    <!-- 3. 计量单位切换（有多个单位时才显示） -->
                     <div v-if="availableUnits.length > 1" class="flex-shrink-0 relative">
                         <select
                             v-model="activeUnitFilter"
-                            class="appearance-none bg-white border text-xs font-bold rounded-full pl-3 pr-6 py-1.5 outline-none transition-all cursor-pointer"
+                            class="appearance-none h-[30px] bg-white border text-xs font-bold rounded-full pl-2.5 pr-6 outline-none transition-all cursor-pointer"
                             :class="activeUnitFilter ? 'border-brand-600 text-brand-600 bg-brand-50/50' : 'border-zinc-200/90 text-zinc-700'"
                         >
                             <option value="">按单位 ({{ stats.baseUnit }})</option>
@@ -306,11 +401,11 @@
                         </div>
                     </div>
 
-                    <!-- 3. 动态商品属性筛选（如品牌、香型、抽数等） -->
+                    <!-- 4. 动态商品属性筛选（如品牌、香型、抽数等） -->
                     <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
                         <select
                             v-model="activeFilters[filter.attribute_name]"
-                            class="appearance-none bg-white border text-xs font-semibold rounded-full pl-3 pr-6 py-1.5 outline-none transition-all cursor-pointer"
+                            class="appearance-none h-[30px] bg-white border text-xs font-semibold rounded-full pl-2.5 pr-6 outline-none transition-all cursor-pointer"
                             :class="activeFilters[filter.attribute_name] ? 'border-brand-600 text-brand-600 bg-brand-50/50 font-bold' : 'border-zinc-200/90 text-zinc-700'"
                         >
                             <option value="">{{ filter.attribute_name }}</option>
@@ -342,7 +437,7 @@
                         </span>
                     </h2>
                     <p class="text-xs sm:text-sm text-zinc-500 mt-1 leading-relaxed">
-                        把常买的生活用品加进来，系统全天候自动帮您搜集全网好价，并由真人核对规格。
+                        把常买的生活用品加进来，可设置最高承受总价（默认 0 不限），搜索时将自动为您过滤超预算商品。
                     </p>
                 </div>
                 <button
@@ -358,20 +453,34 @@
                 </button>
             </div>
 
-            <form @submit.prevent="addMonitorItem" class="flex gap-2">
+            <form @submit.prevent="addMonitorItem" class="flex flex-col sm:flex-row gap-2">
                 <input
                     v-model="newMonitorKeyword"
                     type="text"
                     placeholder="添加常买商品，例如：抽纸、纯牛奶、猫粮"
                     class="flex-1 bg-zinc-100/90 focus:bg-white border border-transparent focus:border-brand-600 rounded-2xl px-3.5 py-2.5 text-sm font-medium outline-none transition-all placeholder-zinc-400"
                 >
-                <button
-                    type="submit"
-                    :disabled="monitorSubmitting || !newMonitorKeyword.trim()"
-                    class="px-4 sm:px-5 py-2.5 bg-zinc-900 text-white rounded-2xl text-xs sm:text-sm font-bold active:scale-95 transition-all disabled:opacity-40 whitespace-nowrap"
-                >
-                    {{ monitorSubmitting ? '添加中...' : '+ 添加' }}
-                </button>
+                <div class="flex items-center gap-2">
+                    <div class="flex-1 sm:w-48 flex items-center bg-zinc-100/90 focus-within:bg-white border border-transparent focus-within:border-brand-600 rounded-2xl px-3 py-2.5 transition-all">
+                        <span class="text-xs font-bold text-zinc-500 whitespace-nowrap mr-1.5">最高价¥</span>
+                        <input
+                            v-model="newMonitorMaxPrice"
+                            type="number"
+                            inputmode="decimal"
+                            min="0"
+                            step="any"
+                            placeholder="0 (默认不限)"
+                            class="w-full bg-transparent border-none text-sm font-bold text-zinc-900 outline-none placeholder-zinc-400 num-font"
+                        >
+                    </div>
+                    <button
+                        type="submit"
+                        :disabled="monitorSubmitting || !newMonitorKeyword.trim()"
+                        class="px-4 sm:px-5 py-2.5 bg-zinc-900 text-white rounded-2xl text-xs sm:text-sm font-bold active:scale-95 transition-all disabled:opacity-40 whitespace-nowrap flex-shrink-0"
+                    >
+                        {{ monitorSubmitting ? '添加中...' : '+ 添加' }}
+                    </button>
+                </div>
             </form>
         </div>
 
@@ -397,14 +506,19 @@
                 <div
                     v-for="item in monitoredList"
                     :key="item.keyword"
-                    @click="jumpToSearch(item.keyword)"
+                    @click="jumpToSearch(item.keyword, item.max_price)"
                     class="product-card bg-white rounded-2xl p-4 border border-zinc-200/70 shadow-apple flex flex-col justify-between gap-3 cursor-pointer"
                 >
                     <div class="flex items-center justify-between gap-2">
-                        <div class="flex items-center gap-2 min-w-0">
+                        <div class="flex items-center gap-1.5 min-w-0 flex-wrap">
                             <h3 class="text-base font-extrabold text-zinc-900 truncate">{{ item.keyword }}</h3>
-                            <span class="flex-shrink-0 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-[11px] font-bold">
-                                持续找好价中
+                            <span v-if="item.max_price > 0"
+                                  class="flex-shrink-0 px-2 py-0.5 bg-brand-50 text-brand-700 border border-brand-200/70 rounded-full text-[11px] font-bold num-font">
+                                限价 ≤ ¥{{ item.max_price }}
+                            </span>
+                            <span v-else
+                                  class="flex-shrink-0 px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full text-[11px] font-bold">
+                                价格不限
                             </span>
                         </div>
                         <button
@@ -431,7 +545,7 @@
                     </div>
 
                     <div class="flex items-center justify-between text-xs font-bold text-brand-600 pt-1">
-                        <span>点击查看哪款最划算</span>
+                        <span>{{ item.max_price > 0 ? `点击按 ≤¥${item.max_price} 筛选好价` : '点击查看哪款最划算' }}</span>
                         <span>→</span>
                     </div>
                 </div>
@@ -478,10 +592,14 @@
             <!-- 顶部直观比价摘要栏 -->
             <div class="mb-3.5 bg-white rounded-2xl p-3.5 sm:p-5 shadow-apple border border-zinc-200/70">
                 <div class="flex items-center justify-between gap-2 mb-3">
-                    <div class="min-w-0">
+                    <div class="min-w-0 flex items-center gap-1.5 flex-wrap">
                         <h3 class="text-sm sm:text-base font-extrabold text-zinc-900 truncate">
                             共 {{ sortedProducts.length }} 款「<span class="text-brand-600">{{ currentKeyword }}</span>」
                         </h3>
+                        <span v-if="hasActiveFilter && sortedProducts.length !== products.length"
+                              class="text-[11px] font-semibold text-zinc-400 num-font">
+                            (从 {{ products.length }} 款中精筛)
+                        </span>
                     </div>
 
                     <!-- 分段式排序切换器（类似 iOS UISegmentedControl） -->
@@ -520,9 +638,9 @@
             <div v-if="sortedProducts.length === 0" class="bg-white rounded-3xl py-12 px-4 text-center border border-zinc-200/60 shadow-apple">
                 <span class="text-3xl block mb-2">🔍</span>
                 <h3 class="text-sm font-bold text-zinc-800 mb-1">没有符合当前筛选条件的商品</h3>
-                <p class="text-xs text-zinc-400 mb-4">您可以放宽筛选条件看看全部商品</p>
+                <p class="text-xs text-zinc-400 mb-4">您可以修改价格区间、排除词或放宽筛选条件看看全部商品</p>
                 <button @click="clearFilters" type="button" class="px-4 py-2 bg-brand-600 text-white rounded-xl text-xs font-bold">
-                    显示全部商品
+                    重置筛选（显示全部 {{ products.length }} 款）
                 </button>
             </div>
 
@@ -880,6 +998,7 @@
             const monitoredList = ref([])
             const monitorHistoryList = ref([])
             const newMonitorKeyword = ref('')
+            const newMonitorMaxPrice = ref('')
             const monitorLoading = ref(false)
             const monitorSubmitting = ref(false)
             const pendingRemoveKeyword = ref('')
@@ -889,9 +1008,19 @@
             const currentKeyword = ref('')
             const products = shallowRef([])
 
+            // 正向包含关键词
             const nameKeywordFilter = ref('')
             const debouncedNameFilter = ref('')
             let nameFilterTimer = null
+
+            // 反向排除关键词
+            const excludeKeywordFilter = ref('')
+            const debouncedExcludeFilter = ref('')
+            let excludeFilterTimer = null
+
+            // 价格区间过滤（最低价 ~ 最高价，0 或空表示不限）
+            const minPriceFilter = ref('')
+            const maxPriceFilter = ref('')
 
             const activeUnitFilter = ref('')
             const activeSuspiciousFilter = ref('')
@@ -985,6 +1114,9 @@
                         activeUnitFilter: activeUnitFilter.value,
                         activeSuspiciousFilter: activeSuspiciousFilter.value,
                         nameKeywordFilter: nameKeywordFilter.value,
+                        excludeKeywordFilter: excludeKeywordFilter.value,
+                        minPriceFilter: minPriceFilter.value,
+                        maxPriceFilter: maxPriceFilter.value,
                         sortBy: sortBy.value,
                         displayLimit: displayLimit.value,
                         scrollY: selectedProduct.value ? savedScrollY.value : (window.pageYOffset || document.documentElement.scrollTop || 0),
@@ -1019,6 +1151,10 @@
                     activeSuspiciousFilter.value = snap.activeSuspiciousFilter || ''
                     nameKeywordFilter.value = snap.nameKeywordFilter || ''
                     debouncedNameFilter.value = (snap.nameKeywordFilter || '').trim().toLowerCase()
+                    excludeKeywordFilter.value = snap.excludeKeywordFilter || ''
+                    debouncedExcludeFilter.value = (snap.excludeKeywordFilter || '').trim().toLowerCase()
+                    minPriceFilter.value = snap.minPriceFilter !== undefined && snap.minPriceFilter !== null ? String(snap.minPriceFilter) : ''
+                    maxPriceFilter.value = snap.maxPriceFilter !== undefined && snap.maxPriceFilter !== null ? String(snap.maxPriceFilter) : ''
                     sortBy.value = snap.sortBy || 'value'
                     displayLimit.value = snap.displayLimit || PAGE_SIZE
                     hasSearched.value = true
@@ -1054,18 +1190,25 @@
             const addMonitorItem = async () => {
                 const kw = newMonitorKeyword.value.trim()
                 if (!kw) return
+                const parsedMax = parseFloat(String(newMonitorMaxPrice.value).trim())
+                const maxPriceVal = (!isNaN(parsedMax) && parsedMax > 0) ? parsedMax : 0
+
                 monitorSubmitting.value = true
                 try {
                     const response = await fetch('/api/monitor', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ keyword: kw })
+                        body: JSON.stringify({
+                            keyword: kw,
+                            max_price: maxPriceVal
+                        })
                     })
                     const res = await response.json()
                     if (res.status === 'success') {
                         monitoredList.value = res.data || []
                         monitorHistoryList.value = res.history || []
                         newMonitorKeyword.value = ''
+                        newMonitorMaxPrice.value = ''
                     }
                 } catch (e) {
                     console.error('Add Monitor Error', e)
@@ -1115,17 +1258,26 @@
                 }
             }
 
-            const jumpToSearch = (kw) => {
+            const jumpToSearch = (kw, presetMaxPrice = null) => {
                 keyword.value = kw
                 currentView.value = 'search'
-                search()
+                search(presetMaxPrice)
             }
 
             // ======== 过滤与排序计算 ========
             watch(nameKeywordFilter, (val) => {
                 if (nameFilterTimer) clearTimeout(nameFilterTimer)
                 nameFilterTimer = setTimeout(() => {
-                    debouncedNameFilter.value = val.trim().toLowerCase()
+                    debouncedNameFilter.value = (val || '').trim().toLowerCase()
+                    displayLimit.value = PAGE_SIZE
+                    saveSearchSnapshot()
+                }, 180)
+            })
+
+            watch(excludeKeywordFilter, (val) => {
+                if (excludeFilterTimer) clearTimeout(excludeFilterTimer)
+                excludeFilterTimer = setTimeout(() => {
+                    debouncedExcludeFilter.value = (val || '').trim().toLowerCase()
                     displayLimit.value = PAGE_SIZE
                     saveSearchSnapshot()
                 }, 180)
@@ -1138,6 +1290,27 @@
                 displayLimit.value = PAGE_SIZE
                 saveSearchSnapshot()
             }
+
+            const clearExcludeFilter = () => {
+                if (excludeFilterTimer) clearTimeout(excludeFilterTimer)
+                excludeKeywordFilter.value = ''
+                debouncedExcludeFilter.value = ''
+                displayLimit.value = PAGE_SIZE
+                saveSearchSnapshot()
+            }
+
+            const clearPriceFilter = () => {
+                minPriceFilter.value = ''
+                maxPriceFilter.value = ''
+                displayLimit.value = PAGE_SIZE
+                saveSearchSnapshot()
+            }
+
+            const hasPriceFilter = computed(() => {
+                const minV = parseFloat(String(minPriceFilter.value ?? '').trim())
+                const maxV = parseFloat(String(maxPriceFilter.value ?? '').trim())
+                return (!isNaN(minV) && minV > 0) || (!isNaN(maxV) && maxV > 0)
+            })
 
             const availableUnits = computed(() => {
                 const units = products.value.map(p => p.base_unit).filter(Boolean)
@@ -1155,15 +1328,28 @@
                 const arr = products.value
                 if (arr.length === 0) return []
 
-                const terms = debouncedNameFilter.value
+                const includeTerms = debouncedNameFilter.value
                     ? debouncedNameFilter.value.split(/[\s,，]+/).filter(Boolean)
                     : []
+                const excludeTerms = debouncedExcludeFilter.value
+                    ? debouncedExcludeFilter.value.split(/[\s,，]+/).filter(Boolean)
+                    : []
+
+                const minPriceVal = parseFloat(String(minPriceFilter.value ?? '').trim())
+                const hasMinPrice = !isNaN(minPriceVal) && minPriceVal > 0
+
+                const maxPriceVal = parseFloat(String(maxPriceFilter.value ?? '').trim())
+                const hasMaxPrice = !isNaN(maxPriceVal) && maxPriceVal > 0
+
                 const unitVal = activeUnitFilter.value
                 const suspVal = activeSuspiciousFilter.value !== '' ? Number(activeSuspiciousFilter.value) : null
                 const activeAttrEntries = Object.entries(activeFilters.value).filter(([, v]) => v !== '')
 
                 return arr.filter(p => {
-                    if (terms.length > 0 && !terms.every(t => p._nameLower.includes(t))) return false
+                    if (includeTerms.length > 0 && !includeTerms.every(t => p._nameLower.includes(t))) return false
+                    if (excludeTerms.length > 0 && excludeTerms.some(t => p._nameLower.includes(t))) return false
+                    if (hasMinPrice && p._activityPriceNum < minPriceVal) return false
+                    if (hasMaxPrice && p._activityPriceNum > maxPriceVal) return false
                     if (unitVal && p.base_unit !== unitVal) return false
                     if (suspVal !== null && p.is_suspicious !== suspVal) return false
                     for (let i = 0; i < activeAttrEntries.length; i++) {
@@ -1174,7 +1360,7 @@
                 })
             })
 
-            watch([activeUnitFilter, activeSuspiciousFilter, activeFilters], () => {
+            watch([activeUnitFilter, activeSuspiciousFilter, activeFilters, minPriceFilter, maxPriceFilter], () => {
                 displayLimit.value = PAGE_SIZE
                 saveSearchSnapshot()
             }, { deep: true })
@@ -1193,6 +1379,8 @@
 
             const hasActiveFilter = computed(() => {
                 return nameKeywordFilter.value.trim() !== '' ||
+                    excludeKeywordFilter.value.trim() !== '' ||
+                    hasPriceFilter.value ||
                     activeUnitFilter.value !== '' ||
                     activeSuspiciousFilter.value !== '' ||
                     Object.values(activeFilters.value).some(val => val !== '')
@@ -1200,6 +1388,8 @@
 
             const clearFilters = () => {
                 clearNameFilter()
+                clearExcludeFilter()
+                clearPriceFilter()
                 activeUnitFilter.value = ''
                 activeSuspiciousFilter.value = ''
                 for (const key in activeFilters.value) {
@@ -1266,7 +1456,7 @@
             }
 
             // ======== 搜索主请求 ========
-            const search = async () => {
+            const search = async (presetMaxPrice = null) => {
                 if (!keyword.value.trim()) return
                 const term = keyword.value.trim()
                 currentKeyword.value = term
@@ -1281,7 +1471,12 @@
                 window.history.replaceState({ view: 'search', q: term }, '', newUrl)
 
                 try {
-                    const response = await fetch(`/api/search?keyword=${encodeURIComponent(term)}`)
+                    // 若本地尚未加载常买好物清单，则并行拉取以保障直接搜索清单商品时也能联动最高限价
+                    const tasks = [fetch(`/api/search?keyword=${encodeURIComponent(term)}`)]
+                    if (monitoredList.value.length === 0) {
+                        tasks.push(fetchMonitors())
+                    }
+                    const [response] = await Promise.all(tasks)
                     const res = await response.json()
                     if (res.status === 'success') {
                         products.value = preprocessProducts(res.data)
@@ -1292,6 +1487,23 @@
                         activeUnitFilter.value = ''
                         activeSuspiciousFilter.value = ''
                         clearNameFilter()
+                        clearExcludeFilter()
+
+                        // 联动「常买好物清单」最高限价：从清单点击跳转或直接搜索清单内商品时自动填入最高价
+                        let matchedMaxPrice = 0
+                        if (presetMaxPrice !== null && presetMaxPrice !== undefined && !(presetMaxPrice instanceof Event)) {
+                            matchedMaxPrice = Number(presetMaxPrice) || 0
+                        } else {
+                            const matchedItem = monitoredList.value.find(
+                                m => (m.keyword || '').trim().toLowerCase() === term.toLowerCase()
+                            )
+                            if (matchedItem && Number(matchedItem.max_price) > 0) {
+                                matchedMaxPrice = Number(matchedItem.max_price)
+                            }
+                        }
+                        minPriceFilter.value = ''
+                        maxPriceFilter.value = matchedMaxPrice > 0 ? String(matchedMaxPrice) : ''
+
                         window.scrollTo({ top: 0 })
                         saveSearchSnapshot()
                     } else {
@@ -1313,6 +1525,8 @@
                 availableFilters.value = []
                 activeFilters.value = {}
                 clearNameFilter()
+                clearExcludeFilter()
+                clearPriceFilter()
                 activeUnitFilter.value = ''
                 activeSuspiciousFilter.value = ''
                 displayLimit.value = PAGE_SIZE
@@ -1433,9 +1647,10 @@
             onMounted(() => {
                 setInterval(() => placeholderIndex.value++, 3500)
 
-                if (currentView.value === 'monitor') {
-                    fetchMonitors()
-                } else {
+                // 预加载常买清单，保障首页直接搜索清单内商品时能毫秒级获取 max_price
+                fetchMonitors()
+
+                if (currentView.value !== 'monitor') {
                     // 1. 优先从 sessionStorage 毫秒级恢复之前浏览的搜索结果与滚动条位置
                     const restored = restoreSearchSnapshot()
                     if (!restored) {
@@ -1478,7 +1693,7 @@
 
             return {
                 showHeader, headerRef, headerHeight,
-                currentView, monitoredList, monitorHistoryList, newMonitorKeyword,
+                currentView, monitoredList, monitorHistoryList, newMonitorKeyword, newMonitorMaxPrice,
                 monitorLoading, monitorSubmitting,
                 pendingRemoveKeyword, openRemoveConfirm, cancelRemoveMonitor, confirmRemoveMonitor,
                 fetchMonitors, addMonitorItem, removeMonitorItem,
@@ -1489,6 +1704,8 @@
                 sortBy, sortOptions, changeSort, hotKeywords,
                 placeholderText, sortedProducts, visibleProducts, loadMoreProducts, stats,
                 nameKeywordFilter, clearNameFilter,
+                excludeKeywordFilter, clearExcludeFilter,
+                minPriceFilter, maxPriceFilter, hasPriceFilter, clearPriceFilter,
                 availableUnits, activeUnitFilter,
                 activeSuspiciousFilter, toggleConfirmedOnly,
                 availableFilters, activeFilters, hasActiveFilter, clearFilters,

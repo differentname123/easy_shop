@@ -1126,6 +1126,7 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 
 import math
 
+
 if __name__ == "__main__":
     while True:
         try:
@@ -1159,7 +1160,8 @@ if __name__ == "__main__":
                     ]
                 if not clean_words:
                     clean_words = [char for char in kw_clean if not char.isspace()]
-                target_category_list.append(clean_words)
+                max_price = monitored_products[search_keyword].get('max_price') or 0
+                target_category_list.append((clean_words, max_price))
 
             logger.info(target_category_list)
 
@@ -1179,6 +1181,7 @@ if __name__ == "__main__":
                         "platform": 1,
                         "product_id": 1,
                         "name": 1,
+                        "activity_price": 1,
                         "sku_info": 1,
                         "need_update_sku": 1,
                         "sku_retry_count": 1
@@ -1186,7 +1189,7 @@ if __name__ == "__main__":
                 )
 
                 # 过滤逻辑：
-                # 1. 满足任意一组分词规则：匹配字符数 >= ceil(总长度 * 2 / 3)
+                # 1. 满足任意一组分词规则：匹配字符数 >= ceil(总长度 * 2 / 3)，且满足最高价格限制
                 # 2. need_update_sku 为 True 且 sku_retry_count <= 3
                 filtered_results = [
                     item for item in results
@@ -1194,8 +1197,10 @@ if __name__ == "__main__":
                        and (item.get("sku_retry_count") or 0) <= 3
                        and (item_name := (item.get("name") or "").lower())
                        and any(
-                        keywords_group and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 2 / 3)
-                        for keywords_group in target_category_list
+                        keywords_group
+                        and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 2 / 3)
+                        and (max_price <= 0 or (item.get("activity_price") is not None and item.get("activity_price") <= max_price))
+                        for keywords_group, max_price in target_category_list
                     )
                 ]
 

@@ -561,6 +561,21 @@ _monitor_counts_cache = {}
 
 class MonitorRequest(BaseModel):
     keyword: str
+    max_price: float = 0
+
+
+def _normalize_max_price(val):
+    """标准化最高限价字段：默认 0 表示不限制，正数保留最多两位小数"""
+    try:
+        if val is None or val == "":
+            return 0
+        num = float(val)
+        if not math.isfinite(num) or num <= 0:
+            return 0
+        rounded = round(num, 2)
+        return int(rounded) if rounded.is_integer() else rounded
+    except (ValueError, TypeError):
+        return 0
 
 
 def _load_monitor_data_unsafe() -> dict:
@@ -703,6 +718,7 @@ def build_monitor_response(data: dict) -> dict:
         item = {
             "keyword": kw,
             "is_monitoring": is_mon,
+            "max_price": _normalize_max_price(info.get("max_price", 0)),
             "added_at": info.get("added_at"),
             "cancelled_at": info.get("cancelled_at"),
             "count_72h": kw_counts["total"],
@@ -740,17 +756,19 @@ def api_add_monitor(req: MonitorRequest):
     if not kw:
         raise HTTPException(status_code=400, detail="商品名称不能为空")
 
+    max_price = _normalize_max_price(req.max_price)
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with monitor_file_lock:
         data = _load_monitor_data_unsafe()
         data[kw] = {
             "is_monitoring": True,
+            "max_price": max_price,
             "added_at": now_str,
             "cancelled_at": None
         }
         _save_monitor_data_unsafe(data)
 
-    logger.info(f"新增监控商品: [{kw}]")
+    logger.info(f"新增监控商品: [{kw}], max_price=[{max_price}]")
     result = build_monitor_response(data)
     return {
         "status": "success",
@@ -770,10 +788,12 @@ def api_delete_monitor(keyword: str):
         data = _load_monitor_data_unsafe()
         if kw in data:
             data[kw]["is_monitoring"] = False
+            data[kw]["max_price"] = _normalize_max_price(data[kw].get("max_price", 0))
             data[kw]["cancelled_at"] = now_str
         else:
             data[kw] = {
                 "is_monitoring": False,
+                "max_price": 0,
                 "added_at": None,
                 "cancelled_at": now_str
             }
