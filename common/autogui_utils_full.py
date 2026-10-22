@@ -264,8 +264,7 @@ def _parse_detail_page(img_bgr):
 
     categories.sort(key=lambda c: c["cy"])
     if not categories:
-        categories = [{"name": "规格", "cy": 0, "items": []}]
-
+        return True, price_anchor, []
     # 【核心修复】：严格要求规格框必须位于分类标题下方（cat["cy"] < sku["cy"]）
     # 防止下滑后顶部失去标题的“孤儿规格框”被错误归入下方的“口味”分类中
     for sku in sku_items:

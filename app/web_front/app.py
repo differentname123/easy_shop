@@ -613,11 +613,52 @@ def _save_monitor_data_unsafe(data: dict):
         raise e
 
 
-def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hours: int = 72) -> dict:
-    """一次性查询 72 小时内更新的有效商品，通过商品名直接匹配，统计总数量及已通过 RPA 确定真实规格的数量"""
-    counts = {kw: {"total": 0, "confirmed": 0} for kw in keywords}
-    if not keywords:
+def _has_valid_price_under_limit(product: dict, max_price: float) -> bool:
+    """
+    检查商品是否存在合法的规格价格，且（在设置了 max_price > 0 时）价格不超过 max_price
+    """
+    raw_format_info = product.get("format_info")
+    if not isinstance(raw_format_info, dict) or not raw_format_info:
+        return False
+
+    raw_act_price = product.get("activity_price")
+    min_act_price = None
+    if isinstance(raw_act_price, (int, float)) and math.isfinite(raw_act_price) and raw_act_price > 0:
+        min_act_price = float(raw_act_price)
+
+    def _check_price(p_val):
+        if type(p_val) not in (int, float) or not math.isfinite(p_val) or p_val <= 0:
+            return False
+        if min_act_price is not None and round(float(p_val), 2) < round(float(min_act_price), 2):
+            return False
+        if max_price > 0 and round(float(p_val), 2) > round(float(max_price), 2):
+            return False
+        return True
+
+    # 单规格结构
+    if "pricing_basis" in raw_format_info and isinstance(raw_format_info.get("pricing_basis"), dict):
+        return _check_price(raw_format_info.get("price"))
+
+    # 多规格结构：只要该商品下有任意一个合法规格满足限价，该商品即有效（若想按展开后的SKU数统计，可改为返回满足条件的SKU数量）
+    for sku_fmt in raw_format_info.values():
+        if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
+            if _check_price(sku_fmt.get("price")):
+                return True
+
+    return False
+
+
+def count_monitored_products_72h(keyword_price_map: dict, min_match_score: int = 10, hours: int = 72) -> dict:
+    """
+    keyword_price_map: { "奶锅": 10, "抽纸": 0, ... }
+    """
+    counts = {kw: {"total": 0, "confirmed": 0} for kw in keyword_price_map}
+    if not keyword_price_map:
         return counts
+
+    # 读取报错黑名单，保持与搜索接口一致
+    with feedback_file_lock:
+        feedback_data = _load_feedback_data_unsafe()
 
     raw_products = product_manager.query(
         {"format_status": "success", "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)}},
@@ -629,29 +670,34 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
         product_url = product.get("promotion_url") or product.get("product_url")
         if not product_url:
             continue
+
+        product_id = str(product.get("product_id") or product_url)
+        if product_id in feedback_data:
+            continue
+
         product_name = (product.get("name") or "").lower()
         if not product_name:
             continue
 
-        sku_info = product.get("sku_info")
+        sku_info = product.get("sku_info") if isinstance(product.get("sku_info"), list) else []
         need_reformat = product.get("need_reformat")
         need_update_sku = product.get("need_update_sku")
         sku_status = product.get("sku_status")
 
-        # 必须已完成真实规格抓取（need_update_sku 为 False 或 sku_status 为 success）且完成重洗，才计入已确定数量
         is_confirmed = bool(
             sku_info
             and (need_update_sku is False or sku_status == "success")
             and (need_reformat is False or need_reformat == "false")
         )
 
-        valid_products_info.append((product_name, is_confirmed))
+        valid_products_info.append((product_name, is_confirmed, product))
 
-    for kw in keywords:
+    for kw, max_price in keyword_price_map.items():
         target_lower = (kw or "").strip().lower()
         if not target_lower:
             continue
 
+        limit_p = _normalize_max_price(max_price)
         words = gen_goods_segment_info(name=kw)
         search_terms = []
         if isinstance(words, (list, tuple, set)):
@@ -662,11 +708,15 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
 
         matched_total = 0
         matched_confirmed = 0
-        for product_name, is_confirmed in valid_products_info:
+        for product_name, is_confirmed, product_doc in valid_products_info:
             if all(term in product_name for term in search_terms):
+                # 增加价格与合法性校验
+                if not _has_valid_price_under_limit(product_doc, limit_p):
+                    continue
                 matched_total += 1
                 if is_confirmed:
                     matched_confirmed += 1
+
         counts[kw] = {
             "total": matched_total,
             "confirmed": matched_confirmed
@@ -674,20 +724,28 @@ def count_monitored_products_72h(keywords: list, min_match_score: int = 10, hour
 
     return counts
 
-
 def build_monitor_response(data: dict) -> dict:
-    """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量，1分钟内更新的数据直接使用缓存）"""
-    active_keywords = [kw for kw, info in data.items() if info.get("is_monitoring", False)]
+    """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量，绑定 max_price 缓存校验）"""
+    active_kw_price_map = {
+        kw: _normalize_max_price(info.get("max_price", 0))
+        for kw, info in data.items()
+        if info.get("is_monitoring", False)
+    }
     now_ts = datetime.now().timestamp()
 
     counts_map = {}
-    keywords_to_query = []
+    keywords_to_query = {}
     has_expired = False
 
     with monitor_cache_lock:
-        for kw in active_keywords:
+        for kw, max_p in active_kw_price_map.items():
             cached_entry = _monitor_counts_cache.get(kw)
-            if cached_entry is not None and (now_ts - cached_entry.get("updated_at", 0)) < MONITOR_CACHE_TTL_SECONDS:
+            # 不仅校验时间未过期，还要校验 max_price 是否发生变更
+            if (
+                cached_entry is not None
+                and (now_ts - cached_entry.get("updated_at", 0)) < MONITOR_CACHE_TTL_SECONDS
+                and cached_entry.get("max_price", 0) == max_p
+            ):
                 counts_map[kw] = {
                     "total": cached_entry["total"],
                     "confirmed": cached_entry["confirmed"]
@@ -695,17 +753,18 @@ def build_monitor_response(data: dict) -> dict:
             else:
                 if cached_entry is not None:
                     has_expired = True
-                keywords_to_query.append(kw)
+                keywords_to_query[kw] = max_p
 
     if keywords_to_query:
-        target_query_keywords = active_keywords if has_expired else keywords_to_query
-        fresh_counts = count_monitored_products_72h(target_query_keywords, min_match_score=10, hours=72)
+        target_query_map = active_kw_price_map if has_expired else keywords_to_query
+        fresh_counts = count_monitored_products_72h(target_query_map, min_match_score=10, hours=72)
         update_ts = datetime.now().timestamp()
         with monitor_cache_lock:
             for kw, val in fresh_counts.items():
                 _monitor_counts_cache[kw] = {
                     "total": val["total"],
                     "confirmed": val["confirmed"],
+                    "max_price": target_query_map.get(kw, 0),
                     "updated_at": update_ts
                 }
                 counts_map[kw] = val
