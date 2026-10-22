@@ -1197,7 +1197,7 @@ if __name__ == "__main__":
                        and (item_name := (item.get("name") or "").lower())
                        and any(
                         keywords_group
-                        and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 2 / 3)
+                        and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 3 / 4)
                         and (max_price <= 0 or (item.get("activity_price") is not None and item.get("activity_price") <= max_price))
                         for keywords_group, max_price in target_category_list
                     )
