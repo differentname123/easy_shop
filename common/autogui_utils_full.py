@@ -903,14 +903,21 @@ class PddAutomation(UIActionEngine):
 
         # 将区域放大为底部 1/4，这样既能盖住详情页的“客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
         capture_region = (int(rect.left), int(rect.bottom - h // 4), int(w), int(h // 4))
-        monitor = {"left": capture_region[0], "top": capture_region[1],
-                   "width": capture_region[2], "height": capture_region[3]}
+        monitor = {
+            "left": capture_region[0],
+            "top": capture_region[1],
+            "width": capture_region[2],
+            "height": capture_region[3]
+        }
 
         start_time = time.time()
         detail_entered = False
         sku_ready = False
+        last_click_time = 0.0
+        click_count = 0
+        CLICK_RETRY_INTERVAL = 1.3  # 冷却重试时间间隔（秒）
 
-        # 极限轮询：最多尝试 10 秒
+        # 闭环状态机轮询：最多尝试 10 秒
         while time.time() - start_time < 10:
             try:
                 sct_img = sct.grab(monitor)
@@ -920,25 +927,68 @@ class PddAutomation(UIActionEngine):
                 if result:
                     detected_text = "".join([line[1] for line in result if len(line) >= 2])
 
-                    # 【第一阶段：严格校验原生详情页】
-                    # 必须包含 客服/店铺/收藏 且绝对不能包含 确定（杜绝上一件商品的残留弹窗误判）
-                    if not detail_entered:
-                        if any(kw in detected_text for kw in ["客服", "店铺", "收藏"]) and (
-                                "确定" not in detected_text):
+                    # 1. 【优先检查终止态】：只要底部出现了“确定”或“确认”，说明 SKU 面板已成功展开
+                    if any(kw in detected_text for kw in ["确定", "确认"]):
+                        sku_ready = True
+                        logger.info(f"[INFO] ✅ 检测到 SKU 面板已完全展开 (耗时: {time.time() - start_time:.2f}s)")
+                        break
+
+                    # 2. 【异常商品快速熔断】：检测到缺货/下架立即终止，防止无谓等待 10 秒
+                    if any(bad_kw in detected_text for bad_kw in ["已售罄", "已下架", "商品不存在", "全部售罄"]):
+                        logger.info(f"[WARN] 检测到商品异常状态 ({detected_text[:20]})，提前终止轮询")
+                        return False, [], f"商品不可售({detected_text[:10]})"
+
+                    # 3. 【检测原生详情页并支持周期性重拍】
+                    # 画面中存在 客服/店铺/收藏，且没有“确定”，说明当前依然停留在详情页底栏
+                    if any(kw in detected_text for kw in ["客服", "店铺", "收藏"]) and ("确定" not in detected_text):
+                        now = time.time()
+                        # 首次进入详情页，或距离上次点击已超过 1.3 秒但面板仍未弹出 -> 触发点击
+                        if not detail_entered or (now - last_click_time >= CLICK_RETRY_INTERVAL):
+                            if not detail_entered:
+                                # 【核心防护】：首次识别到底部栏，微等 0.15 秒让小程序绑定事件，杜绝早产死点击
+                                time.sleep(0.15)
+                            else:
+                                # 重试点击前，防范延迟弹出的优惠券遮挡页面
+                                try:
+                                    close_btn = self.window.GroupControl(ClassName="close_btn")
+                                    if close_btn.Exists(0.1, 0):
+                                        close_btn.Click(simulateMove=False)
+                                        logger.info("[HEAL] 轮询中消除延迟弹出的 close_btn 遮挡弹窗")
+                                        time.sleep(0.2)
+                                except Exception:
+                                    pass
+
+                            # 动态获取最新窗口坐标，防止窗口发生微移
+                            rect = self.window.BoundingRectangle
+                            # 奇偶次微调 15 像素，防止连续点在按钮边缘死区
+                            click_x = rect.right - 60 - (click_count % 2) * 15
+                            click_y = rect.bottom - 25
+
+                            # 优先使用 OCR 定位右侧主购买按钮中心
+                            for line in result:
+                                pts, txt = line[0], str(line[1])
+                                if any(btn_kw in txt for btn_kw in ["拼单", "购买", "抢购", "再来一单", "领券"]):
+                                    bx, by, bw, bh = cv2.boundingRect(np.array(pts, dtype=np.int32))
+                                    # 确保是右半区的主操作按钮（bx > w * 0.45），防止点中左侧小文案
+                                    if bx > (rect.right - rect.left) * 0.45:
+                                        click_x = int(capture_region[0] + bx + bw // 2)
+                                        click_y = int(capture_region[1] + by + bh // 2)
+                                        break
+
+                            click_count += 1
                             detail_entered = True
-                            self.safe_click(rect.right - 60, rect.bottom - 25, "动态点击购买")
+                            last_click_time = time.time()
+                            self.safe_click(click_x, click_y, f"动态点击购买 (第 {click_count} 次)")
                             time.sleep(0.3)
-                    # 【第二阶段：必须点击购买之后，才开始识别 SKU 规格抽屉】
-                    else:
-                        if any(kw in detected_text for kw in ["确定", "请选择", "已选"]):
-                            sku_ready = True
-                            break
+                            continue
 
             except Exception:
                 pass
 
+            # 释放 80ms CPU 时间片，避免 OCR 满载拖慢小程序的 UI 渲染进程
+            time.sleep(0.08)
+
         # 轮询结束，进行结果清算
-        # 【核心修复】：超时失败时绝不能提前点击 click_home_button()，保留现场供验证码 solve_pdd_captcha 识别！
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
@@ -965,7 +1015,6 @@ class PddAutomation(UIActionEngine):
             logger.info("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, sku_info, ""
-
 
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
