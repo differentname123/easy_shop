@@ -176,14 +176,16 @@ def _is_box_disabled(img_bgr, box):
 
 
 def _parse_detail_page(img_bgr):
-    """验证详情页并一次性解析价格锚点、规格分类及所有 SKU 框完整内容"""
+    """验证详情页并一次性解析价格锚点、规格分类、所有 SKU 框及是否完全展开状态"""
     h_img, w_img = img_bgr.shape[:2]
     # 全屏常规扫描依然使用 ocr_fast，保证规格框不粘连
     ocr_items = _run_ocr(img_bgr, engine=ocr_fast)
 
-    confirm_y = next((i["box"][1] for i in ocr_items if "确定" in i["text"] and i["cy"] > h_img * 0.80), None)
+    confirm_item = next((i for i in ocr_items if "确定" in i["text"] and i["cy"] > h_img * 0.80), None)
+    confirm_y = confirm_item["box"][1] if confirm_item else None
+    confirm_h = confirm_item["box"][3] if confirm_item else None
 
-    # 1. 常规寻找价格（【修改点 3】：增加对 ? 和 ？ 后接数字如 '?82' 的价格框识别）
+    # 1. 常规寻找价格
     price_boxes = [
         i["box"] for i in ocr_items
         if ("￥" in i["text"] or "¥" in i["text"] or bool(re.search(r"[?？]\s*\d", i["text"])))
@@ -197,12 +199,11 @@ def _parse_detail_page(img_bgr):
             bx, by, bw, bh = item["box"]
             real_box = (bx, int(by + h_img * 0.18), bw, bh)
             t = item["text"]
-            # 【修改点 4】：强力唤醒同样加入对 ? 和 ？ 的支持
             if any(sym in t for sym in ["￥", "¥", "?", "？", "券后", "折后", "拼单"]) and re.search(r"\d", t):
                 price_boxes.append(real_box)
 
     if confirm_y is None or not price_boxes:
-        return False, None, []
+        return False, None, [], False
 
     price_boxes.sort(key=lambda b: (b[1] // 15, b[0]))
     price_anchor = price_boxes[0]
@@ -247,15 +248,24 @@ def _parse_detail_page(img_bgr):
         frags.sort(key=lambda f: (f[0] // 16, f[1]))
         sku_items.append({"box": (bx, by, bw, bh), "cy": by + bh / 2.0, "text": "".join(t for _, _, t in frags)})
 
+    # 【新增判断】：检测距离“确定”最近的文字，其与“确定”之间的垂直间距是否超过“确定”本身的高度
+    is_fully_expanded = False
+    if confirm_item:
+        above_items = [i for i in ocr_items if i is not confirm_item and i["cy"] < confirm_y]
+        if above_items:
+            nearest_bottom = max(i["box"][1] + i["box"][3] for i in above_items)
+            gap = confirm_y - nearest_bottom
+            if gap > confirm_h:
+                is_fully_expanded = True
+
     if not sku_items:
-        return True, price_anchor, []
+        return True, price_anchor, [], is_fully_expanded
 
     cat_top = max(py + 120, min(i["box"][1] for i in sku_items) - 65)
     categories = []
     for idx, item in enumerate(ocr_items):
         if idx not in used_ocr and cat_top <= item["cy"] <= confirm_y and item["box"][0] < w_img * 0.25:
             ox, oy, ow, oh = item["box"]
-            # 过滤掉滑到边缘被截断的残缺规格框文字（分类标题底色为纯白，不应落入粉/灰规格框掩码内）
             roi_mask = combined_sku_mask[max(0, oy):min(h_img, oy + oh), max(0, ox):min(w_img, ox + ow)]
             if roi_mask.size > 0 and float(np.mean(roi_mask > 0)) > 0.20:
                 continue
@@ -264,9 +274,8 @@ def _parse_detail_page(img_bgr):
 
     categories.sort(key=lambda c: c["cy"])
     if not categories:
-        return True, price_anchor, []
-    # 【核心修复】：严格要求规格框必须位于分类标题下方（cat["cy"] < sku["cy"]）
-    # 防止下滑后顶部失去标题的“孤儿规格框”被错误归入下方的“口味”分类中
+        return True, price_anchor, [], is_fully_expanded
+
     for sku in sku_items:
         target_cat = None
         for cat in categories:
@@ -275,13 +284,13 @@ def _parse_detail_page(img_bgr):
         if target_cat is not None:
             target_cat["items"].append(sku)
 
-    return True, price_anchor, [c for c in categories if c["items"]]
+    return True, price_anchor, [c for c in categories if c["items"]], is_fully_expanded
 
 
 def get_pdd_sku_info(id, debug=True):
     """
     获取所有有效（非缺货）SKU 规格组合、价格及截图
-    支持长列表先下滑探测并锁定底部规格（如“口味”），再上滑遍历并自动补全维度，严格杜绝缺维度的错误数据。
+    根据规格完全展开判断自动跳过不必要的上下滑动探测，大幅提升简单商品抓取速度。
     :param id: 截图命名前缀（保存在 SKU_DEBUG_DIR 下，如 id_1.png, id_2.png）
     :param debug: 默认为 True，保存每次选择的完整页面截图
     :return: 字典列表，任何异常或非详情页均稳定返回 []
@@ -305,9 +314,10 @@ def get_pdd_sku_info(id, debug=True):
         # 1. 连续两次校验是否处于详情规格页（初始顶部画面）
         is_detail, price_anchor, top_categories, current_img = False, None, [], None
         win_left, win_top = 0, 0
+        is_fully_expanded = False
         for attempt in range(2):
             current_img, win_left, win_top = _capture_full_window(window)
-            is_detail, price_anchor, top_categories = _parse_detail_page(current_img)
+            is_detail, price_anchor, top_categories, is_fully_expanded = _parse_detail_page(current_img)
             if is_detail:
                 break
             if attempt == 0:
@@ -318,66 +328,63 @@ def get_pdd_sku_info(id, debug=True):
 
         h_img, w_img = current_img.shape[:2]
         top_cat_names = {c["name"] for c in top_categories}
-
-        # =========================================================================
-        # 步骤 1.5：【先下滑探测底部规格】定位鼠标至规格滚动区，下滑到底部锁定末尾规格（如“口味”）
-        # =========================================================================
-        scroll_x = int(win_left + w_img * 0.5)
-        scroll_y = int(win_top + h_img * 0.65)
         pre_selected_specs = {}  # 保存底部预选成功的规格，如 {"口味": "500g 【39粒】"}
+        categories = top_categories
 
-        auto.MoveTo(scroll_x, scroll_y, waitTime=0)
-        auto.WheelDown(wheelTimes=8, waitTime=0.03)
-        time.sleep(0.25)
+        # =========================================================================
+        # 步骤 1.5 & 1.8：根据规格展开状态决定是否执行长列表探测
+        # =========================================================================
+        if not is_fully_expanded:
+            scroll_x = int(win_left + w_img * 0.5)
+            scroll_y = int(win_top + h_img * 0.65)
 
-        btm_img, win_left, win_top = _capture_full_window(window)
-        is_detail_btm, _, btm_categories = _parse_detail_page(btm_img)
+            # 【先下滑探测底部规格】
+            auto.MoveTo(scroll_x, scroll_y, waitTime=0)
+            auto.WheelDown(wheelTimes=8, waitTime=0.03)
+            time.sleep(0.25)
 
-        if is_detail_btm and btm_categories:
-            # 针对底部出现的每一个规格分类（重点是顶部未见的分类及最后一个分类，如“口味”），选择一个可用项并记住
-            for btm_cat in btm_categories:
-                cat_name = btm_cat["name"]
-                # 如果该分类是底部新增的分类，或者是全页最后一个分类，则执行预选锁定
-                if cat_name not in top_cat_names or btm_cat is btm_categories[-1]:
-                    selected_text = None
-                    # 优先检查是否已经有默认选中项
-                    for sku in btm_cat["items"]:
-                        if sku["text"] and _is_box_selected(btm_img, sku["box"]):
-                            selected_text = sku["text"]
-                            break
+            btm_img, win_left, win_top = _capture_full_window(window)
+            is_detail_btm, _, btm_categories, _ = _parse_detail_page(btm_img)
 
-                    # 若无默认选中项，则依次尝试点击第一个非置灰的可选规格
-                    if not selected_text:
+            if is_detail_btm and btm_categories:
+                for btm_cat in btm_categories:
+                    cat_name = btm_cat["name"]
+                    if cat_name not in top_cat_names or btm_cat is btm_categories[-1]:
+                        selected_text = None
                         for sku in btm_cat["items"]:
-                            if not sku["text"] or _is_box_disabled(btm_img, sku["box"]):
-                                continue
-                            bx, by, bw, bh = sku["box"]
-                            auto.Click(int(win_left + bx + bw // 2), int(win_top + by + bh // 2), waitTime=0)
-                            time.sleep(0.08)
-                            btm_img, win_left, win_top = _capture_full_window(window)
-                            if _is_box_selected(btm_img, (bx, by, bw, bh)):
+                            if sku["text"] and _is_box_selected(btm_img, sku["box"]):
                                 selected_text = sku["text"]
                                 break
 
-                    if selected_text:
-                        pre_selected_specs[cat_name] = selected_text
-                    elif cat_name not in top_cat_names:
-                        # 【严格防御】：发现了顶部缺失的隐藏规格分类（如“口味”），但未能成功选中任何一项
-                        # 宁可放弃接入，也绝不返回缺少维度的错误数据
-                        logger.info(f"[WARN] 底部隐藏规格分类 '{cat_name}' 无可用选项可锁定，为防脏数据已中止提取")
-                        return []
+                        if not selected_text:
+                            for sku in btm_cat["items"]:
+                                if not sku["text"] or _is_box_disabled(btm_img, sku["box"]):
+                                    continue
+                                bx, by, bw, bh = sku["box"]
+                                auto.Click(int(win_left + bx + bw // 2), int(win_top + by + bh // 2), waitTime=0)
+                                time.sleep(0.08)
+                                btm_img, win_left, win_top = _capture_full_window(window)
+                                if _is_box_selected(btm_img, (bx, by, bw, bh)):
+                                    selected_text = sku["text"]
+                                    break
 
-        # =========================================================================
-        # 步骤 1.8：【上滑复位】滑回顶部，重新解析顶部规格坐标并开始正式遍历
-        # =========================================================================
-        auto.MoveTo(scroll_x, scroll_y, waitTime=0)
-        auto.WheelUp(wheelTimes=10, waitTime=0.03)
-        time.sleep(0.25)
+                        if selected_text:
+                            pre_selected_specs[cat_name] = selected_text
+                        elif cat_name not in top_cat_names:
+                            logger.info(f"[WARN] 底部隐藏规格分类 '{cat_name}' 无可用选项可锁定，为防脏数据已中止提取")
+                            return []
 
-        current_img, win_left, win_top = _capture_full_window(window)
-        is_detail, price_anchor, categories = _parse_detail_page(current_img)
-        if not is_detail or not categories:
-            return []
+            # 【上滑复位】滑回顶部，重新解析顶部规格坐标
+            auto.MoveTo(scroll_x, scroll_y, waitTime=0)
+            auto.WheelUp(wheelTimes=10, waitTime=0.03)
+            time.sleep(0.25)
+
+            current_img, win_left, win_top = _capture_full_window(window)
+            is_detail, price_anchor, categories, _ = _parse_detail_page(current_img)
+            if not is_detail or not categories:
+                return []
+        else:
+            logger.info("[INFO] ⚡ 检测到规格已完全展开，已智能跳过上下滑动探测！")
 
         cat_names = [c["name"] for c in categories]
         all_combos = list(itertools.product(*(c["items"] for c in categories)))
@@ -388,7 +395,6 @@ def get_pdd_sku_info(id, debug=True):
             try:
                 combo_valid = True
                 for target_sku in combo:
-                    # 若规格文字为空（如初始极浅灰字未被OCR检出），直接跳过防止脏数据
                     if not target_sku["text"]:
                         combo_valid = False
                         break
@@ -397,7 +403,6 @@ def get_pdd_sku_info(id, debug=True):
                     if _is_box_selected(current_img, (bx, by, bw, bh)):
                         continue
 
-                    # 点击前检测：若该规格当前已处于缺货置灰状态，直接放弃该组合
                     if _is_box_disabled(current_img, (bx, by, bw, bh)):
                         combo_valid = False
                         break
@@ -406,12 +411,10 @@ def get_pdd_sku_info(id, debug=True):
                     time.sleep(0.05)
                     current_img, win_left, win_top = _capture_full_window(window)
 
-                    # 点击后校验：若点击后并未变为浅粉选中状态（说明不可选或缺货），放弃该组合
                     if not _is_box_selected(current_img, (bx, by, bw, bh)):
                         combo_valid = False
                         break
 
-                # 最终复核：确保当前组合中的所有可见规格均同时处于选中状态
                 if not combo_valid or not all(_is_box_selected(current_img, s["box"]) for s in combo):
                     continue
 
@@ -430,14 +433,11 @@ def get_pdd_sku_info(id, debug=True):
                     save_path=price_screenshot_path if debug else None
                 )
 
-                # 【严格防御】：如果提取不到价格，或价格退回区间价（含 '-' / '~' / '起'，说明底部预选规格与当前顶部规格互斥被取消）
-                # 宁可少接入该组合，也绝不写入区间价或错误组合
                 if not price_text or any(sym in price_text for sym in ("-", "~", "起")):
                     continue
 
                 record = {name: sku["text"] for name, sku in zip(cat_names, combo)}
 
-                # 【核心补全】：如果当前记录中没有刚刚在底部保存的规格（如“口味”），则自动补充；如果已有则保持不变
                 for pre_cat, pre_val in pre_selected_specs.items():
                     if pre_cat not in record:
                         record[pre_cat] = pre_val
