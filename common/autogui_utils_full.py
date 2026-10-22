@@ -1190,26 +1190,10 @@ if __name__ == "__main__":
                 kw_clean = (search_keyword or "").strip().lower()
                 if not kw_clean:
                     continue
-                # words = gen_goods_segment_info(name=search_keyword)
+                words = gen_goods_segment_info(name=search_keyword)
 
-                words = [search_keyword]
-
-                # words 示例格式为 ['娟姗','good', '鲜牛奶']
-
-                # 1. 将 words 完全展平成单个字符列表，例如 ['娟', '姗', 'g', 'o', 'o', 'd', ...]
-                clean_words = []
-                if isinstance(words, (list, tuple, set)):
-                    clean_words = [
-                        char
-                        for w in words
-                        if str(w).strip()
-                        for char in str(w).strip().lower()
-                        if not char.isspace()
-                    ]
-                if not clean_words:
-                    clean_words = [char for char in kw_clean if not char.isspace()]
                 max_price = monitored_products[search_keyword].get('max_price') or 0
-                target_category_list.append((clean_words, max_price))
+                target_category_list.append((words, max_price))
 
             logger.info(target_category_list)
 
@@ -1246,7 +1230,7 @@ if __name__ == "__main__":
                        and (item_name := (item.get("name") or "").lower())
                        and any(
                         keywords_group
-                        and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 3 / 4)
+                        and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 4 / 4)
                         and (max_price <= 0 or (item.get("activity_price") is not None and item.get("activity_price") <= max_price))
                         for keywords_group, max_price in target_category_list
                     )
