@@ -33,8 +33,8 @@ from common.common_utils import read_json
 TRANSFER_APP_NAME = "wxid_2lr36gkzn2io22的小程序测试号"
 TRANSFER_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\wxid_2lr36gkzn2io22的小程序测试号.lnk"
 
-TRANSFER_APP_NAME = "合力汇"
-TRANSFER_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\合力汇.lnk"
+# TRANSFER_APP_NAME = "合力汇"
+# TRANSFER_SHORTCUT_PATH = r"C:\Users\zxh\Desktop\合力汇.lnk"
 TARGET_APP_NAME = "拼多多"
 
 DEBUG_MODE = True
