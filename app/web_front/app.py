@@ -6,7 +6,7 @@
 :last_date:
     2026/10/22 14:00
 :description:
-    性价比商品搜索服务（已移除前端佣金字段传输）
+    性价比商品搜索服务（仅保留价格、真人核实、计量单位筛选及包含/排除过滤支持）
 """
 import math
 import os
@@ -247,7 +247,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         search_terms = [target_kw]
 
     if not search_terms:
-        return {"results": [], "dominant_unit": "", "unit_counts": {}, "filters": []}
+        return {"results": [], "dominant_unit": "", "unit_counts": {}}
 
     # 读取已反馈有误的商品列表，用于后续过滤
     with feedback_file_lock:
@@ -460,39 +460,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     # 整体按性价比分值降序排列
     final_results.sort(key=lambda x: x["cost_performance_score"], reverse=True)
 
-    # 动态统计并生成过滤维度
-    attribute_stats = {}
-    for product in final_results:
-        keywords = product.get("format_info", {}).get("decision_keywords", [])
-        for kw in keywords:
-            attr_name = kw.get("attribute_name")
-            attr_val = kw.get("attribute_value")
-            score = kw.get("score", 0)
-
-            if not attr_name or not attr_val:
-                continue
-
-            if attr_name not in attribute_stats:
-                attribute_stats[attr_name] = {"score": 0, "values": set()}
-
-            attribute_stats[attr_name]["score"] += score
-            attribute_stats[attr_name]["values"].add(attr_val)
-
-    # 过滤掉仅有1个值的属性
-    valid_attributes = []
-    for attr_name, stats in attribute_stats.items():
-        if len(stats["values"]) > 1:
-            valid_attributes.append({
-                "attribute_name": attr_name,
-                "score": stats["score"],
-                "options": list(stats["values"])
-            })
-
-    # 根据得分降序排列，取前5个筛选维度
-    valid_attributes.sort(key=lambda x: x["score"], reverse=True)
-    top_filters = valid_attributes[:5]
-
-    # 精简响应结构（已移除 has_commission 字段，减少传输体积）
+    # 精简响应结构（仅传递前端计算和展示必需字段）
     response_products = []
     for idx, product in enumerate(final_results):
         format_info = product.get("format_info") or {}
@@ -553,11 +521,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     return {
         "results": response_products,
         "dominant_unit": dominant_unit,
-        "unit_counts": unit_counts,
-        "filters": [
-            {"attribute_name": item["attribute_name"], "options": item["options"]}
-            for item in top_filters
-        ]
+        "unit_counts": unit_counts
     }
 
 # ============== 商品监控本地 JSON 安全维护与统计逻辑 ==============
@@ -650,7 +614,7 @@ def _has_valid_price_under_limit(product: dict, max_price: float) -> bool:
     if "pricing_basis" in raw_format_info and isinstance(raw_format_info.get("pricing_basis"), dict):
         return _check_price(raw_format_info.get("price"))
 
-    # 多规格结构：只要该商品下有任意一个合法规格满足限价，该商品即有效（若想按展开后的SKU数统计，可改为返回满足条件的SKU数量）
+    # 多规格结构：只要该商品下有任意一个合法规格满足限价，该商品即有效
     for sku_fmt in raw_format_info.values():
         if isinstance(sku_fmt, dict) and isinstance(sku_fmt.get("pricing_basis"), dict):
             if _check_price(sku_fmt.get("price")):
@@ -889,8 +853,7 @@ def api_search(keyword: str = "方便面", hours: int = 72):
         "status": "success",
         "data": search_data["results"],
         "dominant_unit": search_data.get("dominant_unit", ""),
-        "unit_counts": search_data.get("unit_counts", {}),
-        "filters": search_data["filters"]
+        "unit_counts": search_data.get("unit_counts", {})
     }
 
 # 2. 网页路由配置
