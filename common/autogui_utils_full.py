@@ -178,7 +178,7 @@ def _is_box_disabled(img_bgr, box):
     return int(np.sum(gray < 150)) < 10
 
 
-def _parse_detail_page(img_bgr):
+def _parse_detail_page(img_bgr, min_cat_top=None):
     """验证详情页并一次性解析价格锚点、规格分类、所有 SKU 框及是否完全展开状态"""
     h_img, w_img = img_bgr.shape[:2]
     # 全屏常规扫描依然使用 ocr_fast，保证规格框不粘连
@@ -216,6 +216,10 @@ def _parse_detail_page(img_bgr):
     for item in ocr_items:
         if any(w in item["text"] for w in ("已选", "请选择")) and py < item["cy"] < py + 150:
             sku_top = max(sku_top, int(item["box"][1] + item["box"][3] + 35))
+        if item["text"].strip() in ("-", "+", "－", "＋") and py < item["cy"] < py + 180:
+            sku_top = max(sku_top, int(item["box"][1] + item["box"][3] + 10))
+    if min_cat_top is not None:
+        sku_top = max(sku_top, int(min_cat_top))
 
     b, g, r = cv2.split(img_bgr)
     pink_mask = ((r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & (
@@ -264,7 +268,10 @@ def _parse_detail_page(img_bgr):
     if not sku_items:
         return True, price_anchor, [], is_fully_expanded
 
-    cat_top = max(py + 120, min(i["box"][1] for i in sku_items) - 65)
+    cat_top = max(sku_top - 25, min(i["box"][1] for i in sku_items) - 65)
+    if min_cat_top is not None:
+        cat_top = max(cat_top, int(min_cat_top))
+
     categories = []
     for idx, item in enumerate(ocr_items):
         if idx not in used_ocr and cat_top <= item["cy"] <= confirm_y and item["box"][0] < w_img * 0.25:
@@ -329,6 +336,9 @@ def get_pdd_sku_info(id, debug=True):
         if not is_detail or not top_categories:
             return []
 
+        # 以首页第一次识别到的首个规格名的位置作为最高上限
+        first_cat_top = int(top_categories[0]["cy"] - 15)
+
         h_img, w_img = current_img.shape[:2]
         top_cat_names = {c["name"] for c in top_categories}
         pre_selected_specs = {}  # 保存底部预选成功的规格，如 {"口味": "500g 【39粒】"}
@@ -347,7 +357,7 @@ def get_pdd_sku_info(id, debug=True):
             time.sleep(0.25)
 
             btm_img, win_left, win_top = _capture_full_window(window)
-            is_detail_btm, _, btm_categories, _ = _parse_detail_page(btm_img)
+            is_detail_btm, _, btm_categories, _ = _parse_detail_page(btm_img, min_cat_top=first_cat_top)
 
             if is_detail_btm and btm_categories:
                 for btm_cat in btm_categories:
@@ -383,7 +393,7 @@ def get_pdd_sku_info(id, debug=True):
             time.sleep(0.25)
 
             current_img, win_left, win_top = _capture_full_window(window)
-            is_detail, price_anchor, categories, _ = _parse_detail_page(current_img)
+            is_detail, price_anchor, categories, _ = _parse_detail_page(current_img, min_cat_top=first_cat_top)
             if not is_detail or not categories:
                 return []
         else:
