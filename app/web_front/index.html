@@ -326,7 +326,7 @@
                     </button>
                 </div>
 
-                <!-- 第二层：价格区间胶囊 + 真人核实 + 计量单位 + 动态规格属性 -->
+                <!-- 第二层：价格区间胶囊 + 真人核实 + 计量单位 + 是否多人团 + 动态规格属性 -->
                 <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
                     <!-- 1. 价格(¥) 最低 ~ 不限 区间筛选胶囊（自动联动常买好物清单最高限价） -->
                     <div
@@ -403,7 +403,25 @@
                         </div>
                     </div>
 
-                    <!-- 4. 动态商品属性筛选（如品牌、香型、抽数等） -->
+                    <!-- 4. 是否多人团 筛选下拉框 -->
+                    <div class="flex-shrink-0 relative">
+                        <select
+                            v-model="activeGroupFilter"
+                            class="appearance-none h-[30px] bg-white border text-xs font-semibold rounded-full pl-2.5 pr-6 outline-none transition-all cursor-pointer"
+                            :class="activeGroupFilter ? 'border-brand-600 text-brand-600 bg-brand-50/50 font-bold' : 'border-zinc-200/90 text-zinc-700'"
+                        >
+                            <option value="">是否多人团</option>
+                            <option value="group">多人团</option>
+                            <option value="no_group">非多人团</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- 5. 动态商品属性筛选（如品牌、香型、抽数等） -->
                     <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
                         <select
                             v-model="activeFilters[filter.attribute_name]"
@@ -1026,6 +1044,7 @@
 
             const activeUnitFilter = ref('')
             const activeSuspiciousFilter = ref('')
+            const activeGroupFilter = ref('')
             const availableFilters = ref([])
             const activeFilters = ref({})
 
@@ -1115,6 +1134,7 @@
                         activeFilters: activeFilters.value,
                         activeUnitFilter: activeUnitFilter.value,
                         activeSuspiciousFilter: activeSuspiciousFilter.value,
+                        activeGroupFilter: activeGroupFilter.value,
                         nameKeywordFilter: nameKeywordFilter.value,
                         excludeKeywordFilter: excludeKeywordFilter.value,
                         minPriceFilter: minPriceFilter.value,
@@ -1151,6 +1171,7 @@
                     activeFilters.value = snap.activeFilters || {}
                     activeUnitFilter.value = snap.activeUnitFilter || ''
                     activeSuspiciousFilter.value = snap.activeSuspiciousFilter || ''
+                    activeGroupFilter.value = snap.activeGroupFilter || ''
                     nameKeywordFilter.value = snap.nameKeywordFilter || ''
                     debouncedNameFilter.value = (snap.nameKeywordFilter || '').trim().toLowerCase()
                     excludeKeywordFilter.value = snap.excludeKeywordFilter || ''
@@ -1357,6 +1378,7 @@
 
                 const unitVal = activeUnitFilter.value
                 const suspVal = activeSuspiciousFilter.value !== '' ? Number(activeSuspiciousFilter.value) : null
+                const groupVal = activeGroupFilter.value
                 const activeAttrEntries = Object.entries(activeFilters.value).filter(([, v]) => v !== '')
 
                 return arr.filter(p => {
@@ -1366,6 +1388,7 @@
                     if (hasMaxPrice && p._activityPriceNum > maxPriceVal) return false
                     if (unitVal && p.base_unit !== unitVal) return false
                     if (suspVal !== null && p.is_suspicious !== suspVal) return false
+                    if (groupVal && (p._source_api || '').toLowerCase() !== groupVal.toLowerCase()) return false
                     for (let i = 0; i < activeAttrEntries.length; i++) {
                         const [attrName, selectedValue] = activeAttrEntries[i]
                         if (p._kwMap[attrName] !== selectedValue) return false
@@ -1374,7 +1397,7 @@
                 })
             })
 
-            watch([activeUnitFilter, activeSuspiciousFilter, activeFilters, minPriceFilter, maxPriceFilter], () => {
+            watch([activeUnitFilter, activeSuspiciousFilter, activeGroupFilter, activeFilters, minPriceFilter, maxPriceFilter], () => {
                 displayLimit.value = PAGE_SIZE
                 saveSearchSnapshot()
             }, { deep: true })
@@ -1397,6 +1420,7 @@
                     hasPriceFilter.value ||
                     activeUnitFilter.value !== '' ||
                     activeSuspiciousFilter.value !== '' ||
+                    activeGroupFilter.value !== '' ||
                     Object.values(activeFilters.value).some(val => val !== '')
             })
 
@@ -1406,6 +1430,7 @@
                 clearPriceFilter()
                 activeUnitFilter.value = ''
                 activeSuspiciousFilter.value = ''
+                activeGroupFilter.value = ''
                 for (const key in activeFilters.value) {
                     activeFilters.value[key] = ''
                 }
@@ -1512,6 +1537,7 @@
                         activeUnitFilter.value = dominant
 
                         activeSuspiciousFilter.value = ''
+                        activeGroupFilter.value = ''
                         clearNameFilter()
                         clearExcludeFilter()
 
@@ -1555,6 +1581,7 @@
                 clearPriceFilter()
                 activeUnitFilter.value = ''
                 activeSuspiciousFilter.value = ''
+                activeGroupFilter.value = ''
                 displayLimit.value = PAGE_SIZE
                 sessionStorage.removeItem(SNAPSHOT_STORAGE_KEY)
                 window.history.replaceState({}, '', window.location.pathname)
@@ -1734,6 +1761,7 @@
                 minPriceFilter, maxPriceFilter, hasPriceFilter, clearPriceFilter,
                 availableUnits, unitOptions, activeUnitFilter,
                 activeSuspiciousFilter, toggleConfirmedOnly,
+                activeGroupFilter,
                 availableFilters, activeFilters, hasActiveFilter, clearFilters,
                 search, resetView, openDetail, closeDetail, saveSearchSnapshot,
                 formatUnitPrice, getUnitPrice, getDecisionKeywords, getPricingStructure, getTotalValue,

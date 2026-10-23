@@ -1104,6 +1104,8 @@ def batch_runner(product_list):
                     solve_pdd_captcha()
                     # 2. 验证码处理完毕后，再将拼多多复位回首页，确保下次任务不受旧页面干扰
                     bot.click_home_button()
+                    bot.close_current_window()  # <--- 直接改成关窗！
+
 
                     logger.info("-" * 40)
                     time.sleep(10)
