@@ -253,13 +253,13 @@
                 </button>
             </div>
 
-            <!-- ============ 仅保留：包含、排除、价格、真人核实、计量单位筛选栏 ============ -->
+            <!-- ============ 精简重构后的双层搜索过滤栏（仅在有搜索结果时展示） ============ -->
             <div v-if="currentView === 'search' && hasSearched && products.length > 0"
                  class="mt-2 pt-2 border-t border-zinc-200/60 flex flex-col gap-1.5">
 
-                <!-- 第一层：包含性的查询 + 排除性的查询 + 右侧重置按钮 -->
+                <!-- 第一层：一体化「包含 + 排除」双联关键词精筛栏 + 右侧重置按钮 -->
                 <div class="flex items-center gap-1.5">
-                    <!-- 包含性查询（结果中再搜） -->
+                    <!-- 正向包含过滤（结果中再搜，聚焦时自动拓宽） -->
                     <div class="flex-1 focus-within:flex-[1.85] min-w-0 flex items-center h-[34px] bg-white border rounded-xl px-2 transition-all duration-200"
                          :class="nameKeywordFilter ? 'border-brand-600/80 ring-1 ring-brand-600/10' : 'border-zinc-200/90 focus-within:border-brand-600'">
                         <span class="px-1.5 py-0.5 bg-brand-50 text-brand-600 rounded text-[11px] font-extrabold whitespace-nowrap flex-shrink-0">
@@ -279,7 +279,7 @@
                             @click="clearNameFilter"
                             type="button"
                             class="p-0.5 text-zinc-400 active:text-zinc-600 flex-shrink-0"
-                            aria-label="清空包含搜索"
+                            aria-label="清空正向搜索"
                         >
                             <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
                                 <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
@@ -287,7 +287,7 @@
                         </button>
                     </div>
 
-                    <!-- 排除性查询（多词空格隔开，命中任意一词即剔除） -->
+                    <!-- 反向排除过滤（多词空格隔开，命中任意一词即剔除，聚焦时自动拓宽） -->
                     <div class="flex-1 focus-within:flex-[1.85] min-w-0 flex items-center h-[34px] bg-white border rounded-xl px-2 transition-all duration-200"
                          :class="excludeKeywordFilter ? 'border-rose-500/80 ring-1 ring-rose-500/10' : 'border-zinc-200/90 focus-within:border-rose-500'">
                         <span class="px-1.5 py-0.5 bg-rose-50 text-rose-600 rounded text-[11px] font-extrabold whitespace-nowrap flex-shrink-0">
@@ -315,7 +315,7 @@
                         </button>
                     </div>
 
-                    <!-- 重置筛选按钮 -->
+                    <!-- 重置筛选按钮固定在右侧 -->
                     <button
                         v-if="hasActiveFilter"
                         @click="clearFilters"
@@ -326,9 +326,9 @@
                     </button>
                 </div>
 
-                <!-- 第二层：价格 + 真人核实 + 计量单位（仅保留指定3个筛选） -->
+                <!-- 第二层：价格区间胶囊 + 真人核实 + 计量单位 + 是否多人团 + 动态规格属性 -->
                 <div class="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-0.5">
-                    <!-- 1. 价格(¥) 筛选胶囊 -->
+                    <!-- 1. 价格(¥) 最低 ~ 不限 区间筛选胶囊（自动联动常买好物清单最高限价） -->
                     <div
                         class="flex-shrink-0 inline-flex items-center gap-1 h-[30px] px-2.5 rounded-full text-xs border transition-all"
                         :class="hasPriceFilter
@@ -372,7 +372,7 @@
                         </button>
                     </div>
 
-                    <!-- 2. 是否真人核实 胶囊按钮 -->
+                    <!-- 2. 一键切换“只看真人核实”胶囊开关 -->
                     <button
                         type="button"
                         @click="toggleConfirmedOnly"
@@ -384,7 +384,7 @@
                         <span>✓ 真人已核实</span>
                     </button>
 
-                    <!-- 3. 计量单位 切换下拉框 -->
+                    <!-- 3. 计量单位切换（显示单位及对应规格数量，默认选中数量最多单位） -->
                     <div v-if="unitOptions.length > 0" class="flex-shrink-0 relative">
                         <select
                             v-model="activeUnitFilter"
@@ -395,6 +395,41 @@
                             <option v-for="item in unitOptions" :key="item.unit" :value="item.unit">
                                 按「{{ item.unit }}」算 ({{ item.count }}款)
                             </option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- 4. 是否多人团筛选（默认不进行过滤） -->
+                    <div class="flex-shrink-0 relative">
+                        <select
+                            v-model="activeGroupFilter"
+                            class="appearance-none h-[30px] bg-white border text-xs font-semibold rounded-full pl-2.5 pr-6 outline-none transition-all cursor-pointer"
+                            :class="activeGroupFilter ? 'border-brand-600 text-brand-600 bg-brand-50/50 font-bold' : 'border-zinc-200/90 text-zinc-700'"
+                        >
+                            <option value="">是否多人团</option>
+                            <option value="group">多人团</option>
+                            <option value="no_group">非多人团</option>
+                        </select>
+                        <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- 5. 动态商品属性筛选（如品牌、香型、抽数等） -->
+                    <div v-for="filter in availableFilters" :key="filter.attribute_name" class="flex-shrink-0 relative">
+                        <select
+                            v-model="activeFilters[filter.attribute_name]"
+                            class="appearance-none h-[30px] bg-white border text-xs font-semibold rounded-full pl-2.5 pr-6 outline-none transition-all cursor-pointer"
+                            :class="activeFilters[filter.attribute_name] ? 'border-brand-600 text-brand-600 bg-brand-50/50 font-bold' : 'border-zinc-200/90 text-zinc-700'"
+                        >
+                            <option value="">{{ filter.attribute_name }}</option>
+                            <option v-for="opt in filter.options" :key="opt" :value="opt">{{ opt }}</option>
                         </select>
                         <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-2 text-zinc-400">
                             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -541,7 +576,7 @@
     <!-- ============ 主体内容：主搜索与比价页面 ============ -->
     <main v-else class="flex-1 max-w-4xl mx-auto w-full px-3.5 sm:px-6 py-4 sm:py-6">
 
-        <!-- 初始未搜索引导页 -->
+        <!-- 初始未搜索引导页（简洁直观） -->
         <div v-if="!hasSearched && !loading"
              class="flex flex-col items-center justify-center py-14 sm:py-24 text-center animate-card px-4">
             <div class="w-16 h-16 bg-white rounded-3xl shadow-apple flex items-center justify-center mb-5 border border-zinc-200/60">
@@ -587,7 +622,7 @@
                         </span>
                     </div>
 
-                    <!-- 分段式排序切换器 -->
+                    <!-- 分段式排序切换器（类似 iOS UISegmentedControl） -->
                     <div class="flex bg-zinc-100 p-0.5 rounded-xl flex-shrink-0">
                         <button
                             v-for="option in sortOptions"
@@ -602,7 +637,7 @@
                     </div>
                 </div>
 
-                <!-- 最划算单价 vs 平时市场均价 -->
+                <!-- 最划算单价 vs 平时市场均价（去除令人困惑的百分比公式，一目了然） -->
                 <div class="grid grid-cols-2 gap-2.5 p-3 bg-zinc-50 rounded-xl border border-zinc-100">
                     <div>
                         <p class="text-[11px] text-emerald-700 font-bold mb-0.5">🏆 最划算单价</p>
@@ -619,7 +654,7 @@
                 </div>
             </div>
 
-            <!-- 筛选条件导致无结果提示 -->
+            <!-- 筛选条件过多导致无结果时 -->
             <div v-if="sortedProducts.length === 0" class="bg-white rounded-3xl py-12 px-4 text-center border border-zinc-200/60 shadow-apple">
                 <span class="text-3xl block mb-2">🔍</span>
                 <h3 class="text-sm font-bold text-zinc-800 mb-1">没有符合当前筛选条件的商品</h3>
@@ -629,7 +664,7 @@
                 </button>
             </div>
 
-            <!-- 移动端商品卡片列表 -->
+            <!-- 移动端高可读性商品卡片列表 -->
             <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-4">
                 <article
                     v-for="(item, index) in visibleProducts"
@@ -646,7 +681,7 @@
                         </span>
                     </div>
 
-                    <!-- 左侧：缩略图 + 平台 -->
+                    <!-- 左侧：高清商品缩略图 + 平台标识 -->
                     <div class="w-28 h-28 sm:w-32 sm:h-32 rounded-xl bg-zinc-50 relative flex-shrink-0 overflow-hidden border border-zinc-100">
                         <img :src="item.image_url" :alt="item.name" loading="lazy" decoding="async" class="w-full h-full object-cover">
                         <div class="absolute bottom-1 left-1">
@@ -657,13 +692,15 @@
                         </div>
                     </div>
 
-                    <!-- 右侧：标题 + 核实标签 + 真实单价 -->
+                    <!-- 右侧：商品标题 + 核实标签 + 超大号真实单价 -->
                     <div class="flex-1 flex flex-col justify-between min-w-0 py-0.5">
                         <div>
+                            <!-- 商品名 -->
                             <h3 class="text-[14px] sm:text-[15px] font-bold text-zinc-900 leading-snug line-clamp-2 mb-1.5">
                                 {{ item.name }}
                             </h3>
 
+                            <!-- 状态与规格属性标签 -->
                             <div class="flex flex-wrap items-center gap-1 mb-2">
                                 <span v-if="item.is_suspicious === 1"
                                       class="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded-md text-[10px] font-bold border border-emerald-200/80">
@@ -680,7 +717,7 @@
                             </div>
                         </div>
 
-                        <!-- 底部价格区 -->
+                        <!-- 底部核心价格区：突出单价，辅助显示到手总价 -->
                         <div class="pt-1.5 border-t border-zinc-100 flex items-end justify-between gap-1">
                             <div>
                                 <div class="flex items-baseline gap-0.5">
@@ -696,6 +733,7 @@
                                 </div>
                             </div>
 
+                            <!-- 省钱比例直观胶囊 -->
                             <span v-if="getCompareIndicator(item)"
                                   class="flex-shrink-0 text-[10px] font-extrabold px-2 py-0.5 rounded-full"
                                   :class="getCompareIndicator(item).better ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-100 text-zinc-500'">
@@ -757,7 +795,7 @@
         </div>
     </Teleport>
 
-    <!-- ============ 沉浸式商品详情抽屉 ============ -->
+    <!-- ============ 沉浸式商品详情抽屉（Apple Sheet 风格） ============ -->
     <Teleport to="body">
         <div v-if="selectedProduct" class="fixed inset-0 bg-black/40 backdrop-blur-xs z-50 transition-opacity" @click="closeDetail()"></div>
 
@@ -766,7 +804,7 @@
                  class="fixed inset-x-0 bottom-0 z-50 bg-white rounded-t-3xl shadow-drawer max-h-[90vh] max-w-2xl mx-auto flex flex-col overflow-hidden"
                  style="padding-bottom: var(--sab);">
 
-                <!-- 顶部导航条 -->
+                <!-- 顶部导航条：左侧返回列表，中间下拉指示条，右侧关闭图标 -->
                 <div class="w-full flex-shrink-0 flex items-center justify-between px-4 py-3 border-b border-zinc-100 bg-white z-20">
                     <button @click="closeDetail()" type="button" class="flex items-center gap-1 text-xs font-bold text-zinc-600 active:text-zinc-900 py-1 px-2 -ml-2 rounded-lg">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -784,6 +822,8 @@
 
                 <!-- 中间独立滚动内容区 -->
                 <div class="flex-1 overflow-y-auto px-4 sm:px-6 pt-3 pb-6 no-scrollbar">
+
+                    <!-- 商品大图与顶部标签 -->
                     <div class="w-full h-56 sm:h-64 rounded-2xl bg-zinc-50 border border-zinc-100 mb-4 flex items-center justify-center overflow-hidden relative p-2">
                         <img :src="selectedProduct.image_url" :alt="selectedProduct.name" class="w-full h-full object-contain mix-blend-multiply">
                         <div class="absolute top-2.5 left-2.5 flex flex-wrap gap-1.5">
@@ -801,13 +841,14 @@
                         </div>
                     </div>
 
+                    <!-- 商品完整名称 -->
                     <div class="mb-4">
                         <h2 class="text-base sm:text-lg font-extrabold text-zinc-900 leading-snug select-all">
                             {{ selectedProduct.name }}
                         </h2>
                     </div>
 
-                    <!-- 核心单价卡片 -->
+                    <!-- 核心单价计算透明卡片（大白话公式：怎么算出来的清清楚楚） -->
                     <div class="bg-zinc-900 rounded-3xl p-4 sm:p-5 mb-5 text-white shadow-float">
                         <div class="flex items-center justify-between mb-3">
                             <span class="text-xs font-bold text-zinc-300">💡 单价是怎么算出来的？</span>
@@ -818,6 +859,7 @@
                             </span>
                         </div>
 
+                        <!-- 突出展示算出来的单价 -->
                         <div class="bg-white/10 border border-white/15 rounded-2xl p-3.5 sm:p-4 flex justify-between items-center mb-3">
                             <div>
                                 <span class="text-sm font-bold text-amber-300 block">算下来每 1 {{ selectedProduct.base_unit }}</span>
@@ -829,6 +871,7 @@
                             </div>
                         </div>
 
+                        <!-- 拆解明细：总价与总量 -->
                         <div class="grid grid-cols-2 gap-2.5">
                             <div class="bg-white/5 border border-white/10 rounded-xl p-3">
                                 <span class="text-[11px] text-zinc-400 block mb-0.5">预估到手总价</span>
@@ -870,7 +913,7 @@
                         </div>
                     </div>
 
-                    <!-- 报错反馈区 -->
+                    <!-- 免打字一键报错区 -->
                     <div class="pt-3 border-t border-zinc-100">
                         <div v-if="feedbackSuccess" class="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 text-center text-xs font-bold text-emerald-700">
                             ✓ 已为您屏蔽该商品，感谢反馈
@@ -888,6 +931,7 @@
 
                         <div v-else class="bg-zinc-50 border border-zinc-200/80 rounded-2xl p-3.5">
                             <p class="text-xs font-bold text-zinc-800 mb-2.5">点选原因即可直接提交（提交后不再展示此商品）：</p>
+                            <!-- 快捷点选胶囊，手机端免打字 -->
                             <div class="flex flex-wrap gap-2 mb-3">
                                 <button
                                     v-for="reason in ['规格/份量算错了', '价格与实际不符', '商品已下架或无货']"
@@ -927,7 +971,7 @@
                     </div>
                 </div>
 
-                <!-- 底部购买按钮 -->
+                <!-- 底部独立固底购买按钮（点击前自动保存完整搜索状态，保障从电商 App 返回后 100% 恢复） -->
                 <div class="flex-shrink-0 p-3.5 sm:p-4 bg-white border-t border-zinc-100 flex flex-col items-center relative z-30">
                     <a
                         :href="selectedProduct.product_url"
@@ -954,6 +998,7 @@
 <script>
     const { createApp, ref, shallowRef, computed, watch, onMounted, onUnmounted, nextTick } = Vue
 
+    // 会话存储 Key（用于解决手机端跳出或返回导致页面重载丢数据的问题）
     const SNAPSHOT_STORAGE_KEY = 'zhihui_search_snapshot_v2'
 
     createApp({
@@ -968,7 +1013,7 @@
             const displayLimit = ref(PAGE_SIZE)
             let resizeObserver = null
 
-            // ======== 视图切换与常买清单状态 ========
+            // ======== 视图切换与常买清单（监控）状态 ========
             const currentView = ref(window.location.pathname === '/monitor' ? 'monitor' : 'search')
             const monitoredList = ref([])
             const monitorHistoryList = ref([])
@@ -978,30 +1023,30 @@
             const monitorSubmitting = ref(false)
             const pendingRemoveKeyword = ref('')
 
-            // ======== 核心搜索与过滤状态（仅保留价格、真人核实、单位、包含、排除） ========
+            // ======== 搜索与过滤核心状态 ========
             const keyword = ref('')
             const currentKeyword = ref('')
             const products = shallowRef([])
 
-            // 1. 包含性的查询
+            // 正向包含关键词
             const nameKeywordFilter = ref('')
             const debouncedNameFilter = ref('')
             let nameFilterTimer = null
 
-            // 2. 排除性的查询
+            // 反向排除关键词
             const excludeKeywordFilter = ref('')
             const debouncedExcludeFilter = ref('')
             let excludeFilterTimer = null
 
-            // 3. 价格区间筛选
+            // 价格区间过滤（最低价 ~ 最高价，0 或空表示不限）
             const minPriceFilter = ref('')
             const maxPriceFilter = ref('')
 
-            // 4. 计量单位筛选
             const activeUnitFilter = ref('')
-
-            // 5. 是否真人核实筛选
             const activeSuspiciousFilter = ref('')
+            const activeGroupFilter = ref('')
+            const availableFilters = ref([])
+            const activeFilters = ref({})
 
             const loading = ref(false)
             const hasSearched = ref(false)
@@ -1047,6 +1092,7 @@
                 return parseFloat(n.toPrecision(2)).toString()
             }
 
+            // 预计算商品衍生字段，提升手机端流畅度
             const preprocessProducts = (rawList) => {
                 return (rawList || []).map((item, idx) => {
                     const actPrice = Number(item.activity_price) > 0 ? Number(item.activity_price) : 0.01
@@ -1055,6 +1101,11 @@
                         : 1
                     const unitPriceNum = actPrice / totalVal
                     const kws = item.format_info?.decision_keywords || []
+                    const kwMap = {}
+                    for (let i = 0; i < kws.length; i++) {
+                        const k = kws[i]
+                        if (k.attribute_name) kwMap[k.attribute_name] = k.attribute_value
+                    }
                     return {
                         ...item,
                         _uid: item.uid || `${item.product_id || 'p'}_${idx}`,
@@ -1064,13 +1115,14 @@
                         _unitPriceNum: unitPriceNum,
                         _unitPriceStr: formatUnitPrice(unitPriceNum),
                         _topKeywords: kws.slice(0, 3),
+                        _kwMap: kwMap,
                         _platformName: getPlatformName(item.platform),
                         _platformColor: getPlatformColor(item.platform)
                     }
                 })
             }
 
-            // ======== 快照状态保存与恢复 ========
+            // ======== 核心：会话级快照保存与无感恢复（解决手机返回回首页问题） ========
             const saveSearchSnapshot = () => {
                 if (!hasSearched.value || products.value.length === 0) return
                 try {
@@ -1078,8 +1130,11 @@
                         keyword: keyword.value,
                         currentKeyword: currentKeyword.value,
                         products: products.value,
+                        availableFilters: availableFilters.value,
+                        activeFilters: activeFilters.value,
                         activeUnitFilter: activeUnitFilter.value,
                         activeSuspiciousFilter: activeSuspiciousFilter.value,
+                        activeGroupFilter: activeGroupFilter.value,
                         nameKeywordFilter: nameKeywordFilter.value,
                         excludeKeywordFilter: excludeKeywordFilter.value,
                         minPriceFilter: minPriceFilter.value,
@@ -1091,6 +1146,7 @@
                     }
                     sessionStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot))
                 } catch (e) {
+                    // 忽略超大列表可能触发的 QuotaExceededError
                 }
             }
 
@@ -1099,9 +1155,11 @@
                     const raw = sessionStorage.getItem(SNAPSHOT_STORAGE_KEY)
                     if (!raw) return false
                     const snap = JSON.parse(raw)
+                    // 30 分钟内的快照直接毫秒级恢复
                     if (!snap || !snap.currentKeyword || !Array.isArray(snap.products)) return false
                     if (Date.now() - (snap.timestamp || 0) > 30 * 60 * 1000) return false
 
+                    // 若 URL 中带有不同的查询词，以 URL 为准
                     const urlParams = new URLSearchParams(window.location.search)
                     const urlKw = (urlParams.get('q') || '').trim()
                     if (urlKw && urlKw !== snap.currentKeyword) return false
@@ -1109,8 +1167,11 @@
                     keyword.value = snap.keyword || snap.currentKeyword
                     currentKeyword.value = snap.currentKeyword
                     products.value = snap.products
+                    availableFilters.value = snap.availableFilters || []
+                    activeFilters.value = snap.activeFilters || {}
                     activeUnitFilter.value = snap.activeUnitFilter || ''
                     activeSuspiciousFilter.value = snap.activeSuspiciousFilter || ''
+                    activeGroupFilter.value = snap.activeGroupFilter || ''
                     nameKeywordFilter.value = snap.nameKeywordFilter || ''
                     debouncedNameFilter.value = (snap.nameKeywordFilter || '').trim().toLowerCase()
                     excludeKeywordFilter.value = snap.excludeKeywordFilter || ''
@@ -1132,7 +1193,7 @@
                 }
             }
 
-            // ======== 常买清单交互 ========
+            // ======== 常买清单（监控）接口逻辑 ========
             const fetchMonitors = async () => {
                 monitorLoading.value = true
                 try {
@@ -1226,7 +1287,7 @@
                 search(presetMaxPrice)
             }
 
-            // ======== 过滤与排序响应计算 ========
+            // ======== 过滤与排序计算 ========
             watch(nameKeywordFilter, (val) => {
                 if (nameFilterTimer) clearTimeout(nameFilterTimer)
                 nameFilterTimer = setTimeout(() => {
@@ -1274,6 +1335,7 @@
                 return (!isNaN(minV) && minV > 0) || (!isNaN(maxV) && maxV > 0)
             })
 
+            // 统计并按数量从大到小排列各个规格单位及其款数
             const unitOptions = computed(() => {
                 const counts = {}
                 const list = products.value
@@ -1286,6 +1348,10 @@
                     .map(u => ({ unit: u, count: counts[u] }))
             })
 
+            const availableUnits = computed(() => {
+                return unitOptions.value.map(item => item.unit)
+            })
+
             const toggleConfirmedOnly = () => {
                 activeSuspiciousFilter.value = activeSuspiciousFilter.value === '1' ? '' : '1'
             }
@@ -1293,7 +1359,6 @@
             const getUnitPriceNum = (item) => item._unitPriceNum ?? ((item.activity_price || 0.01) / (item.format_info?.pricing_basis?.total_value || 1))
             const getUnitPrice = (item) => item._unitPriceStr ?? formatUnitPrice(getUnitPriceNum(item))
 
-            // 核心仅执行：包含、排除、价格、单位、真人核实 5 种条件筛选
             const filteredProducts = computed(() => {
                 const arr = products.value
                 if (arr.length === 0) return []
@@ -1313,27 +1378,29 @@
 
                 const unitVal = activeUnitFilter.value
                 const suspVal = activeSuspiciousFilter.value !== '' ? Number(activeSuspiciousFilter.value) : null
+                const groupVal = activeGroupFilter.value
+                const activeAttrEntries = Object.entries(activeFilters.value).filter(([, v]) => v !== '')
 
                 return arr.filter(p => {
-                    // 1. 包含性查询
                     if (includeTerms.length > 0 && !includeTerms.every(t => p._nameLower.includes(t))) return false
-                    // 2. 排除性查询
                     if (excludeTerms.length > 0 && excludeTerms.some(t => p._nameLower.includes(t))) return false
-                    // 3. 价格筛选
                     if (hasMinPrice && p._activityPriceNum < minPriceVal) return false
                     if (hasMaxPrice && p._activityPriceNum > maxPriceVal) return false
-                    // 4. 计量单位筛选
                     if (unitVal && p.base_unit !== unitVal) return false
-                    // 5. 是否真人核实筛选
                     if (suspVal !== null && p.is_suspicious !== suspVal) return false
+                    if (groupVal && p._source_api !== groupVal) return false
+                    for (let i = 0; i < activeAttrEntries.length; i++) {
+                        const [attrName, selectedValue] = activeAttrEntries[i]
+                        if (p._kwMap[attrName] !== selectedValue) return false
+                    }
                     return true
                 })
             })
 
-            watch([activeUnitFilter, activeSuspiciousFilter, minPriceFilter, maxPriceFilter], () => {
+            watch([activeUnitFilter, activeSuspiciousFilter, activeGroupFilter, activeFilters, minPriceFilter, maxPriceFilter], () => {
                 displayLimit.value = PAGE_SIZE
                 saveSearchSnapshot()
-            })
+            }, { deep: true })
 
             const sortedProducts = computed(() => {
                 const arr = filteredProducts.value.slice()
@@ -1352,7 +1419,9 @@
                     excludeKeywordFilter.value.trim() !== '' ||
                     hasPriceFilter.value ||
                     activeUnitFilter.value !== '' ||
-                    activeSuspiciousFilter.value !== ''
+                    activeSuspiciousFilter.value !== '' ||
+                    activeGroupFilter.value !== '' ||
+                    Object.values(activeFilters.value).some(val => val !== '')
             })
 
             const clearFilters = () => {
@@ -1361,6 +1430,10 @@
                 clearPriceFilter()
                 activeUnitFilter.value = ''
                 activeSuspiciousFilter.value = ''
+                activeGroupFilter.value = ''
+                for (const key in activeFilters.value) {
+                    activeFilters.value[key] = ''
+                }
                 displayLimit.value = PAGE_SIZE
                 saveSearchSnapshot()
             }
@@ -1372,6 +1445,7 @@
                 saveSearchSnapshot()
             }
 
+            // 市场均价与最低单价统计
             const stats = computed(() => {
                 const list = filteredProducts.value
                 if (list.length === 0) return {
@@ -1408,6 +1482,7 @@
             const getPricingStructure = (item) => item.format_info?.pricing_basis?.structure || []
             const getTotalValue = (item) => item.format_info?.pricing_basis?.total_value || 1
 
+            // 简化为一眼看懂的“省 XX%”
             const getCompareIndicator = (item) => {
                 const uPrice = getUnitPriceNum(item)
                 const avg = stats.value.avgUnitPrice
@@ -1430,10 +1505,12 @@
                 searchInputRef.value?.blur()
                 showHeader.value = true
 
+                // 将搜索词同步到 URL 参数，即使浏览器彻底刷新也能恢复
                 const newUrl = `${window.location.pathname}?q=${encodeURIComponent(term)}`
                 window.history.replaceState({ view: 'search', q: term }, '', newUrl)
 
                 try {
+                    // 若本地尚未加载常买好物清单，则并行拉取以保障直接搜索清单商品时也能联动最高限价
                     const tasks = [fetch(`/api/search?keyword=${encodeURIComponent(term)}`)]
                     if (monitoredList.value.length === 0) {
                         tasks.push(fetchMonitors())
@@ -1442,8 +1519,12 @@
                     const res = await response.json()
                     if (res.status === 'success') {
                         products.value = preprocessProducts(res.data)
+                        availableFilters.value = res.filters || []
+                        const initialFilters = {}
+                        availableFilters.value.forEach(f => initialFilters[f.attribute_name] = '')
+                        activeFilters.value = initialFilters
 
-                        // 默认选中数量最多的规格单位
+                        // 自动定位并默认选中数量最多的规格单位（如搜索可乐时默认选 ml）
                         let dominant = res.dominant_unit || ''
                         if (!dominant && products.value.length > 0) {
                             const counts = {}
@@ -1456,10 +1537,11 @@
                         activeUnitFilter.value = dominant
 
                         activeSuspiciousFilter.value = ''
+                        activeGroupFilter.value = ''
                         clearNameFilter()
                         clearExcludeFilter()
 
-                        // 自动联动清单中的最高限价
+                        // 联动「常买好物清单」最高限价：从清单点击跳转或直接搜索清单内商品时自动填入最高价
                         let matchedMaxPrice = 0
                         if (presetMaxPrice !== null && presetMaxPrice !== undefined && !(presetMaxPrice instanceof Event)) {
                             matchedMaxPrice = Number(presetMaxPrice) || 0
@@ -1478,6 +1560,7 @@
                         saveSearchSnapshot()
                     } else {
                         products.value = []
+                        availableFilters.value = []
                     }
                 } catch (e) {
                     console.error('API Error', e)
@@ -1491,11 +1574,14 @@
                 currentKeyword.value = ''
                 hasSearched.value = false
                 products.value = []
+                availableFilters.value = []
+                activeFilters.value = {}
                 clearNameFilter()
                 clearExcludeFilter()
                 clearPriceFilter()
                 activeUnitFilter.value = ''
                 activeSuspiciousFilter.value = ''
+                activeGroupFilter.value = ''
                 displayLimit.value = PAGE_SIZE
                 sessionStorage.removeItem(SNAPSHOT_STORAGE_KEY)
                 window.history.replaceState({}, '', window.location.pathname)
@@ -1539,7 +1625,7 @@
                 }
             }
 
-            // ======== 详情抽屉控制 ========
+            // ======== 移动端可靠的详情抽屉打开/关闭与返回键拦截 ========
             const openDetail = (item) => {
                 savedScrollY.value = window.pageYOffset || document.documentElement.scrollTop || 0
                 showFeedbackForm.value = false
@@ -1613,11 +1699,15 @@
 
             onMounted(() => {
                 setInterval(() => placeholderIndex.value++, 3500)
+
+                // 预加载常买清单，保障首页直接搜索清单内商品时能毫秒级获取 max_price
                 fetchMonitors()
 
                 if (currentView.value !== 'monitor') {
+                    // 1. 优先从 sessionStorage 毫秒级恢复之前浏览的搜索结果与滚动条位置
                     const restored = restoreSearchSnapshot()
                     if (!restored) {
+                        // 2. 如果没有快照，检查 URL 是否带有 ?q= 参数
                         const urlParams = new URLSearchParams(window.location.search)
                         const urlKw = (urlParams.get('q') || '').trim()
                         if (urlKw) {
@@ -1638,6 +1728,7 @@
                 }
                 window.addEventListener('scroll', handleScroll, { passive: true })
                 window.addEventListener('popstate', handlePopState)
+                // 当页面切入后台或跳转到第三方购物 App 前，自动保存当前浏览位置
                 document.addEventListener('visibilitychange', () => {
                     if (document.visibilityState === 'hidden') {
                         saveSearchSnapshot()
@@ -1668,9 +1759,10 @@
                 nameKeywordFilter, clearNameFilter,
                 excludeKeywordFilter, clearExcludeFilter,
                 minPriceFilter, maxPriceFilter, hasPriceFilter, clearPriceFilter,
-                unitOptions, activeUnitFilter,
+                availableUnits, unitOptions, activeUnitFilter,
                 activeSuspiciousFilter, toggleConfirmedOnly,
-                hasActiveFilter, clearFilters,
+                activeGroupFilter,
+                availableFilters, activeFilters, hasActiveFilter, clearFilters,
                 search, resetView, openDetail, closeDetail, saveSearchSnapshot,
                 formatUnitPrice, getUnitPrice, getDecisionKeywords, getPricingStructure, getTotalValue,
                 getPlatformName, getPlatformColor, getCompareIndicator
