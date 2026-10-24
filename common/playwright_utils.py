@@ -395,11 +395,10 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
     """
     [数据Shape约束]:
       入参 search_key_list: ["可乐", "雪碧"]
-      入参 enable_export: 控制是否在每页进行“批量管理/全选”以及最后“导出Excel”补全推广链接（默认 True）
+      入参 enable_export: 控制是否在每页进行“批量管理/全选”以及“导出Excel”补全推广链接（默认 True）
       出参返回: {
           "可乐": {
-              "goodsList": [{"goodsId": 123, "goodsName": "..."}],
-              "excelUrl": "https://..." (若未开启导出则为空字符串 "")
+              "goodsList": [{"goodsId": 123, "goodsName": "...", "短链接": "http...", ...}]
           }
       }
     """
@@ -418,11 +417,13 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
         context = None
         try:
             args = ['--disable-blink-features=AutomationControlled', '--start-maximized']
-            if debug: args.append('--window-position=0,0')
+            if debug:
+                args.append('--window-position=0,0')
 
             context = launch_persistent_context(p, user_data_dir=user_data_dir, args=args, headless=not debug)
             page = context.pages[0] if context.pages else context.new_page()
-            if debug: page.bring_to_front()
+            if debug:
+                page.bring_to_front()
 
             logger.info(f"[业务/游览] 初始化目标页面 | URL: [{target_url}]")
 
@@ -454,7 +455,7 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                 except Exception:
                     logger.warning("[业务/游览] ⚠️ 响应无法解析为有效的 JSON，必须等满 10 秒")
 
-            except Exception as e:
+            except Exception:
                 # 捕获 Playwright 超时或页面崩溃等异常
                 logger.info("[业务/游览] ⏳ 10秒内未捕捉到指定网络请求或发生异常，必须等满 10 秒")
 
@@ -488,25 +489,40 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                 except Exception as e:
                     logger.warning(f"[业务/算子] 活动弹窗处理异常 | 原因: [{e}]")
 
-            def do_batch_select_all():
+            def close_export_modal():
+                """关闭导出Excel后滞留的「推广商品/已生成文件」弹窗"""
                 try:
-                    # : 高危 CSS 依赖，平台迭代随时可能让此定位器失效。
-                    select_all_label = page.locator('.single-promotion-batch-part label').first
-                    if select_all_label.is_visible():
-                        robust_click(select_all_label)
-                        page.wait_for_timeout(300)
+                    modal = page.locator('div[data-testid="beast-core-modal-inner"]').first
+                    if not modal.is_visible():
+                        return
+
+                    # 优先定位「取消」按钮，备选右上角「X」关闭图标
+                    cancel_btn = modal.locator('button:has-text("取消")').first
+                    close_icon = modal.locator('i[data-testid="beast-core-modal-icon-close"]').first
+
+                    if cancel_btn.is_visible():
+                        logger.info("[业务/弹窗] 检测到导出完成滞留弹窗，点击【取消】关闭...")
+                        robust_click(cancel_btn)
+                    elif close_icon.is_visible():
+                        logger.info("[业务/弹窗] 检测到导出完成滞留弹窗，点击右上角【X】关闭...")
+                        robust_click(close_icon)
+
+                    # 等待弹窗彻底从视图中消失，防止遮罩层残影阻挡后续点击
+                    modal.wait_for(state="hidden", timeout=3000)
+                    page.wait_for_timeout(300)
                 except Exception as e:
-                    logger.warning(f"[业务/算子] 全选执行异常 | 原因: [{e}]")
+                    logger.warning(f"[业务/算子] 关闭导出弹窗异常 | 原因: [{e}]")
 
             def do_export_and_intercept_url():
+                """触发导出Excel、拦截下载直链，并在完成后自动关闭推广商品弹窗"""
+                excel_url = ""
                 try:
                     export_btn = page.locator('.single-promotion-batch-part button:has-text("导出Excel")').first
                     if not export_btn.is_visible():
-                        logger.warning("[业务/算子] 未发现导出按钮 | 原因: [可能未勾选商品数据]")
+                        logger.warning("[业务/算子] 未发现导出按钮 | 原因: [可能未开启批量管理或未勾选商品数据]")
                         return ""
                     robust_click(export_btn)
 
-                    # : 高危 test-id 依赖。
                     confirm_btn = page.locator(
                         'div[data-testid="beast-core-modal-inner"] button:has-text("确定")').first
                     confirm_btn.wait_for(state="visible", timeout=3000)
@@ -522,12 +538,74 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                     if res_json.get("success"):
                         excel_url = res_json.get("result", {}).get("excelUrl", "")
                         logger.info(f"[业务/算子] ✅ 直链剥离成功 | URL: [<{excel_url}>]")
-                        return excel_url
                     else:
                         logger.error(f"[业务/算子] ❌ 后端驳回导出 | 驳回原因: [{res_json.get('errorMsg')}]")
                 except Exception as e:
                     logger.error(f"[业务/算子] ❌ 导出流断裂 | 异常: [{e}]")
-                return ""
+                finally:
+                    # 给前端少量渲染缓冲时间切换至“已生成文件”界面，随后强行关闭弹窗
+                    page.wait_for_timeout(500)
+                    close_export_modal()
+
+                return excel_url
+
+            def do_batch_select_all(goods_pool):
+                """
+                执行本页全选；若触发【最多不超过500】上限拦截，则自动执行：
+                导出当前批次(含关闭导出弹窗) -> 融合更新列表 -> 点击完成操作 -> 重新点击批量管理 -> 重新选中本页
+                """
+                try:
+                    select_all_label = page.locator('.single-promotion-batch-part label').first
+                    if not select_all_label.is_visible():
+                        batch_btn = page.locator('button:has-text("批量管理")').first
+                        if batch_btn.is_visible():
+                            robust_click(batch_btn)
+                            page.wait_for_timeout(500)
+
+                    if select_all_label.is_visible():
+                        robust_click(select_all_label)
+
+                        # 探测是否弹出“最多不超过500”提示
+                        limit_exceeded = False
+                        try:
+                            limit_toast = page.locator('text="最多不超过500"').first
+                            limit_toast.wait_for(state="visible", timeout=1000)
+                            limit_exceeded = True
+                        except Exception:
+                            limit_exceeded = False
+
+                        if limit_exceeded:
+                            logger.warning("[业务/算子] 🚨 检测到【最多不超过500】限制！立即触发阶段性导出与融合更新...")
+
+                            # 1. 导出当前已满额批次（内部会自动关闭导出弹窗）并融合进内存列表
+                            batch_excel_url = do_export_and_intercept_url()
+                            if batch_excel_url:
+                                download_and_merge_excel(batch_excel_url, goods_pool)
+                            page.wait_for_timeout(300)
+
+                            # 2. 点击“完成操作”清空当前已选状态
+                            finish_btn = page.locator(
+                                '.single-promotion-batch-part button:has-text("完成操作"), button:has-text("完成操作")'
+                            ).first
+                            if finish_btn.is_visible():
+                                logger.info("[业务/算子] 点击【完成操作】，重置批量勾选计数...")
+                                robust_click(finish_btn)
+                                page.wait_for_timeout(500)
+
+                            # 3. 再次点击“批量管理”开启新批次
+                            batch_btn = page.locator('button:has-text("批量管理")').first
+                            if batch_btn.is_visible():
+                                logger.info("[业务/算子] 再次点击【批量管理】，开启新一轮批次选择...")
+                                robust_click(batch_btn)
+                                page.wait_for_timeout(500)
+
+                            # 4. 重新从本页开始选中
+                            if select_all_label.is_visible():
+                                logger.info("[业务/算子] 重新勾选【本页全选】，将本页纳入新批次...")
+                                robust_click(select_all_label)
+                                page.wait_for_timeout(300)
+                except Exception as e:
+                    logger.warning(f"[业务/算子] 全选及满额流转执行异常 | 原因: [{e}]")
 
             search_input = page.locator('.search-bar-input input[placeholder="请输入商品名称或短链"]')
             search_btn = page.locator('.search-bar-btn', has_text="搜索")
@@ -541,26 +619,28 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             for search_key in search_key_list:
                 logger.info(f"\n--- [任务调度] 切入业务词: 【{search_key}】 ---")
 
-                # 初始化空数据进行占位保护
-                final_results[search_key] = {"goodsList": [], "excelUrl": ""}
+                # 初始化空数据进行占位保护（已移除冗余的 excelUrl 字段）
+                final_results[search_key] = {"goodsList": []}
                 all_goods = []
 
                 try:
                     # 真正准备搜索前执行弹窗探活与关闭拦截
                     close_activity_popup(wait_timeout=0)
+                    close_export_modal()
 
                     search_input.clear()
                     search_input.fill(search_key)
 
                     def is_target_request(response):
-                        if api_target not in response.url or response.request.method != "POST": return False
+                        if api_target not in response.url or response.request.method != "POST":
+                            return False
                         try:
                             payload = response.request.post_data_json
                             return payload and payload.get("keyword") == search_key
                         except Exception:
                             return False
 
-                    logger.info(f"[业务/采集] 击发搜索条件，探底首屏数据流...")
+                    logger.info("[业务/采集] 击发搜索条件，探底首屏数据流...")
                     with page.expect_response(is_target_request, timeout=20000) as response_info:
                         robust_click(search_btn)
 
@@ -571,13 +651,13 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                     logger.info(f"[业务/采集] 首屏剥离完毕 | 新增: [{len(current_goods)}] | 累计: [{len(all_goods)}]")
                     page.wait_for_timeout(1000)
 
-                    # 仅在开启导出时才去点击批量管理和全选
-                    if enable_export:
+                    # 仅在开启导出且首屏有商品时才去点击批量管理和全选
+                    if enable_export and current_goods:
                         batch_btn = page.locator('button:has-text("批量管理")').first
                         if batch_btn.is_visible():
                             robust_click(batch_btn)
                             page.wait_for_timeout(500)
-                        do_batch_select_all()
+                        do_batch_select_all(all_goods)
 
                     # 翻页状态机
                     page_num = 1
@@ -619,10 +699,10 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                             # 请求成功，清零重试计数器
                             error_retry_count = 0
 
-                            # 仅在开启导出时才执行每页全选操作
+                            # 仅在开启导出时才执行每页全选（内部自带满500自动导出、关弹窗与重置逻辑）
                             if enable_export:
                                 page.wait_for_timeout(500)
-                                do_batch_select_all()
+                                do_batch_select_all(all_goods)
                                 page.wait_for_timeout(1000)
                             else:
                                 page.wait_for_timeout(500)
@@ -663,22 +743,21 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                     if limit_count > 0:
                         all_goods = all_goods[:limit_count]
 
-                    excel_url = ""
-                    if enable_export:
-                        logger.info(f"[业务/收尾] 启动收官融合矩阵 | 词: 【{search_key}】...")
-                        excel_url = do_export_and_intercept_url()
-                        all_goods = download_and_merge_excel(excel_url, all_goods)
+                    if enable_export and all_goods:
+                        logger.info(f"[业务/收尾] 启动收官融合矩阵（导出最后一批已选商品） | 词: 【{search_key}】...")
+                        final_excel_url = do_export_and_intercept_url()
+                        if final_excel_url:
+                            all_goods = download_and_merge_excel(final_excel_url, all_goods)
                     else:
                         logger.info(f"[业务/收尾] 跳过全选与导出流程 | 词: 【{search_key}】 | 交付纯底层商品数据")
 
                     final_results[search_key] = {
-                        "goodsList": all_goods,
-                        "excelUrl": excel_url
+                        "goodsList": all_goods
                     }
                     logger.info(
                         f"[业务/交付] ✅ 单体流转跑通 | 词: 【{search_key}】 | 终态数量: [{len(all_goods)}] | 总进度: 【{len(final_results)}/{len(search_key_list)}】")
 
-                except Exception as inner_e:
+                except Exception:
                     logger.error(f"[业务/交付] ❌ 单体崩溃 | 词: 【{search_key}】 | 现场信息:\n{traceback.format_exc()}")
                     save_forensics(page, f"search_intercept_fail_{search_key}")
 
@@ -687,7 +766,7 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                         return final_results
                     page.wait_for_timeout(2000)
 
-        except Exception as global_e:
+        except Exception:
             logger.error(f"[系统/灾难] 🚨 骨干链路熔断:\n{traceback.format_exc()}")
             if context and context.pages:
                 save_forensics(context.pages[0], "search_intercept_fatal_error")
