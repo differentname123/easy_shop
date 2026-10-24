@@ -823,7 +823,7 @@ if __name__ == "__main__":
 
 
     result = search_goods_and_intercept(
-        search_key_list=["可乐500ml"],
+        search_key_list=["紫皮洋葱"],
         user_data_dir=USER_DATA_DIR,
         debug=True,
         limit_count=0,
