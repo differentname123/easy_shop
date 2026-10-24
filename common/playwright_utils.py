@@ -391,7 +391,7 @@ def handle_pdd_captcha(page):
     return False
 
 
-def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, debug=False, enable_export=True):
+def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=1000, debug=False, enable_export=True):
     """
     [数据Shape约束]:
       入参 search_key_list: ["可乐", "雪碧"]
