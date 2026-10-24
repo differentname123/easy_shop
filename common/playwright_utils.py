@@ -391,14 +391,15 @@ def handle_pdd_captcha(page):
     return False
 
 
-def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, debug=False):
+def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, debug=False, enable_export=True):
     """
     [数据Shape约束]:
       入参 search_key_list: ["可乐", "雪碧"]
+      入参 enable_export: 控制是否在每页进行“批量管理/全选”以及最后“导出Excel”补全推广链接（默认 True）
       出参返回: {
           "可乐": {
               "goodsList": [{"goodsId": 123, "goodsName": "..."}],
-              "excelUrl": "https://..."
+              "excelUrl": "https://..." (若未开启导出则为空字符串 "")
           }
       }
     """
@@ -411,7 +412,7 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
     api_target = "/network/api/common/goodsList"
 
     logger.info(
-        f"\n{'=' * 60}\n[业务/采集] 启动批量拉取任务 | 核心参数: 词数: 【{len(search_key_list)}】 | 阈值: 【{limit_count or '不限'}】 | 调试: 【{debug}】\n{'=' * 60}")
+        f"\n{'=' * 60}\n[业务/采集] 启动批量拉取任务 | 核心参数: 词数: 【{len(search_key_list)}】 | 阈值: 【{limit_count or '不限'}】 | 导出链接: 【{enable_export}】 | 调试: 【{debug}】\n{'=' * 60}")
 
     with sync_playwright() as p:
         context = None
@@ -564,23 +565,24 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                         robust_click(search_btn)
 
                     json_data = response_info.value.json()
-                    current_goods = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data,
-                                                                                                   dict) else []
+                    current_goods = json_data.get("result", {}).get("goodsList", []) if isinstance(json_data, dict) else []
                     all_goods.extend(current_goods)
 
                     logger.info(f"[业务/采集] 首屏剥离完毕 | 新增: [{len(current_goods)}] | 累计: [{len(all_goods)}]")
                     page.wait_for_timeout(1000)
 
-                    batch_btn = page.locator('button:has-text("批量管理")').first
-                    if batch_btn.is_visible():
-                        robust_click(batch_btn)
-                        page.wait_for_timeout(500)
-                    do_batch_select_all()
+                    # 仅在开启导出时才去点击批量管理和全选
+                    if enable_export:
+                        batch_btn = page.locator('button:has-text("批量管理")').first
+                        if batch_btn.is_visible():
+                            robust_click(batch_btn)
+                            page.wait_for_timeout(500)
+                        do_batch_select_all()
 
                     # 翻页状态机
                     page_num = 1
-                    error_retry_count = 0  # 🚀新增：连续错误重试计数器
-                    MAX_RETRIES = 3        # 🚀新增：最大连续重试熔断阈值
+                    error_retry_count = 0  # 连续错误重试计数器
+                    MAX_RETRIES = 3        # 最大连续重试熔断阈值
 
                     while True:
                         if limit_count > 0 and len(all_goods) >= limit_count:
@@ -614,17 +616,21 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                             logger.info(
                                 f"[业务/采集] 报文剥离完毕 | 轮次: [{page_num}] | 新增: [{len(current_goods)}] | 累计: [{len(all_goods)}]")
 
-                            # 🚀请求成功，清零重试计数器
+                            # 请求成功，清零重试计数器
                             error_retry_count = 0
 
-                            page.wait_for_timeout(500)
-                            do_batch_select_all()
-                            page.wait_for_timeout(1000)
+                            # 仅在开启导出时才执行每页全选操作
+                            if enable_export:
+                                page.wait_for_timeout(500)
+                                do_batch_select_all()
+                                page.wait_for_timeout(1000)
+                            else:
+                                page.wait_for_timeout(500)
 
                         except Exception as e:
                             logger.warning(f"[业务/异常] 翻页数据流断裂 | 异常: [{e}]")
 
-                            # 🚀明确探测是否真的是因为验证码引发的超时
+                            # 明确探测是否真的是因为验证码引发的超时
                             has_captcha = False
                             try:
                                 if page.locator('button:has-text("安全验证")').first.is_visible(timeout=1000) or \
@@ -637,29 +643,33 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
                                 logger.info("[业务/状态] 检测到安全盾，准备切入风控对抗逻辑...")
                                 if handle_pdd_captcha(page):
                                     logger.info("[业务/状态] ✅ 安全盾解除，准备重试该页...")
-                                    page_num -= 1  # 🚀补偿：刚才那一页没翻成功，退回页码以免无意义累加
+                                    page_num -= 1  # 补偿：刚才那一页没翻成功，退回页码以免无意义累加
                                     continue
                                 else:
                                     logger.error("[业务/异常] ❌ 风控强阻拦无法突破，强制截断当前翻页链路。")
                                     break
                             else:
-                                # 🚀如果没有验证码，说明是纯粹的网络超时或被平台软拦截（不给数据）
+                                # 如果没有验证码，说明是纯粹的网络超时或被平台软拦截（不给数据）
                                 error_retry_count += 1
                                 if error_retry_count >= MAX_RETRIES:
                                     logger.error(f"[业务/异常] ❌ 连续 {MAX_RETRIES} 次无验证码超时，触发硬性熔断，防止死循环！")
                                     break
 
                                 logger.warning(f"[业务/状态] 未检测到安全盾，执行常规网络重试 ({error_retry_count}/{MAX_RETRIES})...")
-                                page_num -= 1  # 🚀补偿：退回页码
-                                page.wait_for_timeout(2000) # 稍作喘息再次请求
+                                page_num -= 1  # 补偿：退回页码
+                                page.wait_for_timeout(2000)  # 稍作喘息再次请求
                                 continue
 
                     if limit_count > 0:
                         all_goods = all_goods[:limit_count]
 
-                    logger.info(f"[业务/收尾] 启动收官融合矩阵 | 词: 【{search_key}】...")
-                    excel_url = do_export_and_intercept_url()
-                    all_goods = download_and_merge_excel(excel_url, all_goods)
+                    excel_url = ""
+                    if enable_export:
+                        logger.info(f"[业务/收尾] 启动收官融合矩阵 | 词: 【{search_key}】...")
+                        excel_url = do_export_and_intercept_url()
+                        all_goods = download_and_merge_excel(excel_url, all_goods)
+                    else:
+                        logger.info(f"[业务/收尾] 跳过全选与导出流程 | 词: 【{search_key}】 | 交付纯底层商品数据")
 
                     final_results[search_key] = {
                         "goodsList": all_goods,
@@ -691,6 +701,8 @@ def search_goods_and_intercept(search_key_list, user_data_dir, limit_count=500, 
             logger.info(f"[系统/退出] 🚀 Playwright 沙盒已销毁 | 闭环交付总量: 【{len(final_results)}】\n")
 
     return final_results
+
+
 # ==============================================================================
 #                                   使用示例
 # ==============================================================================
@@ -720,22 +732,23 @@ if __name__ == "__main__":
 
 
     TEST_URL = "https://jinbao.pinduoduo.com/promotion/single-promotion"
-    USER_DATA_DIR = r"W:\temp\biance_pdd_mama"
+    USER_DATA_DIR = r"W:\temp\biance_pdd_nana"
 
 
 
-    # 场景二：携带环境自由操作 (按需打开) 多多进宝
-    open_browser_for_manual_use(
-        user_data_dir=USER_DATA_DIR,
-        home_url=TEST_URL
-    )
+    # # 场景二：携带环境自由操作 (按需打开) 多多进宝
+    # open_browser_for_manual_use(
+    #     user_data_dir=USER_DATA_DIR,
+    #     home_url=TEST_URL
+    # )
 
 
     result = search_goods_and_intercept(
-        search_key_list=["方便面"],
+        search_key_list=["可乐500ml"],
         user_data_dir=USER_DATA_DIR,
         debug=True,
-        limit_count=100
+        limit_count=0,
+        enable_export=True
     )
 
     for key, data_dict in result.items():
