@@ -512,8 +512,8 @@ def llm_recognize_best_match(image_paths):
 
     # ---------- 最终结果 & 降级兜底 ----------
     if best_index is not None:
-        best_path = image_paths[best_index]
-        logger.info(f"✅ 大模型识别成功：第 {best_index + 1} 张图片 ({os.path.basename(best_path)}) 匹配度最高")
+        best_path = image_paths[best_index-1]
+        logger.info(f"✅ 大模型识别成功：第 {best_index} 张图片 ({os.path.basename(best_path)}) 匹配度最高")
     else:
         best_index = fallback_index
         best_path = image_paths[best_index]
