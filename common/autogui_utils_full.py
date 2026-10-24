@@ -1148,9 +1148,9 @@ def batch_runner(product_list):
                 pass
 
         # 判断是否连续失败 5 次
-        if consecutive_failures >= 5:
+        if consecutive_failures >= 10:
             logger.info(
-                f"[WARN] ⚠️ 已连续发生 5 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
+                f"[WARN] ⚠️ 已连续发生 {consecutive_failures} 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
             break
 
     logger.info("=" * 50)
