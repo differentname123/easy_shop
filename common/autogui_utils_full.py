@@ -1159,11 +1159,11 @@ def batch_runner(product_list):
     logger.info("=" * 50)
 
 
-def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
+def get_data_updated_within_24h(hours=12, limit=0, extra_query=None, projection=None):
     """
-    查询最近更新的拼多多商品数据（基于 updated_at 字段，强制过滤 platform='pdd' 防止非拼多多商品引发 RPA 熔断）。
+    查询指定时间范围内的拼多多商品数据（默认 hours=12，基准数据可传 hours=72）。
     """
-    time_threshold = datetime.now(timezone.utc) - timedelta(hours=12)
+    time_threshold = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     query_condition = {
         "platform": "pdd",
@@ -1186,7 +1186,6 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
         )
 
     return results
-
 import math
 
 
@@ -1268,31 +1267,91 @@ def calc_product_best_unit_prices(format_info):
     return best_unit_prices
 
 
-def filter_products_by_cost_effectiveness(products, target_configs, top_n=10, only_top_unit=False):
+def is_product_confirmed_sku(product):
+    """根据业务规范判定该商品是否已完成规格抓取与重洗（已确认规格）"""
+    sku_info_list = product.get("sku_info") if isinstance(product.get("sku_info"), list) else []
+    need_reformat = product.get("need_reformat")
+    need_update_sku = product.get("need_update_sku")
+    sku_status = product.get("sku_status")
+
+    return bool(
+        sku_info_list
+        and (need_update_sku is False or sku_status == "success")
+        and (need_reformat is False or need_reformat == "false")
+    )
+
+
+def filter_products_by_cost_effectiveness(
+    candidate_products,
+    confirmed_products,
+    target_configs,
+    top_n=10,
+    benchmark_rank=5,
+    only_top_unit=False
+):
     """
     业务逻辑：
-    1. 每个 search_keyword 匹配到的候选商品，按商品包含的 unit 拆分；
-    2. 若 only_top_unit=True，则每个关键词只保留候选商品数量最多的那一个 unit（主流规格单位）；
-    3. 每个采纳的 unit 下按照单价从低到高（性价比最高）挑选前 top_n 个商品；
-    4. 将所有关键词、所有采纳的 unit 选出的商品汇聚后，进行【全局去重】，输出唯一的商品列表。
-
-    :param products: 从 MongoDB 查出的原始商品列表
-    :param target_configs: 监控关键词配置列表
-    :param top_n: 每个 unit 最多入选的商品数 (默认 10)
-    :param only_top_unit: 是否只保留候选商品数量最多的那个 unit (默认 False)
-    :return: list, 全局去重后的候选商品列表
+    1. 在 confirmed_products (72小时) 中按关键词提取已确认规格的商品；
+    2. 计算每种 unit 的前 benchmark_rank (默认前5) 性价比，以第 5 名的单价作为【合格门槛】；
+    3. 在 candidate_products 中提取候选商品，剔除性价比低于基准门槛（即单价高于基准单价）的商品；
+    4. 对达标的商品按 unit 取前 top_n 名；
+    5. 最后进行全局去重。
     """
-    total_slots_selected = 0  # 统计各关键词、各单位选出的总名额
-    final_selected_map = {}  # 全局去重映射字典: {product_id: product}
+    total_slots_selected = 0
+    final_selected_map = {}  # 全局去重: {product_id: product}
 
     for config in target_configs:
         kw = config["search_keyword"]
         words = config["words"]
         max_price = config["max_price"]
 
-        # 1. 匹配符合当前 search_keyword 且状态合规的商品
-        matched_products = []
-        for item in products:
+        logger.info("-" * 60)
+        logger.info(f"[FILTER] ▶ 开始处理关键词【{kw}】")
+
+        # =========================================================================
+        # 步骤 1：基于 72 小时内的已确认商品建立各 unit 的第 5 名性价比基准门槛
+        # =========================================================================
+        matched_confirmed = []
+        for item in confirmed_products:
+            if not is_product_confirmed_sku(item):
+                continue
+            item_name = (item.get("name") or "").lower()
+            if not words or not item_name:
+                continue
+            if sum(1 for w in words if w.lower() in item_name) < math.ceil(len(words) * 4 / 4):
+                continue
+            matched_confirmed.append(item)
+
+        # 归集已确认商品的各 unit 单价
+        confirmed_unit_prices = {}
+        for item in matched_confirmed:
+            unit_prices = calc_product_best_unit_prices(item.get("format_info"))
+            for u, u_price in unit_prices.items():
+                if u not in confirmed_unit_prices:
+                    confirmed_unit_prices[u] = []
+                confirmed_unit_prices[u].append(u_price)
+
+        # 确立每个 unit 的基准价格（取升序排列第 benchmark_rank 名的单价）
+        unit_benchmarks = {}
+        for u, prices in confirmed_unit_prices.items():
+            prices.sort()  # 单价从小到大（性价比从高到低）
+            rank_idx = min(len(prices), benchmark_rank) - 1
+            threshold = prices[rank_idx]
+            unit_benchmarks[u] = {
+                "threshold": threshold,
+                "rank_used": rank_idx + 1,
+                "total_confirmed": len(prices)
+            }
+            logger.info(
+                f"  ├─ [72H基准] 单位 [{u}]: 命中 {len(prices)} 个已确认商品, "
+                f"锁定第 {rank_idx + 1} 名单价作为门槛: {threshold:.4f}元/{u} (候选需 <= 此单价)"
+            )
+
+        # =========================================================================
+        # 步骤 2：筛选出符合关键词分词与价格上限的候选商品
+        # =========================================================================
+        matched_candidates = []
+        for item in candidate_products:
             if not bool(item.get("need_update_sku")):
                 continue
             if (item.get("sku_retry_count") or 0) > 3:
@@ -1302,73 +1361,98 @@ def filter_products_by_cost_effectiveness(products, target_configs, top_n=10, on
             if not words or not item_name:
                 continue
 
-            matched_count = sum(1 for w in words if w.lower() in item_name)
-            if matched_count < math.ceil(len(words) * 4 / 4):
+            if sum(1 for w in words if w.lower() in item_name) < math.ceil(len(words) * 4 / 4):
                 continue
 
             act_price = item.get("activity_price")
             if max_price > 0 and (act_price is None or act_price > max_price):
                 continue
 
-            matched_products.append(item)
+            matched_candidates.append(item)
 
-        if not matched_products:
+        if not matched_candidates:
+            logger.info(f"  └─ [候选] 未命中任何待抓取候选商品")
             continue
 
-        # 2. 计算每个商品在不同 unit 下的性价比单价，并按 unit 汇集
-        unit_buckets = {}
-        for item in matched_products:
-            unit_prices = calc_product_best_unit_prices(item.get("format_info"))
-            for u, u_price in unit_prices.items():
-                if u not in unit_buckets:
-                    unit_buckets[u] = []
-                unit_buckets[u].append((u_price, item))
+        # =========================================================================
+        # 步骤 3：按 unit 归集，并执行【基准门槛过滤】
+        # =========================================================================
+        raw_unit_buckets = {}        # {unit: [(price, item)]} 原始候选
+        qualified_unit_buckets = {}  # {unit: [(price, item)]} 达标候选
 
-        if not unit_buckets:
+        for item in matched_candidates:
+            cand_unit_prices = calc_product_best_unit_prices(item.get("format_info"))
+            for u, u_price in cand_unit_prices.items():
+                if u not in raw_unit_buckets:
+                    raw_unit_buckets[u] = []
+                    qualified_unit_buckets[u] = []
+                raw_unit_buckets[u].append((u_price, item))
+
+                # 判定是否超越基准线（单价 <= 基准单价）
+                if u in unit_benchmarks:
+                    benchmark_val = unit_benchmarks[u]["threshold"]
+                    if u_price <= benchmark_val:
+                        qualified_unit_buckets[u].append((u_price, item))
+                else:
+                    # 无 72H 基准历史数据的单位，默认放行
+                    qualified_unit_buckets[u].append((u_price, item))
+
+        # 打印各 unit 门槛过滤战报
+        logger.info(f"  ├─ [候选池] 命中 {len(matched_candidates)} 个待抓取候选商品，门槛过滤结果:")
+        for u, all_cands in raw_unit_buckets.items():
+            pass_count = len(qualified_unit_buckets[u])
+            eliminated = len(all_cands) - pass_count
+            base_info = f"(基准: {unit_benchmarks[u]['threshold']:.4f}元/{u})" if u in unit_benchmarks else "(无72H基准)"
+            logger.info(f"  │    └─ 单位 [{u}] {base_info}: 候选 {len(all_cands)} 个 -> 达标 {pass_count} 个, 淘汰 {eliminated} 个")
+
+        # 剔除完全没有商品达标的 unit
+        active_units = {u: items for u, items in qualified_unit_buckets.items() if items}
+        if not active_units:
+            logger.info(f"  └─ ⚠️ 该关键词下所有候选商品均未达到 72H 第 {benchmark_rank} 名性价比基准，本轮全部拦截！")
             continue
 
-        # 【新增特性】：如果开启 only_top_unit，仅保留商品数量最多的那一个 unit
+        # =========================================================================
+        # 步骤 4：选取主流单位（可选）与 Top N 优选
+        # =========================================================================
         if only_top_unit:
-            dominant_unit = max(unit_buckets.keys(), key=lambda u: len(unit_buckets[u]))
-            logger.info(
-                f"[FILTER] 关键词【{kw}】命中 {len(matched_products)} 个商品，已锁定商品数最多的主流单位 [{dominant_unit}] (候选 {len(unit_buckets[dominant_unit])} 个)")
-            target_units = {dominant_unit: unit_buckets[dominant_unit]}
+            dominant_u = max(active_units.keys(), key=lambda u: len(active_units[u]))
+            logger.info(f"  ├─ [主流锁定] 仅采纳达标商品数最多的单位 [{dominant_u}] (达标商品: {len(active_units[dominant_u])} 个)")
+            target_units = {dominant_u: active_units[dominant_u]}
         else:
-            logger.info(f"[FILTER] 关键词【{kw}】命中 {len(matched_products)} 个商品，保留全部 {len(unit_buckets)} 个单位")
-            target_units = unit_buckets
+            target_units = active_units
 
-        # 3. 对采纳的 unit 独立排序，取出性价比前 top_n 个商品
-        kw_slots = 0
+        kw_selected_count = 0
         for u, items_with_price in target_units.items():
-            # 按单价升序排列（单价越低越划算）
             items_with_price.sort(key=lambda x: x[0])
-            top_items = items_with_price[:top_n]  # 严格切片前 top_n
+            top_items = items_with_price[:top_n]
 
-            kw_slots += len(top_items)
+            kw_selected_count += len(top_items)
             total_slots_selected += len(top_items)
 
-            # 汇总至全局字典（以 product_id 为 key，天然全局去重）
             for u_price, p in top_items:
                 pid = p["product_id"]
                 final_selected_map[pid] = p
 
-            logger.info(
-                f"  └─ 单位 [{u}]: 候选 {len(items_with_price)} 个，已入选 Top {len(top_items)} (最佳单价: {top_items[0][0]:.4f}元/{u})")
+            logger.info(f"  │    ★ 单位 [{u}]: 选取 Top {len(top_items)} (入选最佳: {top_items[0][0]:.4f}元/{u}, 最末: {top_items[-1][0]:.4f}元/{u})")
 
-        logger.info(f"[FILTER] 关键词【{kw}】累计入选 {kw_slots} 个名额")
+        logger.info(f"  └─ 关键词【{kw}】最终放行名额: {kw_selected_count} 个")
 
     result_list = list(final_selected_map.values())
     duplicates_removed = total_slots_selected - len(result_list)
 
     logger.info("=" * 60)
-    logger.info(
-        f"[FILTER-REPORT] 🎯 筛选与去重清算报告 (模式: {'仅采纳最多商品单位' if only_top_unit else '采纳全部单位'}):")
-    logger.info(f"  ├─ 所有关键词及单位总计入选名额: {total_slots_selected} 个")
-    logger.info(f"  ├─ 跨关键词/跨单位重复的名额: {duplicates_removed} 个")
-    logger.info(f"  └─ 全局去重后最终放行待抓取的唯一商品数: {len(result_list)} 个")
+    logger.info(f"[FILTER-REPORT] 🎯 完整筛选统计报告:")
+    logger.info(f"  ├─ 基准门槛规则: 72小时已确认商品 Top {benchmark_rank} 性价比")
+    logger.info(f"  ├─ 各关键词及单位达标入选总名额: {total_slots_selected} 个")
+    logger.info(f"  ├─ 跨单位/跨关键词去重合并名额: {duplicates_removed} 个")
+    logger.info(f"  └─ 最终放行待抓取的唯一商品数: {len(result_list)} 个")
     logger.info("=" * 60)
 
     return result_list
+# ==========================================
+# 🚦 主程序入口
+# ==========================================
+import math
 
 # ==========================================
 # 🚦 主程序入口
@@ -1398,8 +1482,23 @@ if __name__ == "__main__":
                 })
 
             if target_configs:
-                # 【修改点】：在 projection 中加入 format_info，否则无法读取 pricing_basis
-                results = get_data_updated_within_24h(
+                common_projection = {
+                    "_id": 1,
+                    "platform": 1,
+                    "product_id": 1,
+                    "name": 1,
+                    "activity_price": 1,
+                    "sku_info": 1,
+                    "format_info": 1,
+                    "need_update_sku": 1,
+                    "need_reformat": 1,
+                    "sku_status": 1,
+                    "sku_retry_count": 1
+                }
+
+                # 1. 查询 12 小时内待抓取的候选商品 (need_update_sku 为 True)
+                candidate_results = get_data_updated_within_24h(
+                    hours=12,
                     limit=0,
                     extra_query={
                         "format_status": "success",
@@ -1409,34 +1508,37 @@ if __name__ == "__main__":
                             {"sku_retry_count": {"$exists": False}}
                         ]
                     },
-                    projection={
-                        "_id": 1,
-                        "platform": 1,
-                        "product_id": 1,
-                        "name": 1,
-                        "activity_price": 1,
-                        "sku_info": 1,
-                        "format_info": 1,  # 必须查出该字段
-                        "need_update_sku": 1,
-                        "sku_retry_count": 1
-                    }
+                    projection=common_projection
                 )
 
-                # 执行各 keyword 下不同 unit 的性价比筛选及去重
+                # 2. 查询 72 小时内所有已完成洗标的已确认商品，作为基准门槛计算池
+                confirmed_results = get_data_updated_within_24h(
+                    hours=72,
+                    limit=0,
+                    extra_query={
+                        "format_status": "success",
+                        "sku_info": {"$exists": True, "$ne": []}
+                    },
+                    projection=common_projection
+                )
+
+                # 3. 执行：基于 72H 第 5 名性价比基准门槛过滤 -> Top 10 优选 -> 全局去重
                 filtered_results = filter_products_by_cost_effectiveness(
-                    products=results,
+                    candidate_products=candidate_results,
+                    confirmed_products=confirmed_results,
                     target_configs=target_configs,
                     top_n=10,
-                    only_top_unit=True
+                    benchmark_rank=5,    # 锁定第 5 名性价比为
+                    only_top_unit=False  # 若只需数量最多的 unit 改为 True
                 )
 
                 if filtered_results:
                     batch_runner(filtered_results)
                 else:
-                    logger.info("[INFO] 经过性价比与规格筛选后无待抓取商品")
+                    logger.info("[INFO] 所有候选商品均被基准门槛淘汰或无可用候选，跳过本轮执行")
             else:
                 logger.info("[INFO] 当前无有效监控关键词，跳过本轮 SKU 抓取")
         except Exception as e:
             logger.info(f"[FATAL] 💥 主程序异常退出: {str(e)}")
 
-        time.sleep(60)
+        time.sleep(600)
