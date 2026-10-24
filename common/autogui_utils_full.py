@@ -1190,29 +1190,215 @@ def get_data_updated_within_24h(limit=0, extra_query=None, projection=None):
 import math
 
 
+# ==========================================
+# 📊 性价比计算与商品筛选核心模块
+# ==========================================
+
+# ==========================================
+# 📊 性价比计算与商品筛选核心模块
+# ==========================================
+
+def calc_product_best_unit_prices(format_info):
+    """
+    计算单个商品在各个 unit (单位) 下的最佳性价比（即最低单位单价，元/单位）。
+    单价越低，性价比越高。
+    :param format_info: 商品的 format_info 字典
+    :return: dict, 形如 {"瓶": 1.76, "ml": 0.00352}
+    """
+    if not isinstance(format_info, dict):
+        return {}
+
+    best_unit_prices = {}
+
+    for sku_id, sku_data in format_info.items():
+        if not isinstance(sku_data, dict):
+            continue
+
+        price = sku_data.get("price")
+        if price is None:
+            continue
+        try:
+            price = float(price)
+            if price <= 0:
+                continue
+        except (ValueError, TypeError):
+            continue
+
+        pricing_basis = sku_data.get("pricing_basis") or {}
+        if not isinstance(pricing_basis, dict):
+            continue
+
+        # 1. 收集当前 SKU 下各 unit 的总数量（英文字母统一转小写，如 KG -> kg, mL -> ml，防止分裂）
+        unit_quantities = {}
+        structure = pricing_basis.get("structure") or []
+        if isinstance(structure, list):
+            for item in structure:
+                if not isinstance(item, dict):
+                    continue
+                u = item.get("unit")
+                v = item.get("value")
+                if u and v is not None:
+                    try:
+                        v_float = float(v)
+                        if v_float > 0:
+                            unit_quantities[str(u).strip().lower()] = v_float
+                    except (ValueError, TypeError):
+                        pass
+
+        # 2. 如果存在 base_unit 与 total_value，修正对应 base_unit 的真实总容量/总量
+        base_unit = pricing_basis.get("base_unit")
+        total_val = pricing_basis.get("total_value")
+        if base_unit and total_val is not None:
+            try:
+                t_float = float(total_val)
+                if t_float > 0:
+                    unit_quantities[str(base_unit).strip().lower()] = t_float
+            except (ValueError, TypeError):
+                pass
+
+        # 3. 计算该规格下各 unit 的单价，并更新当前商品的最低单价
+        for u, qty in unit_quantities.items():
+            if qty > 0:
+                unit_price = price / qty
+                if unit_price <= 0:
+                    continue
+                if u not in best_unit_prices or unit_price < best_unit_prices[u]:
+                    best_unit_prices[u] = unit_price
+
+    return best_unit_prices
+
+
+def filter_products_by_cost_effectiveness(products, target_configs, top_n=10, only_top_unit=False):
+    """
+    业务逻辑：
+    1. 每个 search_keyword 匹配到的候选商品，按商品包含的 unit 拆分；
+    2. 若 only_top_unit=True，则每个关键词只保留候选商品数量最多的那一个 unit（主流规格单位）；
+    3. 每个采纳的 unit 下按照单价从低到高（性价比最高）挑选前 top_n 个商品；
+    4. 将所有关键词、所有采纳的 unit 选出的商品汇聚后，进行【全局去重】，输出唯一的商品列表。
+
+    :param products: 从 MongoDB 查出的原始商品列表
+    :param target_configs: 监控关键词配置列表
+    :param top_n: 每个 unit 最多入选的商品数 (默认 10)
+    :param only_top_unit: 是否只保留候选商品数量最多的那个 unit (默认 False)
+    :return: list, 全局去重后的候选商品列表
+    """
+    total_slots_selected = 0  # 统计各关键词、各单位选出的总名额
+    final_selected_map = {}  # 全局去重映射字典: {product_id: product}
+
+    for config in target_configs:
+        kw = config["search_keyword"]
+        words = config["words"]
+        max_price = config["max_price"]
+
+        # 1. 匹配符合当前 search_keyword 且状态合规的商品
+        matched_products = []
+        for item in products:
+            if not bool(item.get("need_update_sku")):
+                continue
+            if (item.get("sku_retry_count") or 0) > 3:
+                continue
+
+            item_name = (item.get("name") or "").lower()
+            if not words or not item_name:
+                continue
+
+            matched_count = sum(1 for w in words if w.lower() in item_name)
+            if matched_count < math.ceil(len(words) * 4 / 4):
+                continue
+
+            act_price = item.get("activity_price")
+            if max_price > 0 and (act_price is None or act_price > max_price):
+                continue
+
+            matched_products.append(item)
+
+        if not matched_products:
+            continue
+
+        # 2. 计算每个商品在不同 unit 下的性价比单价，并按 unit 汇集
+        unit_buckets = {}
+        for item in matched_products:
+            unit_prices = calc_product_best_unit_prices(item.get("format_info"))
+            for u, u_price in unit_prices.items():
+                if u not in unit_buckets:
+                    unit_buckets[u] = []
+                unit_buckets[u].append((u_price, item))
+
+        if not unit_buckets:
+            continue
+
+        # 【新增特性】：如果开启 only_top_unit，仅保留商品数量最多的那一个 unit
+        if only_top_unit:
+            dominant_unit = max(unit_buckets.keys(), key=lambda u: len(unit_buckets[u]))
+            logger.info(
+                f"[FILTER] 关键词【{kw}】命中 {len(matched_products)} 个商品，已锁定商品数最多的主流单位 [{dominant_unit}] (候选 {len(unit_buckets[dominant_unit])} 个)")
+            target_units = {dominant_unit: unit_buckets[dominant_unit]}
+        else:
+            logger.info(f"[FILTER] 关键词【{kw}】命中 {len(matched_products)} 个商品，保留全部 {len(unit_buckets)} 个单位")
+            target_units = unit_buckets
+
+        # 3. 对采纳的 unit 独立排序，取出性价比前 top_n 个商品
+        kw_slots = 0
+        for u, items_with_price in target_units.items():
+            # 按单价升序排列（单价越低越划算）
+            items_with_price.sort(key=lambda x: x[0])
+            top_items = items_with_price[:top_n]  # 严格切片前 top_n
+
+            kw_slots += len(top_items)
+            total_slots_selected += len(top_items)
+
+            # 汇总至全局字典（以 product_id 为 key，天然全局去重）
+            for u_price, p in top_items:
+                pid = p["product_id"]
+                final_selected_map[pid] = p
+
+            logger.info(
+                f"  └─ 单位 [{u}]: 候选 {len(items_with_price)} 个，已入选 Top {len(top_items)} (最佳单价: {top_items[0][0]:.4f}元/{u})")
+
+        logger.info(f"[FILTER] 关键词【{kw}】累计入选 {kw_slots} 个名额")
+
+    result_list = list(final_selected_map.values())
+    duplicates_removed = total_slots_selected - len(result_list)
+
+    logger.info("=" * 60)
+    logger.info(
+        f"[FILTER-REPORT] 🎯 筛选与去重清算报告 (模式: {'仅采纳最多商品单位' if only_top_unit else '采纳全部单位'}):")
+    logger.info(f"  ├─ 所有关键词及单位总计入选名额: {total_slots_selected} 个")
+    logger.info(f"  ├─ 跨关键词/跨单位重复的名额: {duplicates_removed} 个")
+    logger.info(f"  └─ 全局去重后最终放行待抓取的唯一商品数: {len(result_list)} 个")
+    logger.info("=" * 60)
+
+    return result_list
+
+# ==========================================
+# 🚦 主程序入口
+# ==========================================
+import math
+
 if __name__ == "__main__":
     while True:
         try:
             monitored_products = read_json(
                 r'W:\project\python_project\easy_shop\app\web_front\monitored_products.json') or {}
-            search_keywords = [
-                k for k, v in monitored_products.items()
-                if isinstance(v, dict) and v.get('is_monitoring')
-            ]
 
-            target_category_list = []
-            for search_keyword in search_keywords:
-                kw_clean = (search_keyword or "").strip().lower()
+            target_configs = []
+            for search_keyword, conf in monitored_products.items():
+                if not isinstance(conf, dict) or not conf.get('is_monitoring'):
+                    continue
+                kw_clean = (search_keyword or "").strip()
                 if not kw_clean:
                     continue
-                words = gen_goods_segment_info(name=search_keyword)
 
-                max_price = monitored_products[search_keyword].get('max_price') or 0
-                target_category_list.append((words, max_price))
+                words = gen_goods_segment_info(name=kw_clean)
+                max_price = conf.get('max_price') or 0
+                target_configs.append({
+                    "search_keyword": kw_clean,
+                    "words": words,
+                    "max_price": max_price
+                })
 
-            logger.info(target_category_list)
-
-            if target_category_list:
+            if target_configs:
+                # 【修改点】：在 projection 中加入 format_info，否则无法读取 pricing_basis
                 results = get_data_updated_within_24h(
                     limit=0,
                     extra_query={
@@ -1230,30 +1416,27 @@ if __name__ == "__main__":
                         "name": 1,
                         "activity_price": 1,
                         "sku_info": 1,
+                        "format_info": 1,  # 必须查出该字段
                         "need_update_sku": 1,
                         "sku_retry_count": 1
                     }
                 )
 
-                # 过滤逻辑：
-                # 1. 满足任意一组分词规则：匹配字符数 >= ceil(总长度 * 2 / 3)，且满足最高价格限制
-                # 2. need_update_sku 为 True 且 sku_retry_count <= 3
-                filtered_results = [
-                    item for item in results
-                    if bool(item.get("need_update_sku"))
-                       and (item.get("sku_retry_count") or 0) <= 3
-                       and (item_name := (item.get("name") or "").lower())
-                       and any(
-                        keywords_group
-                        and sum(1 for keyword in keywords_group if keyword in item_name) >= math.ceil(len(keywords_group) * 4 / 4)
-                        and (max_price <= 0 or (item.get("activity_price") is not None and item.get("activity_price") <= max_price))
-                        for keywords_group, max_price in target_category_list
-                    )
-                ]
+                # 执行各 keyword 下不同 unit 的性价比筛选及去重
+                filtered_results = filter_products_by_cost_effectiveness(
+                    products=results,
+                    target_configs=target_configs,
+                    top_n=10,
+                    only_top_unit=True
+                )
 
-                batch_runner(filtered_results)
+                if filtered_results:
+                    batch_runner(filtered_results)
+                else:
+                    logger.info("[INFO] 经过性价比与规格筛选后无待抓取商品")
             else:
                 logger.info("[INFO] 当前无有效监控关键词，跳过本轮 SKU 抓取")
         except Exception as e:
             logger.info(f"[FATAL] 💥 主程序异常退出: {str(e)}")
-        time.sleep(600)
+
+        time.sleep(60)
