@@ -1528,7 +1528,7 @@ if __name__ == "__main__":
                     confirmed_products=confirmed_results,
                     target_configs=target_configs,
                     top_n=10,
-                    benchmark_rank=2,    # 锁定第 5 名性价比为
+                    benchmark_rank=5,    # 锁定第 5 名性价比为
                     only_top_unit=False  # 若只需数量最多的 unit 改为 True
                 )
 
