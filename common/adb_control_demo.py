@@ -699,16 +699,19 @@ class PddAdbBot:
             if ok:
                 buf.tofile(save_path)
 
-    def process_single_goods(self, goods_id, index, consecutive_successes=0, ocr=ocr_fast):
+    def process_single_goods(self, promotion_url, goods_id, index, consecutive_successes=0, ocr=ocr_fast):
         extra_info = {"is_group": False, "force_retry_count": None}
 
         # --- 步骤 1：重启 Via 浏览器 ---
-        logger.info(f"[TASK] [{index}] 步骤 1/4: 重启 Via 浏览器")
         restart_app(VIA_PACKAGE)
 
         # --- 步骤 2：利用底层 Intent 瞬间注入商品链接并触发跳转 ---
         logger.info(f"[TASK] [{index}] 步骤 2/4: 瞬间唤起浏览器并打开商品链接 (goods_id={goods_id})")
         target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
+        if promotion_url:
+             target_link = promotion_url
+        logger.info(f"[TASK] [{index}] 步骤 1/4: 重启 Via 浏览器 {target_link}")
+
         cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -839,11 +842,12 @@ def batch_runner(product_list):
 
     for i, product in enumerate(product_list, 1):
         goods_id = product["product_id"]
+        promotion_url = product.get("promotion_url", "")
         logger.info("-" * 40)
         logger.info(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(product_list)}] goods_id: {goods_id}")
 
         try:
-            success, sku_info, error_msg, extra_info = bot.process_single_goods(
+            success, sku_info, error_msg, extra_info = bot.process_single_goods(promotion_url,
                 goods_id, i, consecutive_successes
             )
 
@@ -1297,6 +1301,7 @@ if __name__ == "__main__":
                     "need_reformat": 1,
                     "sku_status": 1,
                     "sku_retry_count": 1,
+                    "promotion_url": 1,
                     "_source_api": 1
                 }
 
