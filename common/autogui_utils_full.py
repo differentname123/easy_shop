@@ -1315,6 +1315,9 @@ def filter_products_by_cost_effectiveness(
         for item in confirmed_products:
             if not is_product_confirmed_sku(item):
                 continue
+
+            if is_group_product(item):
+                continue
             item_name = (item.get("name") or "").lower()
             if not words or not item_name:
                 continue
@@ -1459,6 +1462,21 @@ import math
 # ==========================================
 import math
 
+
+def is_group_product(product):
+    """
+    判断商品是否属于带有门槛的 group 商品
+    若不存在或为空，按业务逻辑默认当作 group 处理
+    """
+    _source_api = product.get("_source_api")
+    if not _source_api:
+        return True  # 缺失或为 None 默认视为 group 门槛商品
+
+    if isinstance(_source_api, (list, tuple, set)):
+        return "group" in _source_api
+    return "group" in str(_source_api)
+
+
 if __name__ == "__main__":
     while True:
         try:
@@ -1493,7 +1511,9 @@ if __name__ == "__main__":
                     "need_update_sku": 1,
                     "need_reformat": 1,
                     "sku_status": 1,
-                    "sku_retry_count": 1
+                    "sku_retry_count": 1,
+                    "_source_api": 1  # <--- 【修改 1】：必须加上这个字段投影！
+
                 }
 
                 # 1. 查询 12 小时内待抓取的候选商品 (need_update_sku 为 True)
@@ -1517,7 +1537,8 @@ if __name__ == "__main__":
                     limit=0,
                     extra_query={
                         "format_status": "success",
-                        "sku_info": {"$exists": True, "$ne": []}
+                        "sku_info": {"$exists": True, "$ne": []},
+                        "_source_api": {"$exists": True, "$ne": "group"}  # <--- 【优化】：在 DB 层初筛排除 group
                     },
                     projection=common_projection
                 )
@@ -1527,7 +1548,7 @@ if __name__ == "__main__":
                     candidate_products=candidate_results,
                     confirmed_products=confirmed_results,
                     target_configs=target_configs,
-                    top_n=10,
+                    top_n=1,
                     benchmark_rank=5,    # 锁定第 5 名性价比为
                     only_top_unit=False  # 若只需数量最多的 unit 改为 True
                 )
