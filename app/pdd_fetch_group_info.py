@@ -25,7 +25,7 @@ from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
 
 USER_DATA_DIR = r"W:\temp\biance_pdd_myself"
-USER_DATA_DIR_LIST = [r"W:\temp\biance_pdd_myself", r"W:\temp\biance_pdd_mama"]
+USER_DATA_DIR_LIST = [r"W:\temp\biance_pdd_myself", r"W:\temp\biance_pdd_nana"]
 logger = setup_logger("pdd_scraper")
 
 GLOBAL_CONFIG = {
@@ -762,6 +762,7 @@ def web_search_intercept_task():
                                 intercept_result = search_goods_and_intercept(
                                     search_key_list=[keyword],
                                     user_data_dir=account_dir,
+                                    limit_count=1000,
                                     debug=False
                                 )
 

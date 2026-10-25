@@ -6,7 +6,7 @@
 :last_date:
     2026/10/22 14:00
 :description:
-    性价比商品搜索服务（仅保留价格、真人核实、计量单位筛选及包含/排除过滤支持）
+    性价比商品搜索服务（支持多单位提取与展示、真人核实、计量单位筛选及包含/排除过滤支持）
 """
 import math
 import os
@@ -405,17 +405,59 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
     logger.info(f"搜索词：[{keyword}]，分词项：{search_terms}，过滤展开后的商品规格数量: {len(filtered_products)}")
 
-    # 遍历当前搜索结果，统计各个类别下不同单位的出现频率
+    # ============== 多单位（structure多层级包装结构）解析逻辑 ==============
+    for product in filtered_products:
+        pricing_basis = product.get("format_info", {}).get("pricing_basis", {})
+        raw_structure = pricing_basis.get("structure")
+        raw_base_unit = str(pricing_basis.get("base_unit") or "").strip() or "件"
+        raw_total_val = pricing_basis.get("total_value")
+
+        try:
+            total_val_float = float(raw_total_val) if raw_total_val is not None else None
+            if total_val_float is not None and (total_val_float <= 0 or not math.isfinite(total_val_float)):
+                total_val_float = None
+        except (ValueError, TypeError):
+            total_val_float = None
+
+        extracted_units = {}
+        current_accum = 1.0
+        if isinstance(raw_structure, list) and raw_structure:
+            for struct_item in raw_structure:
+                if not isinstance(struct_item, dict):
+                    continue
+                u = str(struct_item.get("unit") or "").strip()
+                v = struct_item.get("value")
+                try:
+                    val_float = float(v) if v is not None else 1.0
+                    if val_float <= 0 or not math.isfinite(val_float):
+                        val_float = 1.0
+                except (ValueError, TypeError):
+                    val_float = 1.0
+
+                current_accum *= val_float
+                if u:
+                    extracted_units[u] = current_accum
+
+        # 确保基础单位 base_unit 包含在 extracted_units 中
+        if raw_base_unit:
+            final_val = total_val_float if total_val_float is not None else current_accum
+            extracted_units[raw_base_unit] = final_val
+
+        if not extracted_units:
+            extracted_units["件"] = 1.0
+
+        product["_extracted_units"] = extracted_units
+
+    # 统计所有商品中出现的所有度量衡单位频率，确定统一目标单位
     category_unit_counts = {}
     for product in filtered_products:
-        base_unit = product.get("format_info", {}).get("pricing_basis", {}).get("base_unit", "件")
-        category = UNIT_TO_CATEGORY.get(base_unit)
-        if category:
-            if category not in category_unit_counts:
-                category_unit_counts[category] = {}
-            category_unit_counts[category][base_unit] = category_unit_counts[category].get(base_unit, 0) + 1
+        for u in product.get("_extracted_units", {}).keys():
+            category = UNIT_TO_CATEGORY.get(u)
+            if category:
+                if category not in category_unit_counts:
+                    category_unit_counts[category] = {}
+                category_unit_counts[category][u] = category_unit_counts[category].get(u, 0) + 1
 
-    # 找到每个类别下，商品数量最多的单位作为统一后的目标单位
     category_target_unit = {}
     for category, counts in category_unit_counts.items():
         target_unit = max(counts.items(), key=lambda x: x[1])[0]
@@ -424,32 +466,58 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     grouped_products = {}
     for product in filtered_products:
         pricing_basis = product["format_info"]["pricing_basis"]
-        total_value = pricing_basis.get("total_value", 1)
-        base_unit = pricing_basis.get("base_unit", "件")
-
-        # 检查是否可以进行单位转换
-        category = UNIT_TO_CATEGORY.get(base_unit)
-        if category and category in category_target_unit:
-            target_unit = category_target_unit[category]
-            if base_unit != target_unit:
-                orig_multiplier = UNIT_TO_MULTIPLIER[base_unit]
-                target_multiplier = UNIT_TO_MULTIPLIER[target_unit]
-                total_value = total_value * (orig_multiplier / target_multiplier)
-                base_unit = target_unit
-                pricing_basis["total_value"] = round(total_value, 4)
-        else:
-            if isinstance(total_value, float):
-                total_value = round(total_value, 4)
-                pricing_basis["total_value"] = total_value
-
-        # 性价比计算
         price = product["activity_price"]
-        product["cost_performance_score"] = total_value / price if price and price > 0 else 0
-        product["base_unit"] = base_unit
+        extracted_units = product.get("_extracted_units", {})
 
-        if base_unit not in grouped_products:
-            grouped_products[base_unit] = []
-        grouped_products[base_unit].append(product)
+        # 对商品的所有提取单位进行度量衡换算
+        normalized_units = {}
+        for u, val in extracted_units.items():
+            category = UNIT_TO_CATEGORY.get(u)
+            final_u = u
+            final_val = val
+            if category and category in category_target_unit:
+                tgt_u = category_target_unit[category]
+                if u != tgt_u:
+                    orig_multiplier = UNIT_TO_MULTIPLIER[u]
+                    target_multiplier = UNIT_TO_MULTIPLIER[tgt_u]
+                    final_val = val * (orig_multiplier / target_multiplier)
+                final_u = tgt_u
+
+            final_val = round(final_val, 4) if isinstance(final_val, float) else final_val
+            normalized_units[final_u] = final_val
+
+        # 生成各个单位的详细计算（总份量、单价、性价比）
+        unit_details = {}
+        for u, val in normalized_units.items():
+            val_num = float(val) if val and val > 0 else 1.0
+            price_per_unit = round(price / val_num, 4) if price and price > 0 else 0.0
+            score = round(val_num / price, 6) if price and price > 0 else 0.0
+            unit_details[u] = {
+                "unit": u,
+                "total_value": val,
+                "price_per_unit": price_per_unit,
+                "cost_performance_score": score
+            }
+
+        # 确定主基准单位
+        raw_base_unit = pricing_basis.get("base_unit", "件")
+        cat = UNIT_TO_CATEGORY.get(raw_base_unit)
+        primary_base_unit = category_target_unit[cat] if cat and cat in category_target_unit else raw_base_unit
+        if primary_base_unit not in unit_details:
+            primary_base_unit = next(iter(unit_details.keys()), "件")
+
+        primary_total_value = unit_details[primary_base_unit]["total_value"]
+        primary_score = unit_details[primary_base_unit]["cost_performance_score"]
+
+        pricing_basis["total_value"] = primary_total_value
+        pricing_basis["base_unit"] = primary_base_unit
+        product["base_unit"] = primary_base_unit
+        product["cost_performance_score"] = primary_score
+        product["unit_details"] = unit_details
+
+        if primary_base_unit not in grouped_products:
+            grouped_products[primary_base_unit] = []
+        grouped_products[primary_base_unit].append(product)
 
     # 按照 base_unit 分组收集
     final_results = []
@@ -499,20 +567,27 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "_source_api": product["_source_api"],
             "is_suspicious": product["is_suspicious"],
             "base_unit": product["base_unit"],
+            "unit_details": product.get("unit_details", {}),
             "format_info": {
                 "pricing_basis": {
                     "total_value": pricing_basis.get("total_value", 1),
+                    "base_unit": product["base_unit"],
                     "structure": cleaned_structure
                 },
                 "decision_keywords": cleaned_keywords
             }
         })
 
-    # 统计最终所有商品归一化后的规格单位数量，并选出数量最多的规格单位
+    # 统计最终所有商品支持的所有单位数量，并选出覆盖商品数量最多的单位作为 dominant_unit
     unit_counts = {}
     for p in response_products:
-        u = p.get("base_unit") or "件"
-        unit_counts[u] = unit_counts.get(u, 0) + 1
+        u_details = p.get("unit_details") or {}
+        if u_details:
+            for u in u_details.keys():
+                unit_counts[u] = unit_counts.get(u, 0) + 1
+        else:
+            u = p.get("base_unit") or "件"
+            unit_counts[u] = unit_counts.get(u, 0) + 1
 
     dominant_unit = ""
     if unit_counts:
@@ -698,6 +773,7 @@ def count_monitored_products_72h(keyword_price_map: dict, min_match_score: int =
         }
 
     return counts
+
 
 def build_monitor_response(data: dict) -> dict:
     """组装监控响应数据（包含 72 小时数据库商品总数量与已人工确定数量，绑定 max_price 缓存校验）"""
