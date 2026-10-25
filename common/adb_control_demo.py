@@ -70,19 +70,29 @@ def _async_save_png(img_bgr, save_path):
 # 📱 ADB 基础控制层 (支持多应用与极速感知)
 # ==========================================
 def get_foreground_package():
-    """快速获取当前最上层窗口的应用包名"""
-    cmd = f'"{ADB_PATH}" shell dumpsys window'
-    res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
-    if not res.stdout:
-        return ""
-    for line in res.stdout.splitlines():
-        if "mCurrentFocus" in line or "mFocusedApp" in line:
-            if PDD_PACKAGE in line:
-                return PDD_PACKAGE
-            if VIA_PACKAGE in line:
-                return VIA_PACKAGE
+    """快速获取当前最上层窗口的应用包名（非 shell 启动，杜绝死锁）"""
+    try:
+        res = subprocess.run(
+            [ADB_PATH, "shell", "dumpsys", "activity", "top"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=2.0  # 严格 2 秒超时
+        )
+        if res.stdout:
+            for line in res.stdout.splitlines():
+                if "ACTIVITY" in line:
+                    if PDD_PACKAGE in line:
+                        return PDD_PACKAGE
+                    if VIA_PACKAGE in line:
+                        return VIA_PACKAGE
+                    break
+    except subprocess.TimeoutExpired:
+        logger.warning("[ADB-TIMEOUT] get_foreground_package 超时")
+    except Exception:
+        pass
     return ""
-
 
 def is_app_in_foreground(package_name):
     """检测指定应用是否为当前前台应用"""
@@ -685,11 +695,34 @@ class PddAdbBot:
         return 0, 0
 
     def click_point(self, x, y, desc=""):
-        """点击绝对像素坐标"""
+        """点击绝对像素坐标（列表传参，防止 input tap 卡住主线程）"""
         x, y = int(x), int(y)
         if desc:
             logger.info(f"[INFO] 执行点击: {desc} ({x}, {y})")
-        subprocess.run(f'"{ADB_PATH}" shell input tap {x} {y}', shell=True)
+        try:
+            subprocess.run(
+                [ADB_PATH, "shell", "input", "tap", str(x), str(y)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[ADB-TIMEOUT] 点击 {desc} 超时")
+
+    def scroll_sku_down(self):
+        x = int(self.width * 0.5)
+        y_start = int(self.height * 0.72)
+        y_end = int(self.height * 0.35)
+        try:
+            subprocess.run(
+                f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 260',
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.5
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("[ADB-TIMEOUT] 滑动操作超时")
 
     def click_relative(self, pct_x, pct_y, desc=""):
         """使用相对比例点击屏幕，适配所有分辨率"""
@@ -697,12 +730,7 @@ class PddAdbBot:
         y = int(self.height * pct_y)
         self.click_point(x, y, desc=desc)
 
-    def scroll_sku_down(self):
-        """在 SKU 弹窗区域向下滚动查看底部规格（手指从下往上滑）"""
-        x = int(self.width * 0.5)
-        y_start = int(self.height * 0.72)
-        y_end = int(self.height * 0.35)
-        subprocess.run(f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 260', shell=True)
+
 
     def scroll_sku_up(self):
         """在 SKU 弹窗区域向上滚动复位回顶部规格（手指从上往下滑）"""
@@ -713,40 +741,94 @@ class PddAdbBot:
 
     def get_screenshot_cv(self):
         """
-        【核心提速】优先通过 ADB 裸流 (Raw RGBA) 极速读取屏幕，省去手机 CPU 的 PNG 压缩耗时 (0.65s -> 0.15s)
-        若遇特殊格式自动无缝回退 screencap -p
+        极速 Raw RGBA 读取屏幕（彻底修复 Windows 下 shell=True 与 proc.communicate 导致的管道死锁）
         """
-        proc = subprocess.Popen(
-            f'"{ADB_PATH}" exec-out screencap',
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        raw_bytes, _ = proc.communicate()
-        if raw_bytes and len(raw_bytes) > 16:
-            try:
+        proc = None
+        try:
+            # 1. 核心修复：坚决不使用 shell=True，直接以列表方式启动真实 adb.exe 进程
+            proc = subprocess.Popen(
+                [ADB_PATH, "exec-out", "screencap"],
+                shell=False,  # 禁用 cmd.exe 中介，避免产生无主孤儿进程
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            raw_bytes, _ = proc.communicate(timeout=2.5)
+
+            if raw_bytes and len(raw_bytes) > 16:
                 w, h = struct.unpack("<II", raw_bytes[:8])
                 expected_bytes = w * h * 4
                 header_size = len(raw_bytes) - expected_bytes
-                # 兼容 Android 5~8 (12字节头) 与 Android 9~14+ (16字节头)
                 if w > 0 and h > 0 and header_size in (12, 16):
                     arr = np.frombuffer(raw_bytes, dtype=np.uint8, offset=header_size).reshape((h, w, 4))
                     return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
-            except Exception:
-                pass
+        except subprocess.TimeoutExpired:
+            logger.warning("[ADB-TIMEOUT] exec-out screencap 读取超时，正在强制清理进程树...")
+            if proc:
+                try:
+                    # Windows 下强杀整个进程树 (/F 强制, /T 包含子进程)
+                    subprocess.run(
+                        f"taskkill /F /T /PID {proc.pid}",
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=1.0
+                    )
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"[ADB-ERROR] screencap 异常: {e}")
+        finally:
+            # 确保管道彻底关闭，释放系统句柄
+            if proc:
+                try:
+                    if proc.stdout: proc.stdout.close()
+                    if proc.stderr: proc.stderr.close()
+                except Exception:
+                    pass
 
-        # 兜底回退方案：使用 PNG 压缩流
-        proc_p = subprocess.Popen(
-            f'"{ADB_PATH}" exec-out screencap -p',
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        raw_png, _ = proc_p.communicate()
-        if not raw_png:
-            return None
-        nparr = np.frombuffer(raw_png, np.uint8)
-        return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # 2. 兜底方案：screencap -p (同样严格禁用 shell=True，严格防死锁)
+        proc_p = None
+        try:
+            proc_p = subprocess.Popen(
+                [ADB_PATH, "exec-out", "screencap", "-p"],
+                shell=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            raw_png, _ = proc_p.communicate(timeout=3.0)
+            if raw_png:
+                nparr = np.frombuffer(raw_png, np.uint8)
+                return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except subprocess.TimeoutExpired:
+            logger.warning("[ADB-TIMEOUT] screencap -p 兜底亦超时，直接放弃当前帧...")
+            if proc_p:
+                try:
+                    subprocess.run(
+                        f"taskkill /F /T /PID {proc_p.pid}",
+                        shell=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=1.0
+                    )
+                except Exception:
+                    try:
+                        proc_p.kill()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            if proc_p:
+                try:
+                    if proc_p.stdout: proc_p.stdout.close()
+                    if proc_p.stderr: proc_p.stderr.close()
+                except Exception:
+                    pass
+
+        return None
 
     def _fast_region_ocr(self, img_region, scale=0.45, engine=ocr_fast):
         """
@@ -796,11 +878,12 @@ class PddAdbBot:
         wait_start = time.time()
         via_stay_start = time.time()
         via_refresh_count = 0
+        current_fg_pkg = ""
 
         # 先高频探测焦点是否已跳入拼多多（最长等待 3.0s，一旦跳入拼多多立即放行）
         while time.time() - wait_start < 3.0:
-            fg_pkg = get_foreground_package()
-            if fg_pkg == PDD_PACKAGE:
+            current_fg_pkg = get_foreground_package()
+            if current_fg_pkg == PDD_PACKAGE:
                 logger.info(
                     f"[NAV-FAST] ⚡ 检测到最上层窗口已切入拼多多 (仅耗时: {time.time() - wait_start + 0.6:.2f}s)")
                 time.sleep(0.35)  # 给页面首帧渲染留出微小缓冲
@@ -816,31 +899,44 @@ class PddAdbBot:
         buy_click_count = 0
         CLICK_RETRY_INTERVAL = 1.2
 
-        # 🎯 中间页防重连击冷却锁 (彻底杜绝 4.8 秒内多次触发抢券导致弹窗)
+        # 🎯 中间页防重连击冷却锁
         last_mid_click_time = 0.0
         MID_CLICK_COOLDOWN = 5.0
         CONFIRM_KEYWORDS = ("确定", "再来一单")
+
+        # 🎯 【核心新增修复 4】：dumpsys 前台应用检测节流锁
+        # 继承步骤 2 探测到的包名，不要一进循环就盲目查询 dumpsys
+        last_pkg_check_time = time.time()
+        PKG_CHECK_INTERVAL = 2.5  # 限制：最少间隔 2.5 秒才允许查一次 dumpsys，彻底保护 Android 系统
 
         final_img = None
 
         # 全流程共享 18 秒超时时间
         while time.time() - state_start_time < 18.0:
             try:
-                # 1. 若尚未进入详情页，优先检查是否还卡在 Via 浏览器中
+                # 1. 【修复 4 的核心】：只有间隔超过 2.5 秒，且还没进详情页时，才轻量确认一次包名
                 if not detail_entered:
-                    fg_pkg = get_foreground_package()
-                    if fg_pkg == VIA_PACKAGE:
+                    now_time = time.time()
+                    # 只有冷却时间到了才执行 dumpsys
+                    if now_time - last_pkg_check_time >= PKG_CHECK_INTERVAL:
+                        current_fg_pkg = get_foreground_package()
+                        last_pkg_check_time = now_time
+
+                    # 只有明确处于 Via 浏览器时才走刷新/重跳逻辑
+                    if current_fg_pkg == VIA_PACKAGE:
                         if time.time() - via_stay_start >= 2.2:
                             via_refresh_count += 1
                             logger.info(f"[NAV-CHECK] 仍停留在 Via 浏览器，执行第 {via_refresh_count} 次刷新...")
                             self.click_relative(0.547, 0.043, f"Via浏览器刷新按钮 (第 {via_refresh_count} 次)")
                             if via_refresh_count >= 2:
-                                subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                # 此处的 am start 同样加上 2 秒超时
+                                subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                               timeout=2.0)
                             via_stay_start = time.time()
                         time.sleep(0.5)
                         continue
 
-                # 2. 极速获取当前屏幕截图
+                # 2. 极速获取当前屏幕截图 (内部已有 3.0s 超时保护)
                 img_cv = self.get_screenshot_cv()
                 if img_cv is None:
                     time.sleep(0.2)
@@ -853,6 +949,7 @@ class PddAdbBot:
                 bottom_half = img_cv[h // 2:h, 0:w]
                 btm_items = self._fast_region_ocr(bottom_half, scale=0.45, engine=ocr)
                 detected_text = "".join([item["text"] for item in btm_items])
+
 
                 # A. 【优先检查终止态】：底部出现“确定”/“再来一单”/“确认”，说明 SKU 面板已展开
                 if detail_entered and any(kw in detected_text for kw in CONFIRM_KEYWORDS):
