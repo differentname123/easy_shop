@@ -1498,7 +1498,7 @@ if __name__ == "__main__":
 
                 # 1. 查询 12 小时内待抓取的候选商品 (need_update_sku 为 True)
                 candidate_results = get_data_updated_within_24h(
-                    hours=12,
+                    hours=24,
                     limit=0,
                     extra_query={
                         "format_status": "success",
