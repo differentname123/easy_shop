@@ -916,20 +916,19 @@ class PddAdbBot:
         cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # --- 步骤 2：动态感知最上层应用（告别死等 3s） ---
+        # --- 步骤 2：动态感知最上层应用 ---
         time.sleep(0.6)
         wait_start = time.time()
         via_stay_start = time.time()
         via_refresh_count = 0
         current_fg_pkg = ""
 
-        # 先高频探测焦点是否已跳入拼多多（最长等待 3.0s，一旦跳入拼多多立即放行）
         while time.time() - wait_start < 3.0:
             current_fg_pkg = get_foreground_package()
             if current_fg_pkg == PDD_PACKAGE:
                 logger.info(
                     f"[NAV-FAST] ⚡ 检测到最上层窗口已切入拼多多 (仅耗时: {time.time() - wait_start + 0.6:.2f}s)")
-                time.sleep(0.35)  # 给页面首帧渲染留出微小缓冲
+                time.sleep(0.35)
                 break
             time.sleep(0.25)
 
@@ -940,34 +939,27 @@ class PddAdbBot:
         sku_ready = False
         last_buy_click_time = 0.0
         buy_click_count = 0
-        CLICK_RETRY_INTERVAL = 1.2
+        CLICK_RETRY_INTERVAL = 3.5  # 提升重试点击间隔，严防误下单
 
-        # 🎯 中间页防重连击冷却锁
+        # 中间页防重连击冷却锁
         last_mid_click_time = 0.0
         MID_CLICK_COOLDOWN = 5.0
         CONFIRM_KEYWORDS = ("确定", "再来一单")
 
-        # 🎯 【核心新增修复 4】：dumpsys 前台应用检测节流锁
-        # 继承步骤 2 探测到的包名，不要一进循环就盲目查询 dumpsys
         last_pkg_check_time = time.time()
-        PKG_CHECK_INTERVAL = 2.5  # 限制：最少间隔 2.5 秒才允许查一次 dumpsys，彻底保护 Android 系统
-
         final_img = None
 
-        # 全流程共享 18 秒超时时间
-        while time.time() - state_start_time < 18.0:
+        # 核心优化 1：放宽全局时间预算至 26.0s，防止网页中间页慢拖垮详情页
+        while time.time() - state_start_time < 26.0:
             try:
-                # 1. 【修复 4 的核心】：只有间隔超过 2.5 秒，且还没进详情页时，才轻量确认一次包名
-                # 1. 只有间隔超过 1.5 秒才查一次焦点，绝不拖慢主流程
+                # 1. 前台包名轻量探测与 Via 防卡死
                 if not detail_entered:
                     now_time = time.time()
                     if now_time - last_pkg_check_time >= 1.5:
                         current_fg_pkg = get_foreground_package()
                         last_pkg_check_time = now_time
 
-                    # 只有确认手机顶层依然是 Via 时才执行保护
                     if current_fg_pkg == VIA_PACKAGE:
-                        # 核心修改：等待时间由 2.2s 提升至 4.0s，防止网页刚要跳转就被刷新打断！
                         if time.time() - via_stay_start >= 4.0:
                             via_refresh_count += 1
                             if via_refresh_count <= 2:
@@ -978,12 +970,12 @@ class PddAdbBot:
                                 logger.info(f"[NAV-CHECK] 连续刷新无效，重新发送 Intent 激活唤醒...")
                                 subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                                timeout=2.0)
-                                via_refresh_count = 0  # 重置计数
+                                via_refresh_count = 0
                             via_stay_start = time.time()
                         time.sleep(0.4)
                         continue
 
-                # 2. 极速获取当前屏幕截图 (内部已有 3.0s 超时保护)
+                # 2. 极速获取屏幕截图
                 img_cv = self.get_screenshot_cv()
                 if img_cv is None:
                     time.sleep(0.2)
@@ -992,16 +984,14 @@ class PddAdbBot:
                 final_img = img_cv
                 h, w = img_cv.shape[:2]
 
-                # 3. 优先对下半屏做 0.45x 极速 OCR（耗时仅 ~0.15s）
+                # 3. 对下半屏做极速 OCR
                 bottom_half = img_cv[h // 2:h, 0:w]
                 btm_items = self._fast_region_ocr(bottom_half, scale=0.45, engine=ocr)
                 detected_text = "".join([item["text"] for item in btm_items])
 
-
-                # A. 【优先检查终止态】：底部出现“确定”/“再来一单”/“确认”，说明 SKU 面板已展开
+                # A. 【优先检查终止态】：底部出现确认词，说明 SKU 面板已完全展开
                 if detail_entered and any(kw in detected_text for kw in CONFIRM_KEYWORDS):
                     sku_ready = True
-                    # 微等 0.15s 确保弹窗上滑动画彻底静止，随后再截一帧高清图直接复用给步骤 4
                     time.sleep(0.15)
                     stable_img = self.get_screenshot_cv()
                     if stable_img is not None:
@@ -1010,7 +1000,7 @@ class PddAdbBot:
                         f"[INFO] ✅ SKU 面板已完全展开并锁定首帧 (轮询耗时: {time.time() - state_start_time:.2f}s)")
                     break
 
-                # B. 【自动消解阻碍浮层】：检测到“优惠详情/店铺优惠”抽屉遮挡原生底栏
+                # B. 【自动消解阻碍浮层】
                 if any(kw in detected_text for kw in ["优惠详情", "店铺优惠"]):
                     logger.info("[NAV-POPUP] 检测到'优惠详情'抽屉遮挡底栏，正在轻触顶部遮罩区关闭...")
                     self.click_relative(0.50, 0.25, "关闭优惠详情浮层")
@@ -1031,7 +1021,7 @@ class PddAdbBot:
                     logger.info(f"[WARN] 检测到商品异常状态 ({detected_text[:20]})，提前终止轮询")
                     return False, [], f"商品不可售({detected_text[:10]})", extra_info
 
-                # D. 【检测到原生详情页底栏】：当场立即点击购买（消除步骤切换重复截图）
+                # D. 【检测到原生详情页底栏】：动态点击购买与防误触安全观测
                 has_bottom_bar = sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2
                 if has_bottom_bar and not any(kw in detected_text for kw in CONFIRM_KEYWORDS):
                     now = time.time()
@@ -1046,10 +1036,33 @@ class PddAdbBot:
                         detail_entered = True
                         last_buy_click_time = time.time()
                         self.click_relative(pct_x, pct_y, f"动态点击购买 (第 {buy_click_count} 次)")
-                        time.sleep(1.30)
+
+                        # 🔒 核心优化 2：专有防误触静默观测期（严禁二次点击，绝不连击误下单）
+                        observe_start = time.time()
+                        while time.time() - observe_start < 3.5:
+                            time.sleep(0.35)  # 留出弹窗上滑动效渲染时间
+                            chk_cv = self.get_screenshot_cv()
+                            if chk_cv is None:
+                                continue
+
+                            chk_btm = self._fast_region_ocr(chk_cv[h // 2:h, 0:w], scale=0.45, engine=ocr)
+                            chk_text = "".join([item["text"] for item in chk_btm])
+
+                            if any(kw in chk_text for kw in CONFIRM_KEYWORDS):
+                                sku_ready = True
+                                time.sleep(0.10)
+                                stable_img = self.get_screenshot_cv()
+                                final_img = stable_img if stable_img is not None else chk_cv
+                                logger.info(
+                                    f"[INFO] ✅ SKU 面板已完全展开并锁定 (安全观测耗时: {time.time() - observe_start:.2f}s)")
+                                break
+
+                        # 面板已展开则直接跳出大循环进行解析
+                        if sku_ready:
+                            break
                         continue
 
-                # E. 【尚未进入详情页】：中间页跳转（冷却防抖 + 动态状态跃迁感知，拒绝固定死等）
+                # E. 【尚未进入详情页】：中间页跳转
                 if not detail_entered:
                     now = time.time()
                     if now - last_mid_click_time >= MID_CLICK_COOLDOWN:
@@ -1068,7 +1081,6 @@ class PddAdbBot:
                             self.click_point(int(mid_target["cx"]), int(mid_target["cy"]),
                                              f"中间页跳转按钮 [{btn_text}]")
 
-                            # 🚀 动态微轮询感知页面跃迁（最长 3.0s，一旦检测到底栏出现或按钮消失立刻放行）
                             sense_start = time.time()
                             while time.time() - sense_start < 3.0:
                                 check_cv = self.get_screenshot_cv()
@@ -1076,14 +1088,12 @@ class PddAdbBot:
                                     chk_btm = self._fast_region_ocr(check_cv[h // 2:h, 0:w], scale=0.45, engine=ocr)
                                     chk_btm_text = "".join([t["text"] for t in chk_btm])
 
-                                    # 跃迁条件1: 原生详情底栏或 SKU 确认键已就位
                                     if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in chk_btm_text) >= 2 or any(
                                             kw in chk_btm_text for kw in CONFIRM_KEYWORDS):
                                         logger.info(
                                             f"[NAV-SENSE] ⚡ 动态捕获页面成功跃迁 (耗时: {time.time() - sense_start:.2f}s)")
                                         break
 
-                                    # 跃迁条件2: 原抢券按钮已切走消失
                                     chk_top = self._fast_region_ocr(check_cv[0:h // 2, 0:w], scale=0.45, engine=ocr)
                                     chk_top_text = "".join([t["text"] for t in chk_top])
                                     if not any(btn_kw in chk_top_text for btn_kw in ("立即购买", "抢券购买")):
@@ -1099,7 +1109,7 @@ class PddAdbBot:
 
             time.sleep(0.12)
 
-        # 轮询结束，进行结果清算
+        # 轮询结束，清算结果
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.save_error_screenshot(path, final_img)
@@ -1110,7 +1120,7 @@ class PddAdbBot:
             self.save_error_screenshot(path, final_img)
             return False, [], "SKU面板未完全展开或点击全部失效", extra_info
 
-        # --- 步骤 4：遍历提取所有 SKU 规格组合及价格（直接传入 final_img 省去首次截屏） ---
+        # --- 步骤 4：遍历提取所有 SKU 规格组合及价格 ---
         logger.info(f"[TASK] [{index}] 步骤 3/3: 正在极速遍历提取所有 SKU 规格组合与价格...")
         sku_info = get_pdd_sku_info(bot=self, id=goods_id, debug=DEBUG_MODE, initial_img=final_img)
         if not sku_info:
@@ -1120,13 +1130,11 @@ class PddAdbBot:
 
         logger.info(f"[TASK] [{index}] 🎯 成功提取 {len(sku_info)} 个规格组合。")
 
-        # 连续成功清理策略
         if (consecutive_successes + 1) % 500 == 0:
             restart_app(PDD_PACKAGE)
             logger.info("[INFO] 循环连轴转达到 500 次，重启拼多多客户端释放资源。")
 
         return True, sku_info, "", extra_info
-
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
 # ==========================================
