@@ -706,19 +706,82 @@ class PddAdbBot:
         restart_app(VIA_PACKAGE)
 
         # --- 步骤 2：利用底层 Intent 瞬间注入商品链接并触发跳转 ---
-        logger.info(f"[TASK] [{index}] 步骤 2/4: 瞬间唤起浏览器并打开商品链接 (goods_id={goods_id})")
-        target_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
-        if promotion_url:
-             target_link = promotion_url
-        logger.info(f"[TASK] [{index}] 步骤 1/4: 重启 Via 浏览器 {target_link}")
+        target_link = promotion_url if promotion_url else f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
+        logger.info(f"[TASK] [{index}] 步骤 1/4: 唤起 Via 浏览器并打开链接 -> {target_link}")
 
         cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # 给予浏览器响应和触发拼多多跳转的缓冲时间
-        time.sleep(1.2)
+        # =========================================================================
+        # 步骤 2.5：通用过渡处理（等待 3s 后，在 10s 容忍时间内每秒检测：浏览器刷新 / 中间页点击跳转 / 详情页到达确认）
+        # =========================================================================
+        logger.info(f"[TASK] [{index}] 步骤 2/4: 等待 3 秒后开始检测页面跳转状态 (10s 容忍期, 间隔 1s)...")
+        time.sleep(3.0)
 
-        # --- 步骤 3：接管拼多多并进行闭环状态机轮询 ---
+        nav_start_time = time.time()
+        via_refresh_count = 0
+        final_img = None
+
+        while time.time() - nav_start_time < 10.0:
+            try:
+                # 情况 A：依然停留在 Via 浏览器未跳出 -> 点击浏览器地址栏刷新按钮
+                if is_app_in_foreground(VIA_PACKAGE):
+                    via_refresh_count += 1
+                    logger.info(f"[NAV-CHECK] 检测到仍停留在 Via 浏览器页面，执行第 {via_refresh_count} 次刷新...")
+                    # 点击 Via 浏览器地址栏右侧刷新图标 (相对坐标: x=54.7%, y=4.3%)
+                    self.click_relative(0.547, 0.043, f"Via浏览器刷新按钮 (第 {via_refresh_count} 次)")
+                    # 若连续刷新 2 次仍卡死，重新发送一次 Intent 唤醒链接兜底
+                    if via_refresh_count >= 2:
+                        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(1.0)
+                    continue
+
+                # 已跳出浏览器，获取当前屏幕截图
+                img_cv = self.get_screenshot_cv()
+                if img_cv is None:
+                    time.sleep(1.0)
+                    continue
+
+                final_img = img_cv
+                h, w = img_cv.shape[:2]
+
+                # 情况 B：检测屏幕上半部分是否存在中间页的“立即购买”或“抢券购买”按钮
+                top_half = img_cv[0:h // 2, 0:w]
+                top_ocr_items = _run_ocr(top_half, engine=ocr)
+
+                mid_btn_clicked = False
+                for item in top_ocr_items:
+                    t = item["text"]
+                    if any(btn_kw in t for btn_kw in ("立即购买", "抢券购买")):
+                        click_x, click_y = int(item["cx"]), int(item["cy"])
+                        self.click_point(click_x, click_y, f"中间页跳转按钮 [{t}]")
+                        mid_btn_clicked = True
+                        break
+
+                if mid_btn_clicked:
+                    time.sleep(1.0)
+                    continue
+
+                # 情况 C：检测屏幕下半部分，判断是否已经成功进入商品详情页（或已弹出 SKU 面板）
+                bottom_half = img_cv[h // 2:h, 0:w]
+                btm_res, _ = ocr(bottom_half)
+                if btm_res:
+                    btm_text = "".join([line[1] for line in btm_res if len(line) >= 2])
+                    if (
+                            sum(1 for kw in ["客服", "店铺", "收藏"] if kw in btm_text) >= 2
+                            or any(kw in btm_text for kw in
+                                   ["确定", "确认", "不支持配送", "已售罄", "已下架", "商品不存在", "全部售罄"])
+                    ):
+                        logger.info(
+                            f"[NAV-CHECK] ✅ 已成功跨越中间态进入商品详情页 (耗时: {time.time() - nav_start_time + 3.0:.2f}s)")
+                        break
+
+            except Exception as e:
+                logger.info(f"[NAV-DEBUG] 过渡页检测异常: {e}")
+
+            time.sleep(1.0)
+
+        # --- 步骤 3：接管拼多多详情页并进行闭环状态机轮询 ---
         logger.info(f"[TASK] [{index}] 步骤 3/4: 状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获)")
         start_time = time.time()
         detail_entered = False
@@ -726,9 +789,8 @@ class PddAdbBot:
         last_click_time = 0.0
         click_count = 0
         CLICK_RETRY_INTERVAL = 1.3  # 冷却重试时间间隔（秒）
-        final_img = None
 
-        # 闭环状态机轮询（含跨应用拉起缓冲，最多尝试 15 秒）
+        # 闭环状态机轮询（最多尝试 15 秒）
         while time.time() - start_time < 15:
             try:
                 img_cv = self.get_screenshot_cv()
@@ -739,7 +801,7 @@ class PddAdbBot:
                 final_img = img_cv
                 h, w = img_cv.shape[:2]
 
-                # 截取下半部分区域（高度为 1/2），严格对齐原代码识别范围
+                # 截取下半部分区域（高度为 1/2）
                 bottom_half = img_cv[h // 2:h, 0:w]
                 result, _ = ocr(bottom_half)
 
@@ -818,7 +880,6 @@ class PddAdbBot:
             logger.info("[INFO] 循环连轴转达到 500 次，重启拼多多客户端释放资源。")
 
         return True, sku_info, "", extra_info
-
 
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
@@ -1286,7 +1347,6 @@ if __name__ == "__main__":
                     "words": words,
                     "max_price": max_price
                 })
-                break
 
             if target_configs:
                 common_projection = {
