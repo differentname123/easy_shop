@@ -2,10 +2,12 @@ import os
 import re
 import time
 import math
+import struct
 import subprocess
 import itertools
 from datetime import datetime, timedelta, timezone
 from contextlib import closing
+from concurrent.futures import ThreadPoolExecutor
 
 # === 高性能图像与OCR依赖 ===
 import numpy as np
@@ -50,21 +52,51 @@ ocr_strong = RapidOCR(
     }
 )
 
+# 全局异步写盘线程池（用于后台极速保存 1800x2880 调试截图，不阻塞 RPA 点击主线程）
+_img_save_executor = ThreadPoolExecutor(max_workers=2)
+
+
+def _async_save_png(img_bgr, save_path):
+    """后台线程异步编码并保存 PNG 图像"""
+    try:
+        ok, buf = cv2.imencode(".png", img_bgr, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        if ok:
+            buf.tofile(save_path)
+    except Exception:
+        pass
+
 
 # ==========================================
-# 📱 ADB 基础控制层 (支持多应用)
+# 📱 ADB 基础控制层 (支持多应用与极速感知)
 # ==========================================
-def is_app_in_foreground(package_name):
-    """检测指定应用是否为当前前台应用"""
+def get_foreground_package():
+    """快速获取当前最上层窗口的应用包名"""
     cmd = f'"{ADB_PATH}" shell dumpsys window'
     res = subprocess.run(cmd, shell=True, capture_output=True, text=True, encoding="utf-8", errors="ignore")
     if not res.stdout:
-        return False
+        return ""
     for line in res.stdout.splitlines():
         if "mCurrentFocus" in line or "mFocusedApp" in line:
-            if package_name in line:
-                return True
-    return False
+            if PDD_PACKAGE in line:
+                return PDD_PACKAGE
+            if VIA_PACKAGE in line:
+                return VIA_PACKAGE
+    return ""
+
+
+def is_app_in_foreground(package_name):
+    """检测指定应用是否为当前前台应用"""
+    return get_foreground_package() == package_name
+
+
+def stop_app(package_name):
+    """仅强制停止应用（耗时 <0.1s，配合 am start VIEW 一步冷启动，省去 monkey 唤醒耗时）"""
+    subprocess.run(
+        f'"{ADB_PATH}" shell am force-stop {package_name}',
+        shell=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
 
 
 def ensure_app_foreground(package_name):
@@ -289,9 +321,6 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
     price_anchor, price_init_text = price_boxes[0]
     px, py, pw, ph = price_anchor
 
-    # =========================================================================
-    # 【关键修复 1】：精准计算 sku_top，避免在高分屏上跨过第一行“口味”规格
-    # =========================================================================
     # 基础下界：价格锚点下方约 5.5% 屏幕高度
     sku_top = py + int(h_img * 0.055)
     for item in ocr_items:
@@ -310,17 +339,12 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
         f"确定按钮Y={confirm_y} | 计算得 sku_top={sku_top}"
     )
 
-    # =========================================================================
-    # 【关键修复 2】：三通道掩码切框（浅灰未选框 + 小程序浅粉选中框 + App红框选中框）
-    # =========================================================================
+    # 三通道掩码切框（浅灰未选框 + 小程序浅粉选中框 + App红框选中框）
     b, g, r = cv2.split(img_bgr)
-    # 通道 A: 小程序浅粉选中框
     pink_mask = ((r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & (
             (r.astype(np.int16) - b.astype(np.int16)) >= 5)).astype(np.uint8) * 255
-    # 通道 B: 通用浅灰未选中框
     max_c, min_c = np.maximum(np.maximum(b, g), r), np.minimum(np.minimum(b, g), r)
     gray_mask = ((min_c >= 238) & (max_c <= 250) & ((max_c - min_c) <= 5)).astype(np.uint8) * 255
-    # 通道 C: App 端红色边框选中框
     red_border_mask = ((r >= 170) & (g <= 120) & (b <= 120) & (
             (r.astype(np.int16) - g.astype(np.int16)) >= 60)).astype(np.uint8) * 255
 
@@ -374,7 +398,6 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
 
     logger.info(f"[PARSE-INFO] 共切出 {len(sku_items)} 个候选 SKU 规格框: {[s['text'] for s in sku_items]}")
 
-    # 检测距离“确定”最近的文字，其与“确定”之间的垂直间距是否超过“确定”本身的高度
     is_fully_expanded = False
     if confirm_item:
         above_items = [i for i in ocr_items if i is not confirm_item and i["cy"] < confirm_y]
@@ -392,7 +415,6 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
         logger.info("[PARSE-WARN] 未切出任何 SKU 规格框！")
         return True, price_anchor, [], is_fully_expanded
 
-    # 计算分类标题搜索上界 cat_top（兼容高分屏，确保第一行规格上方的分类名如“口味”不被截断）
     min_sku_y = min(i["box"][1] for i in sku_items)
     cat_top = max(py + ph, min(sku_top - int(h_img * 0.025), min_sku_y - int(h_img * 0.055)))
     if min_cat_top is not None:
@@ -440,23 +462,28 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
     return True, price_anchor, valid_categories, is_fully_expanded
 
 
-def get_pdd_sku_info(bot, id, debug=True):
+def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
     """
-    通过 ADB 截图与点击获取所有有效（非缺货）SKU 规格组合、价格及截图（带全流程排查日志）
+    通过 ADB 截图与点击获取所有有效（非缺货）SKU 规格组合、价格及截图
+    支持复用状态机已捕获的首帧高清图 initial_img，并使用异步存图加速遍历
     """
     try:
-        # 1. 连续两次校验是否处于详情规格页（初始顶部画面）
+        # 1. 校验是否处于详情规格页（优先复用传入的 initial_img，省去首次重复截屏）
         is_detail, price_anchor, top_categories, current_img = False, None, [], None
         is_fully_expanded = False
         for attempt in range(2):
-            current_img = bot.get_screenshot_cv()
+            if attempt == 0 and initial_img is not None:
+                current_img = initial_img
+            else:
+                current_img = bot.get_screenshot_cv()
+
             if current_img is not None:
                 is_detail, price_anchor, top_categories, is_fully_expanded = _parse_detail_page(current_img)
                 if is_detail and top_categories:
                     break
             if attempt == 0:
-                logger.info("[SKU-INFO] 第 1 次解析未获取到完整分类，等待 0.3s 后重试...")
-                time.sleep(0.3)
+                logger.info("[SKU-INFO] 第 1 次解析未获取到完整分类，等待 0.25s 后重截重试...")
+                time.sleep(0.25)
 
         if not is_detail or not top_categories or current_img is None:
             logger.info("[SKU-ERROR] 初始详情规格页解析失败或分类为空，终止提取")
@@ -475,7 +502,7 @@ def get_pdd_sku_info(bot, id, debug=True):
         if not is_fully_expanded:
             logger.info("[SKU-SCROLL] 规格未完全展开，开始下滑探测底部隐藏规格...")
             bot.scroll_sku_down()
-            time.sleep(0.35)
+            time.sleep(0.30)
 
             btm_img = bot.get_screenshot_cv()
             if btm_img is not None:
@@ -501,7 +528,7 @@ def get_pdd_sku_info(bot, id, debug=True):
                                         int(by + bh // 2),
                                         desc=f"预选底部规格 [{cat_name}:{sku['text']}]"
                                     )
-                                    time.sleep(0.18)
+                                    time.sleep(0.10)
                                     btm_img = bot.get_screenshot_cv()
                                     if btm_img is not None and _is_box_selected(btm_img, (bx, by, bw, bh)):
                                         selected_text = sku["text"]
@@ -517,7 +544,7 @@ def get_pdd_sku_info(bot, id, debug=True):
             # 【上滑复位】滑回顶部，重新解析顶部规格坐标
             logger.info("[SKU-SCROLL] 正在上滑复位回顶部规格列表...")
             bot.scroll_sku_up()
-            time.sleep(0.35)
+            time.sleep(0.30)
 
             current_img = bot.get_screenshot_cv()
             if current_img is None:
@@ -534,7 +561,7 @@ def get_pdd_sku_info(bot, id, debug=True):
         logger.info(f"[SKU-TRAVERSE] 准备遍历规格维度 {cat_names}，共计 {len(all_combos)} 种笛卡尔积组合")
         results = []
 
-        # 2. 遍历顶部所有规格组合（自动跳过缺货规格）
+        # 2. 极速遍历顶部所有规格组合（自动跳过缺货规格）
         for idx, combo in enumerate(all_combos, start=1):
             try:
                 combo_desc = {name: s["text"] for name, s in zip(cat_names, combo)}
@@ -562,7 +589,8 @@ def get_pdd_sku_info(bot, id, debug=True):
                         int(by + bh // 2),
                         desc=f"选择规格 [{cat_name}: {target_sku['text']}]"
                     )
-                    time.sleep(0.15)
+                    # ADB 进程启动自带约 80ms 通信延迟，此处仅需微等 0.06s 即可完成本地红框渲染
+                    time.sleep(0.06)
                     current_img = bot.get_screenshot_cv()
                     if current_img is None:
                         logger.info("  ├─ [异常] 点击后获取截图失败")
@@ -582,7 +610,7 @@ def get_pdd_sku_info(bot, id, debug=True):
                     continue
 
                 if not all(_is_box_selected(current_img, s["box"]) for s in combo):
-                    logger.info(f"  ├─ [跳过] 组合联动互斥，部分规格在点击后失去选中态")
+                    logger.info("  ├─ [跳过] 组合联动互斥，部分规格在点击后失去选中态")
                     continue
 
                 screenshot_path = ""
@@ -590,9 +618,8 @@ def get_pdd_sku_info(bot, id, debug=True):
                 if debug:
                     screenshot_path = os.path.join(SKU_DEBUG_DIR, f"{id}_{idx}.png")
                     price_screenshot_path = os.path.join(SKU_DEBUG_DIR, f"{id}_{idx}_price.png")
-                    ok, buf = cv2.imencode(".png", current_img, [cv2.IMWRITE_PNG_COMPRESSION, 1])
-                    if ok:
-                        buf.tofile(screenshot_path)
+                    # 丢入后台线程池异步写盘，0 阻塞主线程
+                    _img_save_executor.submit(_async_save_png, current_img.copy(), screenshot_path)
 
                 price_text = _extract_price_fast(
                     current_img,
@@ -625,7 +652,7 @@ def get_pdd_sku_info(bot, id, debug=True):
 
 
 # ==========================================
-# 🤖 RPA 核心引擎 (Via浏览器 + ADB 桥接版)
+# 🤖 RPA 核心引擎 (极速 Raw 截屏 + 统一导航状态机版)
 # ==========================================
 class PddAdbBot:
     def __init__(self):
@@ -666,29 +693,74 @@ class PddAdbBot:
         x = int(self.width * 0.5)
         y_start = int(self.height * 0.72)
         y_end = int(self.height * 0.35)
-        subprocess.run(f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 300', shell=True)
+        subprocess.run(f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 260', shell=True)
 
     def scroll_sku_up(self):
         """在 SKU 弹窗区域向上滚动复位回顶部规格（手指从上往下滑）"""
         x = int(self.width * 0.5)
         y_start = int(self.height * 0.35)
         y_end = int(self.height * 0.75)
-        subprocess.run(f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 300', shell=True)
+        subprocess.run(f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 260', shell=True)
 
     def get_screenshot_cv(self):
-        """通过 ADB 管道极速获取 OpenCV BGR 图像"""
+        """
+        【核心提速】优先通过 ADB 裸流 (Raw RGBA) 极速读取屏幕，省去手机 CPU 的 PNG 压缩耗时 (0.65s -> 0.15s)
+        若遇特殊格式自动无缝回退 screencap -p
+        """
         proc = subprocess.Popen(
-            f'"{ADB_PATH}" exec-out screencap -p',
+            f'"{ADB_PATH}" exec-out screencap',
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
         raw_bytes, _ = proc.communicate()
-        if not raw_bytes:
+        if raw_bytes and len(raw_bytes) > 16:
+            try:
+                w, h = struct.unpack("<II", raw_bytes[:8])
+                expected_bytes = w * h * 4
+                header_size = len(raw_bytes) - expected_bytes
+                # 兼容 Android 5~8 (12字节头) 与 Android 9~14+ (16字节头)
+                if w > 0 and h > 0 and header_size in (12, 16):
+                    arr = np.frombuffer(raw_bytes, dtype=np.uint8, offset=header_size).reshape((h, w, 4))
+                    return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+            except Exception:
+                pass
+
+        # 兜底回退方案：使用 PNG 压缩流
+        proc_p = subprocess.Popen(
+            f'"{ADB_PATH}" exec-out screencap -p',
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        raw_png, _ = proc_p.communicate()
+        if not raw_png:
             return None
-        nparr = np.frombuffer(raw_bytes, np.uint8)
-        img_cv = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        return img_cv
+        nparr = np.frombuffer(raw_png, np.uint8)
+        return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    def _fast_region_ocr(self, img_region, scale=0.45, engine=ocr_fast):
+        """
+        【导航轮询专用极速 OCR】对 1800x2880 的半屏区域做 0.45 倍降采样后再识别，
+        耗时从 2.0s 降至 0.15s，并将识别框坐标自动还原为原图比例
+        """
+        if img_region is None or img_region.size == 0:
+            return []
+        small_img = cv2.resize(img_region, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        res, _ = engine(small_img, use_cls=False)
+        items = []
+        inv_scale = 1.0 / scale
+        for line in (res or []):
+            pts, text = line[0], str(line[1]).strip()
+            if text:
+                x, y, w, h = cv2.boundingRect(np.array(pts, dtype=np.int32))
+                items.append({
+                    "box": (int(x * inv_scale), int(y * inv_scale), int(w * inv_scale), int(h * inv_scale)),
+                    "cx": (x + w / 2.0) * inv_scale,
+                    "cy": (y + h / 2.0) * inv_scale,
+                    "text": text
+                })
+        return items
 
     def save_error_screenshot(self, save_path, img=None):
         """保存错误现场截图"""
@@ -702,97 +774,57 @@ class PddAdbBot:
     def process_single_goods(self, promotion_url, goods_id, index, consecutive_successes=0, ocr=ocr_fast):
         extra_info = {"is_group": False, "force_retry_count": None}
 
-        # --- 步骤 1：重启 Via 浏览器 ---
-        restart_app(VIA_PACKAGE)
-
-        # --- 步骤 2：利用底层 Intent 瞬间注入商品链接并触发跳转 ---
+        # --- 步骤 1：极速重置 Via 浏览器并一步注入链接 ---
+        stop_app(VIA_PACKAGE)
         target_link = promotion_url if promotion_url else f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
-        logger.info(f"[TASK] [{index}] 步骤 1/4: 唤起 Via 浏览器并打开链接 -> {target_link}")
+        logger.info(f"[TASK] [{index}] 步骤 1/3: 极速冷启动 Via 并打开链接 -> {target_link}")
 
         cmd = f'"{ADB_PATH}" shell am start -a android.intent.action.VIEW -d "{target_link}" {VIA_PACKAGE}'
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # =========================================================================
-        # 步骤 2.5：通用过渡处理（等待 3s 后，在 10s 容忍时间内每秒检测：浏览器刷新 / 中间页点击跳转 / 详情页到达确认）
-        # =========================================================================
-        logger.info(f"[TASK] [{index}] 步骤 2/4: 等待 3 秒后开始检测页面跳转状态 (10s 容忍期, 间隔 1s)...")
-        time.sleep(3.0)
-
-        nav_start_time = time.time()
+        # --- 步骤 2：动态感知最上层应用（告别死等 3s） ---
+        time.sleep(0.6)
+        wait_start = time.time()
+        via_stay_start = time.time()
         via_refresh_count = 0
-        final_img = None
 
-        while time.time() - nav_start_time < 10.0:
-            try:
-                # 情况 A：依然停留在 Via 浏览器未跳出 -> 点击浏览器地址栏刷新按钮
-                if is_app_in_foreground(VIA_PACKAGE):
-                    via_refresh_count += 1
-                    logger.info(f"[NAV-CHECK] 检测到仍停留在 Via 浏览器页面，执行第 {via_refresh_count} 次刷新...")
-                    # 点击 Via 浏览器地址栏右侧刷新图标 (相对坐标: x=54.7%, y=4.3%)
-                    self.click_relative(0.547, 0.043, f"Via浏览器刷新按钮 (第 {via_refresh_count} 次)")
-                    # 若连续刷新 2 次仍卡死，重新发送一次 Intent 唤醒链接兜底
-                    if via_refresh_count >= 2:
-                        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    time.sleep(1.0)
-                    continue
+        # 先高频探测焦点是否已跳入拼多多（最长等待 3.0s，一旦跳入拼多多立即放行）
+        while time.time() - wait_start < 3.0:
+            fg_pkg = get_foreground_package()
+            if fg_pkg == PDD_PACKAGE:
+                logger.info(f"[NAV-FAST] ⚡ 检测到最上层窗口已切入拼多多 (仅耗时: {time.time() - wait_start + 0.6:.2f}s)")
+                time.sleep(0.35)  # 给页面首帧渲染留出微小缓冲
+                break
+            time.sleep(0.25)
 
-                # 已跳出浏览器，获取当前屏幕截图
-                img_cv = self.get_screenshot_cv()
-                if img_cv is None:
-                    time.sleep(1.0)
-                    continue
-
-                final_img = img_cv
-                h, w = img_cv.shape[:2]
-
-                # 情况 B：检测屏幕上半部分是否存在中间页的“立即购买”或“抢券购买”按钮
-                top_half = img_cv[0:h // 2, 0:w]
-                top_ocr_items = _run_ocr(top_half, engine=ocr)
-
-                mid_btn_clicked = False
-                for item in top_ocr_items:
-                    t = item["text"]
-                    if any(btn_kw in t for btn_kw in ("立即购买", "抢券购买")):
-                        click_x, click_y = int(item["cx"]), int(item["cy"])
-                        self.click_point(click_x, click_y, f"中间页跳转按钮 [{t}]")
-                        mid_btn_clicked = True
-                        break
-
-                if mid_btn_clicked:
-                    time.sleep(1.0)
-                    continue
-
-                # 情况 C：检测屏幕下半部分，判断是否已经成功进入商品详情页（或已弹出 SKU 面板）
-                bottom_half = img_cv[h // 2:h, 0:w]
-                btm_res, _ = ocr(bottom_half)
-                if btm_res:
-                    btm_text = "".join([line[1] for line in btm_res if len(line) >= 2])
-                    if (
-                            sum(1 for kw in ["客服", "店铺", "收藏"] if kw in btm_text) >= 2
-                            or any(kw in btm_text for kw in
-                                   ["确定", "确认", "不支持配送", "已售罄", "已下架", "商品不存在", "全部售罄"])
-                    ):
-                        logger.info(
-                            f"[NAV-CHECK] ✅ 已成功跨越中间态进入商品详情页 (耗时: {time.time() - nav_start_time + 3.0:.2f}s)")
-                        break
-
-            except Exception as e:
-                logger.info(f"[NAV-DEBUG] 过渡页检测异常: {e}")
-
-            time.sleep(1.0)
-
-        # --- 步骤 3：接管拼多多详情页并进行闭环状态机轮询 ---
-        logger.info(f"[TASK] [{index}] 步骤 3/4: 状态机轮询 (详情页识别 -> 动态点击 -> SKU捕获)")
-        start_time = time.time()
+        # --- 步骤 3：统一导航与状态机轮询（浏览器刷新 -> 中间页穿透 -> 详情页点击 -> SKU面板捕获） ---
+        logger.info(f"[TASK] [{index}] 步骤 2/3: 启动统一状态机轮询 (中间页穿透 -> 动态点击购买 -> SKU捕获)")
+        state_start_time = time.time()
         detail_entered = False
         sku_ready = False
-        last_click_time = 0.0
-        click_count = 0
-        CLICK_RETRY_INTERVAL = 1.3  # 冷却重试时间间隔（秒）
+        last_buy_click_time = 0.0
+        buy_click_count = 0
+        CLICK_RETRY_INTERVAL = 1.2
+        final_img = None
 
-        # 闭环状态机轮询（最多尝试 15 秒）
-        while time.time() - start_time < 15:
+        # 全流程共享 18 秒超时时间
+        while time.time() - state_start_time < 18.0:
             try:
+                # 1. 若尚未进入详情页，优先检查是否还卡在 Via 浏览器中
+                if not detail_entered:
+                    fg_pkg = get_foreground_package()
+                    if fg_pkg == VIA_PACKAGE:
+                        if time.time() - via_stay_start >= 2.2:
+                            via_refresh_count += 1
+                            logger.info(f"[NAV-CHECK] 仍停留在 Via 浏览器，执行第 {via_refresh_count} 次刷新...")
+                            self.click_relative(0.547, 0.043, f"Via浏览器刷新按钮 (第 {via_refresh_count} 次)")
+                            if via_refresh_count >= 2:
+                                subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            via_stay_start = time.time()
+                        time.sleep(0.5)
+                        continue
+
+                # 2. 极速获取当前屏幕截图
                 img_cv = self.get_screenshot_cv()
                 if img_cv is None:
                     time.sleep(0.2)
@@ -801,57 +833,74 @@ class PddAdbBot:
                 final_img = img_cv
                 h, w = img_cv.shape[:2]
 
-                # 截取下半部分区域（高度为 1/2）
+                # 3. 优先对下半屏做 0.45x 极速 OCR（耗时仅 ~0.15s）
                 bottom_half = img_cv[h // 2:h, 0:w]
-                result, _ = ocr(bottom_half)
+                btm_items = self._fast_region_ocr(bottom_half, scale=0.45, engine=ocr)
+                detected_text = "".join([item["text"] for item in btm_items])
 
-                if result:
-                    detected_text = "".join([line[1] for line in result if len(line) >= 2])
+                # A. 【优先检查终止态】：底部出现“确定”或“确认”，说明 SKU 面板已展开
+                if detail_entered and any(kw in detected_text for kw in ["确定", "再来一单"]):
+                    sku_ready = True
+                    # 微等 0.15s 确保弹窗上滑动画彻底静止，随后再截一帧高清图直接复用给步骤 4
+                    time.sleep(0.15)
+                    stable_img = self.get_screenshot_cv()
+                    if stable_img is not None:
+                        final_img = stable_img
+                    logger.info(f"[INFO] ✅ SKU 面板已完全展开并锁定首帧 (轮询耗时: {time.time() - state_start_time:.2f}s)")
+                    break
 
-                    # 1. 【优先检查终止态】：只要底部出现了“确定”或“确认”，说明 SKU 面板已成功展开
-                    if detail_entered and any(kw in detected_text for kw in ["确定", "确认"]):
-                        sku_ready = True
-                        logger.info(f"[INFO] ✅ 检测到 SKU 面板已完全展开 (耗时: {time.time() - start_time:.2f}s)")
-                        break
+                # B. 业务特征与异常商品熔断检查
+                if "人团" in detected_text:
+                    extra_info["is_group"] = True
+                    logger.info("[INFO] 检测到'人团'标识，将标记为 group 商品")
 
-                    # 检查是否包含“人团”拼团门槛标识
-                    if "人团" in detected_text:
-                        extra_info["is_group"] = True
-                        logger.info("[INFO] 检测到'人团'标识，将标记为 group 商品")
+                if "不支持配送" in detected_text:
+                    extra_info["force_retry_count"] = 10
+                    logger.info("[WARN] 检测到'不支持配送'，立即熔断终止轮询")
+                    return False, [], "不支持配送", extra_info
 
-                    # 检查是否不支持配送
-                    if "不支持配送" in detected_text:
-                        extra_info["force_retry_count"] = 10
-                        logger.info("[WARN] 检测到'不支持配送'，立即熔断终止轮询")
-                        return False, [], "不支持配送", extra_info
+                if any(bad_kw in detected_text for bad_kw in ["已售罄", "已下架", "商品不存在", "全部售罄"]):
+                    logger.info(f"[WARN] 检测到商品异常状态 ({detected_text[:20]})，提前终止轮询")
+                    return False, [], f"商品不可售({detected_text[:10]})", extra_info
 
-                    # 2. 【异常商品快速熔断】：检测到缺货/下架立即终止
-                    if any(bad_kw in detected_text for bad_kw in ["已售罄", "已下架", "商品不存在", "全部售罄"]):
-                        logger.info(f"[WARN] 检测到商品异常状态 ({detected_text[:20]})，提前终止轮询")
-                        return False, [], f"商品不可售({detected_text[:10]})", extra_info
+                # C. 【检测到原生详情页底栏】：当场立即点击购买（消除步骤切换重复截图）
+                if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2 and (
+                        "确定" not in detected_text):
+                    now = time.time()
+                    if not detail_entered or (now - last_buy_click_time >= CLICK_RETRY_INTERVAL):
+                        if not detail_entered:
+                            time.sleep(0.10)
 
-                    # 3. 【检测原生详情页并支持周期性重拍】
-                    if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2 and (
-                            "确定" not in detected_text):
-                        now = time.time()
-                        if not detail_entered or (now - last_click_time >= CLICK_RETRY_INTERVAL):
-                            if not detail_entered:
-                                time.sleep(0.15)
+                        pct_x = 0.85 - (buy_click_count % 2) * 0.03
+                        pct_y = 0.96
 
-                            pct_x = 0.85 - (click_count % 2) * 0.03
-                            pct_y = 0.96
+                        buy_click_count += 1
+                        detail_entered = True
+                        last_buy_click_time = time.time()
+                        self.click_relative(pct_x, pct_y, f"动态点击购买 (第 {buy_click_count} 次)")
+                        time.sleep(1.30)
+                        continue
 
-                            click_count += 1
-                            detail_entered = True
-                            last_click_time = time.time()
-                            self.click_relative(pct_x, pct_y, f"动态点击购买 (第 {click_count} 次)")
-                            time.sleep(0.35)
-                            continue
+                # D. 【尚未进入详情页】：检测上半屏是否存在中间页的“立即购买 / 抢券购买”按钮
+                if not detail_entered:
+                    top_half = img_cv[0:h // 2, 0:w]
+                    top_items = self._fast_region_ocr(top_half, scale=0.45, engine=ocr)
+                    mid_clicked = False
+                    for item in top_items:
+                        t = item["text"]
+                        if any(btn_kw in t for btn_kw in ("立即购买", "抢券购买")):
+                            self.click_point(int(item["cx"]), int(item["cy"]), f"中间页跳转按钮 [{t}]")
+                            mid_clicked = True
+                            break
+                    if mid_clicked:
+                        # 给予 1.5s 领券与页面跳转缓冲，避免领券吐司动画期间二次误点
+                        time.sleep(1.5)
+                        continue
 
-            except Exception:
-                pass
+            except Exception as e:
+                logger.info(f"[NAV-DEBUG] 状态机轮询异常: {e}")
 
-            time.sleep(0.15)
+            time.sleep(0.12)
 
         # 轮询结束，进行结果清算
         if not detail_entered:
@@ -864,9 +913,9 @@ class PddAdbBot:
             self.save_error_screenshot(path, final_img)
             return False, [], "SKU面板未完全展开或点击全部失效", extra_info
 
-        # --- 步骤 4：遍历提取所有 SKU 规格组合及价格 ---
-        logger.info(f"[TASK] [{index}] 步骤 4/4: 正在遍历提取所有 SKU 规格组合与价格...")
-        sku_info = get_pdd_sku_info(bot=self, id=goods_id, debug=DEBUG_MODE)
+        # --- 步骤 4：遍历提取所有 SKU 规格组合及价格（直接传入 final_img 省去首次截屏） ---
+        logger.info(f"[TASK] [{index}] 步骤 3/3: 正在极速遍历提取所有 SKU 规格组合与价格...")
+        sku_info = get_pdd_sku_info(bot=self, id=goods_id, debug=DEBUG_MODE, initial_img=final_img)
         if not sku_info:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.save_error_screenshot(path)
@@ -880,6 +929,7 @@ class PddAdbBot:
             logger.info("[INFO] 循环连轴转达到 500 次，重启拼多多客户端释放资源。")
 
         return True, sku_info, "", extra_info
+
 
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
@@ -908,8 +958,8 @@ def batch_runner(product_list):
         logger.info(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(product_list)}] goods_id: {goods_id}")
 
         try:
-            success, sku_info, error_msg, extra_info = bot.process_single_goods(promotion_url,
-                goods_id, i, consecutive_successes
+            success, sku_info, error_msg, extra_info = bot.process_single_goods(
+                promotion_url, goods_id, i, consecutive_successes
             )
 
             with closing(gen_db_object()) as db_instance:
@@ -1347,6 +1397,7 @@ if __name__ == "__main__":
                     "words": words,
                     "max_price": max_price
                 })
+                break
 
             if target_configs:
                 common_projection = {
