@@ -70,29 +70,50 @@ def _async_save_png(img_bgr, save_path):
 # 📱 ADB 基础控制层 (支持多应用与极速感知)
 # ==========================================
 def get_foreground_package():
-    """快速获取当前最上层窗口的应用包名（非 shell 启动，杜绝死锁）"""
+    """
+    通过 Window Focus 严格获取当前唯一获得前台焦点的应用（绝不误判后台任务，耗时<0.1s）
+    """
     try:
+        # 直接抓取当前正与屏幕交互的焦点窗口 (mCurrentFocus / mFocusedApp)
         res = subprocess.run(
-            [ADB_PATH, "shell", "dumpsys", "activity", "top"],
+            [ADB_PATH, "shell", "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="ignore",
-            timeout=2.0  # 严格 2 秒超时
+            timeout=1.5
+        )
+        out = res.stdout or ""
+        if PDD_PACKAGE in out:
+            return PDD_PACKAGE
+        if VIA_PACKAGE in out:
+            return VIA_PACKAGE
+    except Exception:
+        pass
+
+    # 极少数机型不支持 grep 时，轻量兜底 displays
+    try:
+        res = subprocess.run(
+            [ADB_PATH, "shell", "dumpsys", "window", "displays"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=1.5
         )
         if res.stdout:
             for line in res.stdout.splitlines():
-                if "ACTIVITY" in line:
+                if "mCurrentFocus" in line or "mFocusedApp" in line:
                     if PDD_PACKAGE in line:
                         return PDD_PACKAGE
                     if VIA_PACKAGE in line:
                         return VIA_PACKAGE
                     break
-    except subprocess.TimeoutExpired:
-        logger.warning("[ADB-TIMEOUT] get_foreground_package 超时")
     except Exception:
         pass
+
     return ""
+
 
 def is_app_in_foreground(package_name):
     """检测指定应用是否为当前前台应用"""
@@ -930,25 +951,29 @@ class PddAdbBot:
         while time.time() - state_start_time < 18.0:
             try:
                 # 1. 【修复 4 的核心】：只有间隔超过 2.5 秒，且还没进详情页时，才轻量确认一次包名
+                # 1. 只有间隔超过 1.5 秒才查一次焦点，绝不拖慢主流程
                 if not detail_entered:
                     now_time = time.time()
-                    # 只有冷却时间到了才执行 dumpsys
-                    if now_time - last_pkg_check_time >= PKG_CHECK_INTERVAL:
+                    if now_time - last_pkg_check_time >= 1.5:
                         current_fg_pkg = get_foreground_package()
                         last_pkg_check_time = now_time
 
-                    # 只有明确处于 Via 浏览器时才走刷新/重跳逻辑
+                    # 只有确认手机顶层依然是 Via 时才执行保护
                     if current_fg_pkg == VIA_PACKAGE:
-                        if time.time() - via_stay_start >= 2.2:
+                        # 核心修改：等待时间由 2.2s 提升至 4.0s，防止网页刚要跳转就被刷新打断！
+                        if time.time() - via_stay_start >= 4.0:
                             via_refresh_count += 1
-                            logger.info(f"[NAV-CHECK] 仍停留在 Via 浏览器，执行第 {via_refresh_count} 次刷新...")
-                            self.click_relative(0.547, 0.043, f"Via浏览器刷新按钮 (第 {via_refresh_count} 次)")
-                            if via_refresh_count >= 2:
-                                # 此处的 am start 同样加上 2 秒超时
+                            if via_refresh_count <= 2:
+                                logger.info(
+                                    f"[NAV-CHECK] 停留在 Via 超过 4s 未跳转，执行第 {via_refresh_count} 次刷新...")
+                                self.click_relative(0.547, 0.043, f"Via浏览器刷新按钮 (第 {via_refresh_count} 次)")
+                            else:
+                                logger.info(f"[NAV-CHECK] 连续刷新无效，重新发送 Intent 激活唤醒...")
                                 subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                                timeout=2.0)
+                                via_refresh_count = 0  # 重置计数
                             via_stay_start = time.time()
-                        time.sleep(0.5)
+                        time.sleep(0.4)
                         continue
 
                 # 2. 极速获取当前屏幕截图 (内部已有 3.0s 超时保护)
