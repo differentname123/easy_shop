@@ -166,8 +166,8 @@ def _get_box_color_metrics(img_bgr, box):
     """
     计算单个 SKU 框的各项颜色特征占比，供选中态判断与日志排查使用：
     - pink_ratio: 微信小程序浅粉背景占比
-    - red_right_ratio: 框体右侧 70% 区域的红字/红框像素占比（避开左侧 🔥 小火苗图标）
-    - black_text_ratio: 框体内部深黑色文字像素占比（未选中规格文字为深黑色）
+    - theme_right_ratio: 框体右侧 70% 区域的主题色(鲜红/黑金棕色)像素占比
+    - black_text_ratio: 框体内部深黑色文字像素占比（排除彩色文字）
     """
     x, y, w, h = box
     roi = img_bgr[max(0, y):y + h, max(0, x):x + w]
@@ -182,37 +182,46 @@ def _get_box_color_metrics(img_bgr, box):
     )
     pink_ratio = float(np.mean(pink_mask))
 
-    # 2. App 端红字/红框特征（取框体右侧 70% 区域，彻底排除左侧 🔥 小火苗图标干扰）
+    # 2. App 端主题字/边框特征（取右侧 70%，支持普通鲜红 + 旗舰店黑金/金棕色）
     x_offset = int(w * 0.30)
     r_right = r[:, x_offset:]
     g_right = g[:, x_offset:]
     b_right = b[:, x_offset:]
-    red_right_mask = (r_right >= 170) & (g_right <= 120) & (b_right <= 120) & (
-            (r_right.astype(np.int16) - g_right.astype(np.int16)) >= 60
-    )
-    red_right_ratio = float(np.mean(red_right_mask)) if r_right.size > 0 else 0.0
 
-    # 3. 内部深黑色文字特征（内缩避开外边框，并避开左侧火苗区）
+    r_r16, g_r16, b_r16 = r_right.astype(np.int16), g_right.astype(np.int16), b_right.astype(np.int16)
+    # 标准红色特征
+    is_std_red = (r_right >= 170) & (g_right <= 120) & (b_right <= 120) & ((r_r16 - g_r16) >= 60)
+    # 旗舰店黑金/金棕色特征 (R明显大于B，且R略高于G)
+    is_gold_brown = (r_right >= 110) & (b_right <= 135) & ((r_r16 - b_r16) >= 35) & ((r_r16 - g_r16) >= 15)
+
+    theme_right_mask = is_std_red | is_gold_brown
+    theme_right_ratio = float(np.mean(theme_right_mask)) if r_right.size > 0 else 0.0
+
+    # 3. 内部纯深黑色文字特征（内缩避开边框）
+    # 核心安全优化：真正的黑色无明显色偏(abs(r-b)小)，排除了带有红棕色调的深色文字
     pad_y = max(2, int(h * 0.15))
     r_inner = r[pad_y:h - pad_y, x_offset:max(x_offset + 1, w - 4)]
     g_inner = g[pad_y:h - pad_y, x_offset:max(x_offset + 1, w - 4)]
     b_inner = b[pad_y:h - pad_y, x_offset:max(x_offset + 1, w - 4)]
-    black_mask = (r_inner < 115) & (g_inner < 115) & (b_inner < 115)
+
+    r_i16 = r_inner.astype(np.int16)
+    b_i16 = b_inner.astype(np.int16)
+    black_mask = (r_inner < 105) & (g_inner < 105) & (b_inner < 105) & (np.abs(r_i16 - b_i16) < 25)
     black_text_ratio = float(np.mean(black_mask)) if r_inner.size > 0 else 0.0
 
-    return pink_ratio, red_right_ratio, black_text_ratio
+    return pink_ratio, theme_right_ratio, black_text_ratio
 
 
 def _is_box_selected(img_bgr, box):
     """
-    同时兼容两种选中态视觉风格：
+    同时兼容多种选中态视觉风格：
     1. 微信小程序风格：浅粉底色填充 (pink_ratio > 0.30)
-    2. 拼多多 App 风格：白底 + 红框 + 红字 (右侧区域有显著红色像素 red_right_ratio > 0.012，且几乎无黑色文字 black_text_ratio < 0.01)
+    2. 拼多多 App 风格：白底 + 红框/金棕框 + 对应主题色字
     """
-    pink_ratio, red_right_ratio, black_text_ratio = _get_box_color_metrics(img_bgr, box)
+    pink_ratio, theme_right_ratio, black_text_ratio = _get_box_color_metrics(img_bgr, box)
     if pink_ratio > 0.30:
         return True
-    if red_right_ratio > 0.012 and black_text_ratio < 0.010:
+    if theme_right_ratio > 0.010 and black_text_ratio < 0.015:
         return True
     return False
 
@@ -359,13 +368,19 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
     )
 
     # 三通道掩码切框（浅灰未选框 + 小程序浅粉选中框 + App红框选中框）
+    # 三通道掩码切框（浅灰未选框 + 小程序浅粉选中框 + App红框/黑金棕框选中框）
     b, g, r = cv2.split(img_bgr)
+    r_i16, g_i16, b_i16 = r.astype(np.int16), g.astype(np.int16), b.astype(np.int16)
+
     pink_mask = ((r >= 244) & (g >= 224) & (g <= 248) & (b >= 224) & (b <= 248) & (
-            (r.astype(np.int16) - b.astype(np.int16)) >= 5)).astype(np.uint8) * 255
+            (r_i16 - b_i16) >= 5)).astype(np.uint8) * 255
     max_c, min_c = np.maximum(np.maximum(b, g), r), np.minimum(np.minimum(b, g), r)
     gray_mask = ((min_c >= 238) & (max_c <= 250) & ((max_c - min_c) <= 5)).astype(np.uint8) * 255
-    red_border_mask = ((r >= 170) & (g <= 120) & (b <= 120) & (
-            (r.astype(np.int16) - g.astype(np.int16)) >= 60)).astype(np.uint8) * 255
+
+    # 兼容标准红框与黑金/旗舰店金棕色边框
+    is_std_red = (r >= 170) & (g <= 120) & (b <= 120) & ((r_i16 - g_i16) >= 60)
+    is_gold_brown = (r >= 110) & (b <= 135) & ((r_i16 - b_i16) >= 35) & ((r_i16 - g_i16) >= 15)
+    theme_border_mask = (is_std_red | is_gold_brown).astype(np.uint8) * 255
 
     combined_sku_mask = cv2.bitwise_or(pink_mask, gray_mask)
 
@@ -387,11 +402,11 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
                     if not any(abs(x - rx) < dedup_tol and abs(y - ry) < dedup_tol for rx, ry, _, _ in raw_boxes):
                         raw_boxes.append((x, y, w, h))
 
-    # 2) 提取 App 端红框白底类已选中规格框 (red_border_mask)
-    red_kernel = np.ones((7, 7), np.uint8)
-    closed_red = cv2.morphologyEx(red_border_mask, cv2.MORPH_CLOSE, red_kernel)
-    cnts_red, _ = cv2.findContours(closed_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in cnts_red:
+    # 2) 提取 App 端主题色(红框/金棕框)白底类已选中规格框
+    theme_kernel = np.ones((7, 7), np.uint8)
+    closed_theme = cv2.morphologyEx(theme_border_mask, cv2.MORPH_CLOSE, theme_kernel)
+    cnts_theme, _ = cv2.findContours(closed_theme, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for c in cnts_theme:
         x, y, w, h = cv2.boundingRect(c)
         if sku_top <= y and (y + h) <= confirm_y and min_box_w < w < w_img * 0.96 and min_box_h <= h <= max_box_h:
             if _is_box_selected(img_bgr, (x, y, w, h)):
