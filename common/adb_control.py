@@ -340,7 +340,7 @@ if __name__ == "__main__":
 
             filtered_results = [
                 item for item in filtered_results
-                if not item.get("sku_info")
+                # if not item.get("sku_info")
             ]
 
             need_sku_product_id_list = [item["product_id"] for item in filtered_results]
