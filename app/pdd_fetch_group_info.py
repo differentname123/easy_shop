@@ -859,7 +859,7 @@ def web_search_intercept_task():
             logger.error("[UI拦截任务/全局异常] 数据库连接或执行时发生严重错误 | 错误: [%s]", exc)
 
         logger.info("[UI拦截任务/轮次结束] 本轮 UI 拦截拉取完成，休眠 10 分钟后进行下一轮检查...")
-        time.sleep(1 * 600)
+        time.sleep(1 * 60)
 
 def safe_batch_update(product_manager, records):
     """
@@ -1155,7 +1155,7 @@ def api_search_task():
 
         # 调整为每 30 分钟轮询一次，保证冷却期过后的关键词能及时被拾起
         logger.info("[API任务/轮次结束] 本轮处理完成，休眠 30 分钟后检查冷却到期的关键词...")
-        time.sleep(30 * 60)
+        time.sleep(1 * 60)
 
 def normalize_goods(item, tab_name):
     """
