@@ -288,7 +288,16 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
 
     ocr_items = _run_ocr(img_bgr, engine=ocr_fast)
 
-    confirm_item = next((i for i in ocr_items if "确定" in i["text"] and i["cy"] > h_img * 0.80), None)
+    # 兼容“确定”、“再来一单”、“确认”、“立即支付”等不同场景下的底部确认按钮
+    CONFIRM_KEYWORDS = ("确定", "再来一单")
+    confirm_item = next(
+        (
+            i
+            for i in ocr_items
+            if any(kw in i["text"] for kw in CONFIRM_KEYWORDS) and i["cy"] > h_img * 0.80
+        ),
+        None,
+    )
     confirm_y = confirm_item["box"][1] if confirm_item else None
     confirm_h = confirm_item["box"][3] if confirm_item else None
 
@@ -864,8 +873,9 @@ class PddAdbBot:
                     return False, [], f"商品不可售({detected_text[:10]})", extra_info
 
                 # C. 【检测到原生详情页底栏】：当场立即点击购买（消除步骤切换重复截图）
-                if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2 and (
-                        "确定" not in detected_text):
+                if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2 and not any(
+                        kw in detected_text for kw in ["确定", "再来一单", "确认"]
+                ):
                     now = time.time()
                     if not detail_entered or (now - last_buy_click_time >= CLICK_RETRY_INTERVAL):
                         if not detail_entered:
