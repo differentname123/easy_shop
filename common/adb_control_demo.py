@@ -801,12 +801,13 @@ class PddAdbBot:
         while time.time() - wait_start < 3.0:
             fg_pkg = get_foreground_package()
             if fg_pkg == PDD_PACKAGE:
-                logger.info(f"[NAV-FAST] ⚡ 检测到最上层窗口已切入拼多多 (仅耗时: {time.time() - wait_start + 0.6:.2f}s)")
+                logger.info(
+                    f"[NAV-FAST] ⚡ 检测到最上层窗口已切入拼多多 (仅耗时: {time.time() - wait_start + 0.6:.2f}s)")
                 time.sleep(0.35)  # 给页面首帧渲染留出微小缓冲
                 break
             time.sleep(0.25)
 
-        # --- 步骤 3：统一导航与状态机轮询（浏览器刷新 -> 中间页穿透 -> 详情页点击 -> SKU面板捕获） ---
+        # --- 步骤 3：统一导航与状态机轮询 (中间页穿透 -> 动态点击购买 -> SKU捕获) ---
         logger.info(f"[TASK] [{index}] 步骤 2/3: 启动统一状态机轮询 (中间页穿透 -> 动态点击购买 -> SKU捕获)")
         state_start_time = time.time()
         detail_entered = False
@@ -814,6 +815,12 @@ class PddAdbBot:
         last_buy_click_time = 0.0
         buy_click_count = 0
         CLICK_RETRY_INTERVAL = 1.2
+
+        # 🎯 中间页防重连击冷却锁 (彻底杜绝 4.8 秒内多次触发抢券导致弹窗)
+        last_mid_click_time = 0.0
+        MID_CLICK_COOLDOWN = 5.0
+        CONFIRM_KEYWORDS = ("确定", "再来一单")
+
         final_img = None
 
         # 全流程共享 18 秒超时时间
@@ -847,18 +854,26 @@ class PddAdbBot:
                 btm_items = self._fast_region_ocr(bottom_half, scale=0.45, engine=ocr)
                 detected_text = "".join([item["text"] for item in btm_items])
 
-                # A. 【优先检查终止态】：底部出现“确定”或“确认”，说明 SKU 面板已展开
-                if detail_entered and any(kw in detected_text for kw in ["确定", "再来一单"]):
+                # A. 【优先检查终止态】：底部出现“确定”/“再来一单”/“确认”，说明 SKU 面板已展开
+                if detail_entered and any(kw in detected_text for kw in CONFIRM_KEYWORDS):
                     sku_ready = True
                     # 微等 0.15s 确保弹窗上滑动画彻底静止，随后再截一帧高清图直接复用给步骤 4
                     time.sleep(0.15)
                     stable_img = self.get_screenshot_cv()
                     if stable_img is not None:
                         final_img = stable_img
-                    logger.info(f"[INFO] ✅ SKU 面板已完全展开并锁定首帧 (轮询耗时: {time.time() - state_start_time:.2f}s)")
+                    logger.info(
+                        f"[INFO] ✅ SKU 面板已完全展开并锁定首帧 (轮询耗时: {time.time() - state_start_time:.2f}s)")
                     break
 
-                # B. 业务特征与异常商品熔断检查
+                # B. 【自动消解阻碍浮层】：检测到“优惠详情/店铺优惠”抽屉遮挡原生底栏
+                if any(kw in detected_text for kw in ["优惠详情", "店铺优惠"]):
+                    logger.info("[NAV-POPUP] 检测到'优惠详情'抽屉遮挡底栏，正在轻触顶部遮罩区关闭...")
+                    self.click_relative(0.50, 0.25, "关闭优惠详情浮层")
+                    time.sleep(0.3)
+                    continue
+
+                # C. 业务特征与异常商品熔断检查
                 if "人团" in detected_text:
                     extra_info["is_group"] = True
                     logger.info("[INFO] 检测到'人团'标识，将标记为 group 商品")
@@ -872,10 +887,9 @@ class PddAdbBot:
                     logger.info(f"[WARN] 检测到商品异常状态 ({detected_text[:20]})，提前终止轮询")
                     return False, [], f"商品不可售({detected_text[:10]})", extra_info
 
-                # C. 【检测到原生详情页底栏】：当场立即点击购买（消除步骤切换重复截图）
-                if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2 and not any(
-                        kw in detected_text for kw in ["确定", "再来一单", "确认"]
-                ):
+                # D. 【检测到原生详情页底栏】：当场立即点击购买（消除步骤切换重复截图）
+                has_bottom_bar = sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2
+                if has_bottom_bar and not any(kw in detected_text for kw in CONFIRM_KEYWORDS):
                     now = time.time()
                     if not detail_entered or (now - last_buy_click_time >= CLICK_RETRY_INTERVAL):
                         if not detail_entered:
@@ -891,21 +905,50 @@ class PddAdbBot:
                         time.sleep(1.30)
                         continue
 
-                # D. 【尚未进入详情页】：检测上半屏是否存在中间页的“立即购买 / 抢券购买”按钮
+                # E. 【尚未进入详情页】：中间页跳转（冷却防抖 + 动态状态跃迁感知，拒绝固定死等）
                 if not detail_entered:
-                    top_half = img_cv[0:h // 2, 0:w]
-                    top_items = self._fast_region_ocr(top_half, scale=0.45, engine=ocr)
-                    mid_clicked = False
-                    for item in top_items:
-                        t = item["text"]
-                        if any(btn_kw in t for btn_kw in ("立即购买", "抢券购买")):
-                            self.click_point(int(item["cx"]), int(item["cy"]), f"中间页跳转按钮 [{t}]")
-                            mid_clicked = True
-                            break
-                    if mid_clicked:
-                        # 给予 1.5s 领券与页面跳转缓冲，避免领券吐司动画期间二次误点
-                        time.sleep(1.5)
-                        continue
+                    now = time.time()
+                    if now - last_mid_click_time >= MID_CLICK_COOLDOWN:
+                        top_half = img_cv[0:h // 2, 0:w]
+                        top_items = self._fast_region_ocr(top_half, scale=0.45, engine=ocr)
+                        mid_target = None
+                        for item in top_items:
+                            t = item["text"]
+                            if any(btn_kw in t for btn_kw in ("立即购买", "抢券购买")):
+                                mid_target = item
+                                break
+
+                        if mid_target:
+                            last_mid_click_time = time.time()
+                            btn_text = mid_target["text"]
+                            self.click_point(int(mid_target["cx"]), int(mid_target["cy"]),
+                                             f"中间页跳转按钮 [{btn_text}]")
+
+                            # 🚀 动态微轮询感知页面跃迁（最长 3.0s，一旦检测到底栏出现或按钮消失立刻放行）
+                            sense_start = time.time()
+                            while time.time() - sense_start < 3.0:
+                                check_cv = self.get_screenshot_cv()
+                                if check_cv is not None:
+                                    chk_btm = self._fast_region_ocr(check_cv[h // 2:h, 0:w], scale=0.45, engine=ocr)
+                                    chk_btm_text = "".join([t["text"] for t in chk_btm])
+
+                                    # 跃迁条件1: 原生详情底栏或 SKU 确认键已就位
+                                    if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in chk_btm_text) >= 2 or any(
+                                            kw in chk_btm_text for kw in CONFIRM_KEYWORDS):
+                                        logger.info(
+                                            f"[NAV-SENSE] ⚡ 动态捕获页面成功跃迁 (耗时: {time.time() - sense_start:.2f}s)")
+                                        break
+
+                                    # 跃迁条件2: 原抢券按钮已切走消失
+                                    chk_top = self._fast_region_ocr(check_cv[0:h // 2, 0:w], scale=0.45, engine=ocr)
+                                    chk_top_text = "".join([t["text"] for t in chk_top])
+                                    if not any(btn_kw in chk_top_text for btn_kw in ("立即购买", "抢券购买")):
+                                        logger.info(
+                                            f"[NAV-SENSE] ⚡ 中间页已切出 (耗时: {time.time() - sense_start:.2f}s)")
+                                        break
+
+                                time.sleep(0.10)
+                            continue
 
             except Exception as e:
                 logger.info(f"[NAV-DEBUG] 状态机轮询异常: {e}")
@@ -939,7 +982,6 @@ class PddAdbBot:
             logger.info("[INFO] 循环连轴转达到 500 次，重启拼多多客户端释放资源。")
 
         return True, sku_info, "", extra_info
-
 
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
@@ -1407,7 +1449,7 @@ if __name__ == "__main__":
                     "words": words,
                     "max_price": max_price
                 })
-                break
+                # break
 
             if target_configs:
                 common_projection = {
