@@ -948,16 +948,15 @@ class PddAutomation(UIActionEngine):
                         logger.info(f"[INFO] ✅ 检测到 SKU 面板已完全展开 (耗时: {time.time() - start_time:.2f}s)")
                         break
 
-                    # 【改动 2 & 3】：在点击唤起 SKU 前进行前置特征判定
-                    if not detail_entered:
-                        if "人团" in detected_text:
-                            extra_info["is_group"] = True
-                            logger.info("[INFO] 检测到'人团'标识，将标记为 group 商品")
 
-                        if "不支持配送" in detected_text:
-                            extra_info["force_retry_count"] = 10
-                            logger.info("[WARN] 检测到'不支持配送'，立即熔断终止轮询")
-                            return False, [], "不支持配送", extra_info
+                    if "人团" in detected_text:
+                        extra_info["is_group"] = True
+                        logger.info("[INFO] 检测到'人团'标识，将标记为 group 商品")
+
+                    if "不支持配送" in detected_text:
+                        extra_info["force_retry_count"] = 10
+                        logger.info("[WARN] 检测到'不支持配送'，立即熔断终止轮询")
+                        return False, [], "不支持配送", extra_info
 
                     # 2. 【异常商品快速熔断】：检测到缺货/下架立即终止，防止无谓等待 10 秒
                     if any(bad_kw in detected_text for bad_kw in ["已售罄", "已下架", "商品不存在", "全部售罄"]):
@@ -965,8 +964,9 @@ class PddAutomation(UIActionEngine):
                         return False, [], f"商品不可售({detected_text[:10]})", extra_info
 
                     # 3. 【检测原生详情页并支持周期性重拍】
-                    # 画面中存在 客服/店铺/收藏，且没有“确定”，说明当前依然停留在详情页底栏
-                    if any(kw in detected_text for kw in ["客服", "店铺", "收藏"]) and ("确定" not in detected_text):
+                    # 画面中至少存在 客服/店铺/收藏 中的两个，且没有“确定”，说明当前依然停留在详情页底栏
+                    if sum(1 for kw in ["客服", "店铺", "收藏"] if kw in detected_text) >= 2 and (
+                            "确定" not in detected_text):
                         now = time.time()
                         # 首次进入详情页，或距离上次点击已超过 1.3 秒但面板仍未弹出 -> 触发点击
                         if not detail_entered or (now - last_click_time >= CLICK_RETRY_INTERVAL):
@@ -986,24 +986,9 @@ class PddAutomation(UIActionEngine):
 
                             # 动态获取最新窗口坐标，防止窗口发生微移
                             rect = self.window.BoundingRectangle
-                            # 默认右下角点击位
+                            # 直接使用固定右下角点击位
                             click_x = rect.right - 60 - (click_count % 2) * 15
                             click_y = rect.bottom - 25
-
-                            # 收集匹配按钮并优先选取靠底部的按钮（防止 1/2 区域中部的优惠券文本干扰）
-                            candidate_btns = []
-                            for line in result:
-                                pts, txt = line[0], str(line[1])
-                                if any(btn_kw in txt for btn_kw in ["拼单", "购买", "抢购", "再来一单", "领券"]):
-                                    bx, by, bw, bh = cv2.boundingRect(np.array(pts, dtype=np.int32))
-                                    if bx > (rect.right - rect.left) * 0.45:
-                                        candidate_btns.append((by, bx, bw, bh))
-
-                            if candidate_btns:
-                                candidate_btns.sort(key=lambda b: b[0], reverse=True)
-                                target_by, target_bx, target_bw, target_bh = candidate_btns[0]
-                                click_x = int(capture_region[0] + target_bx + target_bw // 2)
-                                click_y = int(capture_region[1] + target_by + target_bh // 2)
 
                             click_count += 1
                             detail_entered = True
@@ -1045,6 +1030,7 @@ class PddAutomation(UIActionEngine):
             logger.info("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
 
         return True, sku_info, "", extra_info
+
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
 # ==========================================
@@ -1064,7 +1050,6 @@ def batch_runner(product_list):
 
     for i, product in enumerate(product_list, 1):
         goods_id = product["product_id"]
-        goods_id = "1018596248629"
         logger.info("-" * 40)
         logger.info(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(product_list)}] goods_id: {goods_id}")
 
@@ -1543,7 +1528,6 @@ if __name__ == "__main__":
                     "words": words,
                     "max_price": max_price
                 })
-                break
 
             if target_configs:
                 common_projection = {
