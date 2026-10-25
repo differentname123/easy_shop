@@ -63,6 +63,9 @@ def gen_goods_segment_info(
 
     clean_name = name.strip()
     fallback = [clean_name]
+    if len(clean_name) <=3:
+        return fallback  # 对于过短的商品名，直接返回原词，避免模型输出不稳定
+
 
     # 2. 读取或复用外部传入的提示词文本
     if prompt_text is None:
