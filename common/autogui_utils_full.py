@@ -831,6 +831,8 @@ class PddAutomation(UIActionEngine):
         return False, f"中转站输入框赋值校验失败: 界面当前值为 '{current_val}'，并非目标商品 ID '{target_str}'"
 
     def process_single_goods(self, goods_id, index, consecutive_successes=0, ocr=ocr_fast):
+        extra_info = {"is_group": False, "force_retry_count": None}
+
         # --- 步骤 1：确立中转站据点 ---
         self.window_name = TRANSFER_APP_NAME
 
@@ -839,7 +841,7 @@ class PddAutomation(UIActionEngine):
             logger.info(f"[SYSTEM] 正在唤醒中转小程序: {TRANSFER_APP_NAME}")
             os.startfile(TRANSFER_SHORTCUT_PATH)
             if not self.find_window(timeout=5):
-                return False, [], "中转小程序启动失败"
+                return False, [], "中转小程序启动失败", extra_info
 
         # 【核心安全防护】：若未能成功置顶到前台，重新尝试唤醒拉起，绝不盲目进行输入！
         if not self.force_bring_to_front():
@@ -848,22 +850,22 @@ class PddAutomation(UIActionEngine):
             time.sleep(1)
             self.find_window(timeout=3)
             if not self.force_bring_to_front():
-                return False, [], "中转小程序无法激活到前台，已终止操作以保护系统其他文件！"
+                return False, [], "中转小程序无法激活到前台，已终止操作以保护系统其他文件！", extra_info
 
         # --- 步骤 1.5：环境自愈（确保恢复至【情况2】） ---
         if not self.ensure_transfer_clean_state():
-            return False, [], "中转小程序存在无法自动关闭的弹窗，环境未能恢复至正常状态"
+            return False, [], "中转小程序存在无法自动关闭的弹窗，环境未能恢复至正常状态", extra_info
 
         # --- 步骤 2：精确写入商品 ID 并严格比对 ---
         logger.info(f"[TASK] [{index}] 步骤 1/4: 向中转站写入商品 ID")
         input_ok, input_err = self.set_transfer_goods_id(goods_id)
         if not input_ok:
-            return False, [], input_err
+            return False, [], input_err, extra_info
 
         logger.info(f"[TASK] [{index}] 步骤 2/4: 触发 API 跳转")
         jump_btn = self.window.ButtonControl(Name="跳转到该商品")
         if not jump_btn.Exists(1, 1):
-            return False, [], "无法定位中转小程序的跳转按钮"
+            return False, [], "无法定位中转小程序的跳转按钮", extra_info
 
         try:
             jump_btn.GetInvokePattern().Invoke()
@@ -887,7 +889,7 @@ class PddAutomation(UIActionEngine):
         self.window_name = TARGET_APP_NAME
 
         if not self.find_window(timeout=5):
-            return False, [], "未检测到拼多多窗口弹出（跳转可能失败）"
+            return False, [], "未检测到拼多多窗口弹出（跳转可能失败）", extra_info
 
         self.force_bring_to_front()
 
@@ -914,8 +916,8 @@ class PddAutomation(UIActionEngine):
         rect = self.window.BoundingRectangle
         w, h = rect.right - rect.left, rect.bottom - rect.top
 
-        # 将区域放大为底部 1/4，这样既能盖住详情页的“客服/店铺”，也能盖住 SKU 弹窗底部的“确定”
-        capture_region = (int(rect.left), int(rect.bottom - h // 4), int(w), int(h // 4))
+        # 【改动 1】：识别区域调整为下半部分 (高度为 1/2)
+        capture_region = (int(rect.left), int(rect.bottom - h // 2), int(w), int(h // 2))
         monitor = {
             "left": capture_region[0],
             "top": capture_region[1],
@@ -946,10 +948,21 @@ class PddAutomation(UIActionEngine):
                         logger.info(f"[INFO] ✅ 检测到 SKU 面板已完全展开 (耗时: {time.time() - start_time:.2f}s)")
                         break
 
+                    # 【改动 2 & 3】：在点击唤起 SKU 前进行前置特征判定
+                    if not detail_entered:
+                        if "人团" in detected_text:
+                            extra_info["is_group"] = True
+                            logger.info("[INFO] 检测到'人团'标识，将标记为 group 商品")
+
+                        if "不支持配送" in detected_text:
+                            extra_info["force_retry_count"] = 10
+                            logger.info("[WARN] 检测到'不支持配送'，立即熔断终止轮询")
+                            return False, [], "不支持配送", extra_info
+
                     # 2. 【异常商品快速熔断】：检测到缺货/下架立即终止，防止无谓等待 10 秒
                     if any(bad_kw in detected_text for bad_kw in ["已售罄", "已下架", "商品不存在", "全部售罄"]):
                         logger.info(f"[WARN] 检测到商品异常状态 ({detected_text[:20]})，提前终止轮询")
-                        return False, [], f"商品不可售({detected_text[:10]})"
+                        return False, [], f"商品不可售({detected_text[:10]})", extra_info
 
                     # 3. 【检测原生详情页并支持周期性重拍】
                     # 画面中存在 客服/店铺/收藏，且没有“确定”，说明当前依然停留在详情页底栏
@@ -973,20 +986,24 @@ class PddAutomation(UIActionEngine):
 
                             # 动态获取最新窗口坐标，防止窗口发生微移
                             rect = self.window.BoundingRectangle
-                            # 奇偶次微调 15 像素，防止连续点在按钮边缘死区
+                            # 默认右下角点击位
                             click_x = rect.right - 60 - (click_count % 2) * 15
                             click_y = rect.bottom - 25
 
-                            # 优先使用 OCR 定位右侧主购买按钮中心
+                            # 收集匹配按钮并优先选取靠底部的按钮（防止 1/2 区域中部的优惠券文本干扰）
+                            candidate_btns = []
                             for line in result:
                                 pts, txt = line[0], str(line[1])
                                 if any(btn_kw in txt for btn_kw in ["拼单", "购买", "抢购", "再来一单", "领券"]):
                                     bx, by, bw, bh = cv2.boundingRect(np.array(pts, dtype=np.int32))
-                                    # 确保是右半区的主操作按钮（bx > w * 0.45），防止点中左侧小文案
                                     if bx > (rect.right - rect.left) * 0.45:
-                                        click_x = int(capture_region[0] + bx + bw // 2)
-                                        click_y = int(capture_region[1] + by + bh // 2)
-                                        break
+                                        candidate_btns.append((by, bx, bw, bh))
+
+                            if candidate_btns:
+                                candidate_btns.sort(key=lambda b: b[0], reverse=True)
+                                target_by, target_bx, target_bw, target_bh = candidate_btns[0]
+                                click_x = int(capture_region[0] + target_bx + target_bw // 2)
+                                click_y = int(capture_region[1] + target_by + target_bh // 2)
 
                             click_count += 1
                             detail_entered = True
@@ -1005,12 +1022,12 @@ class PddAutomation(UIActionEngine):
         if not detail_entered:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            return False, [], "进入详情页失败"
+            return False, [], "进入详情页失败", extra_info
 
         if not sku_ready:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            return False, [], "SKU面板未完全展开或点击全部失效"
+            return False, [], "SKU面板未完全展开或点击全部失效", extra_info
 
         # --- 步骤 4：使用新逻辑遍历提取所有 SKU 规格组合及价格 ---
         logger.info(f"[TASK] [{index}] 步骤 4/4: 正在遍历提取所有 SKU 规格组合与价格...")
@@ -1018,7 +1035,7 @@ class PddAutomation(UIActionEngine):
         if not sku_info:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.fast_screenshot_save(path)
-            return False, [], "未能提取到有效的SKU规格组合数据"
+            return False, [], "未能提取到有效的SKU规格组合数据", extra_info
 
         logger.info(f"[TASK] [{index}] 🎯 成功提取 {len(sku_info)} 个规格组合。")
 
@@ -1027,8 +1044,7 @@ class PddAutomation(UIActionEngine):
             self.close_current_window()
             logger.info("[INFO] 循环连轴转达到 500 次，重启(关闭)拼多多小程序释放资源。")
 
-        return True, sku_info, ""
-
+        return True, sku_info, "", extra_info
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
 # ==========================================
@@ -1048,15 +1064,32 @@ def batch_runner(product_list):
 
     for i, product in enumerate(product_list, 1):
         goods_id = product["product_id"]
+        goods_id = "1018596248629"
         logger.info("-" * 40)
         logger.info(f"[INFO] ▶▶▶ 开始处理 [{i}/{len(product_list)}] goods_id: {goods_id}")
 
         try:
-            success, sku_info, error_msg = bot.process_single_goods(goods_id, i, consecutive_successes)
+            success, sku_info, error_msg, extra_info = bot.process_single_goods(goods_id, i, consecutive_successes)
 
             with closing(gen_db_object()) as db_instance:
                 db_instance.ping()
                 product_manager = ProductManager(db_instance)
+
+                # 处理 _source_api 追加 "group" 逻辑
+                source_api_update = None
+                if extra_info.get("is_group"):
+                    current_source = product.get("_source_api")
+                    if isinstance(current_source, list):
+                        new_source = list(current_source)
+                        if "group" not in new_source:
+                            new_source.append("group")
+                    elif isinstance(current_source, str):
+                        new_source = [current_source] if current_source != "group" else ["group"]
+                        if "group" not in new_source:
+                            new_source.append("group")
+                    else:
+                        new_source = ["group"]
+                    source_api_update = new_source
 
                 if success and sku_info:
                     update_data = {
@@ -1069,6 +1102,9 @@ def batch_runner(product_list):
                         "sku_error": "",
                         "sku_updated_at": datetime.now(timezone.utc),
                     }
+                    if source_api_update is not None:
+                        update_data["_source_api"] = source_api_update
+
                     saved = product_manager.update(
                         update_data,
                         condition={"_id": product["_id"]},
@@ -1091,10 +1127,21 @@ def batch_runner(product_list):
                         "sku_error": error_msg or "获取SKU列表为空",
                         "sku_updated_at": datetime.now(timezone.utc),
                     }
+                    if source_api_update is not None:
+                        update_data["_source_api"] = source_api_update
+
+                    # 处理不支持配送时，直接将重试次数置为 10
+                    force_retry = extra_info.get("force_retry_count")
+                    if force_retry is not None:
+                        update_data["sku_retry_count"] = force_retry
+                        inc_dict = {}
+                    else:
+                        inc_dict = {"sku_retry_count": 1}
+
                     product_manager.update(
                         update_data,
                         condition={"_id": product["_id"]},
-                        increments={"sku_retry_count": 1},
+                        increments=inc_dict,
                         upsert=False
                     )
                     logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
@@ -1104,8 +1151,7 @@ def batch_runner(product_list):
                     solve_pdd_captcha()
                     # 2. 验证码处理完毕后，再将拼多多复位回首页，确保下次任务不受旧页面干扰
                     bot.click_home_button()
-                    bot.close_current_window()  # <--- 直接改成关窗！
-
+                    bot.close_current_window()
 
                     logger.info("-" * 40)
                     time.sleep(10)
@@ -1147,7 +1193,7 @@ def batch_runner(product_list):
             except Exception:
                 pass
 
-        # 判断是否连续失败 5 次
+        # 判断是否连续失败 10 次
         if consecutive_failures >= 10:
             logger.info(
                 f"[WARN] ⚠️ 已连续发生 {consecutive_failures} 次失败，主动触发熔断机制，跳过本轮剩余的 {len(product_list) - i} 个任务！")
@@ -1157,7 +1203,6 @@ def batch_runner(product_list):
     logger.info(
         f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}")
     logger.info("=" * 50)
-
 
 def get_data_updated_within_24h(hours=12, limit=0, extra_query=None, projection=None):
     """
@@ -1498,6 +1543,7 @@ if __name__ == "__main__":
                     "words": words,
                     "max_price": max_price
                 })
+                break
 
             if target_configs:
                 common_projection = {
