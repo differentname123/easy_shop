@@ -1312,21 +1312,27 @@ def is_product_confirmed_sku(product):
 
 
 def filter_products_by_cost_effectiveness(
-    candidate_products,
-    confirmed_products,
-    target_configs,
-    top_n=10,
-    benchmark_rank=5,
-    only_top_unit=False
+        candidate_products,
+        confirmed_products,
+        target_configs,
+        max_top=10,
+        ratio=0.01,
+        benchmark_rank=5,
+        only_top_unit=False,
+        **kwargs
 ):
     """
     业务逻辑：
     1. 在 confirmed_products (72小时) 中按关键词提取已确认规格的商品；
     2. 计算每种 unit 的前 benchmark_rank (默认前5) 性价比，以第 5 名的单价作为【合格门槛】；
     3. 在 candidate_products 中提取候选商品，剔除性价比低于基准门槛（即单价高于基准单价）的商品；
-    4. 对达标的商品按 unit 取前 top_n 名；
+    4. 对达标的商品按 unit 计算：按比例 (默认 0.01) 向上取整，最多不超过 max_top 个；
     5. 最后进行全局去重。
     """
+    # 兼容历史调用中可能传入的 top_n 参数
+    if "top_n" in kwargs:
+        max_top = kwargs["top_n"]
+
     total_slots_selected = 0
     final_selected_map = {}  # 全局去重: {product_id: product}
 
@@ -1410,7 +1416,7 @@ def filter_products_by_cost_effectiveness(
         # =========================================================================
         # 步骤 3：按 unit 归集，并执行【基准门槛过滤】
         # =========================================================================
-        raw_unit_buckets = {}        # {unit: [(price, item)]} 原始候选
+        raw_unit_buckets = {}  # {unit: [(price, item)]} 原始候选
         qualified_unit_buckets = {}  # {unit: [(price, item)]} 达标候选
 
         for item in matched_candidates:
@@ -1436,7 +1442,8 @@ def filter_products_by_cost_effectiveness(
             pass_count = len(qualified_unit_buckets[u])
             eliminated = len(all_cands) - pass_count
             base_info = f"(基准: {unit_benchmarks[u]['threshold']:.4f}元/{u})" if u in unit_benchmarks else "(无72H基准)"
-            logger.info(f"  │    └─ 单位 [{u}] {base_info}: 候选 {len(all_cands)} 个 -> 达标 {pass_count} 个, 淘汰 {eliminated} 个")
+            logger.info(
+                f"  │    └─ 单位 [{u}] {base_info}: 候选 {len(all_cands)} 个 -> 达标 {pass_count} 个, 淘汰 {eliminated} 个")
 
         # 剔除完全没有商品达标的 unit
         active_units = {u: items for u, items in qualified_unit_buckets.items() if items}
@@ -1445,11 +1452,12 @@ def filter_products_by_cost_effectiveness(
             continue
 
         # =========================================================================
-        # 步骤 4：选取主流单位（可选）与 Top N 优选
+        # 步骤 4：选取主流单位（可选）与 动态比例(向上取整)+Max Top 优选
         # =========================================================================
         if only_top_unit:
             dominant_u = max(active_units.keys(), key=lambda u: len(active_units[u]))
-            logger.info(f"  ├─ [主流锁定] 仅采纳达标商品数最多的单位 [{dominant_u}] (达标商品: {len(active_units[dominant_u])} 个)")
+            logger.info(
+                f"  ├─ [主流锁定] 仅采纳达标商品数最多的单位 [{dominant_u}] (达标商品: {len(active_units[dominant_u])} 个)")
             target_units = {dominant_u: active_units[dominant_u]}
         else:
             target_units = active_units
@@ -1457,7 +1465,13 @@ def filter_products_by_cost_effectiveness(
         kw_selected_count = 0
         for u, items_with_price in target_units.items():
             items_with_price.sort(key=lambda x: x[0])
-            top_items = items_with_price[:top_n]
+
+            # 【核心修改点】：按达标数量 * ratio 向上取整计算，并以 max_top 为封顶上限
+            qualified_count = len(items_with_price)
+            calc_n = math.ceil(qualified_count * ratio)
+            actual_top_n = min(calc_n, max_top) if max_top and max_top > 0 else calc_n
+
+            top_items = items_with_price[:actual_top_n]
 
             kw_selected_count += len(top_items)
             total_slots_selected += len(top_items)
@@ -1466,7 +1480,11 @@ def filter_products_by_cost_effectiveness(
                 pid = p["product_id"]
                 final_selected_map[pid] = p
 
-            logger.info(f"  │    ★ 单位 [{u}]: 选取 Top {len(top_items)} (入选最佳: {top_items[0][0]:.4f}元/{u}, 最末: {top_items[-1][0]:.4f}元/{u})")
+            logger.info(
+                f"  │    ★ 单位 [{u}]: 达标 {qualified_count} 个 -> 按比例({ratio})计算取 {calc_n} 个 "
+                f"(上限 {max_top} -> 实取 Top {len(top_items)}), "
+                f"入选最佳: {top_items[0][0]:.4f}元/{u}, 最末: {top_items[-1][0]:.4f}元/{u}"
+            )
 
         logger.info(f"  └─ 关键词【{kw}】最终放行名额: {kw_selected_count} 个")
 
@@ -1476,6 +1494,7 @@ def filter_products_by_cost_effectiveness(
     logger.info("=" * 60)
     logger.info(f"[FILTER-REPORT] 🎯 完整筛选统计报告:")
     logger.info(f"  ├─ 基准门槛规则: 72小时已确认商品 Top {benchmark_rank} 性价比")
+    logger.info(f"  ├─ 比例抽选规则: 达标量 × {ratio} (向上取整, 上限: {max_top})")
     logger.info(f"  ├─ 各关键词及单位达标入选总名额: {total_slots_selected} 个")
     logger.info(f"  ├─ 跨单位/跨关键词去重合并名额: {duplicates_removed} 个")
     logger.info(f"  └─ 最终放行待抓取的唯一商品数: {len(result_list)} 个")
@@ -1578,9 +1597,10 @@ if __name__ == "__main__":
                     candidate_products=candidate_results,
                     confirmed_products=confirmed_results,
                     target_configs=target_configs,
-                    top_n=1,
-                    benchmark_rank=5,    # 锁定第 5 名性价比为
-                    only_top_unit=False  # 若只需数量最多的 unit 改为 True
+                    max_top=10,  # 原 top_n=1 改为期望的最大截取上限（如 10 或 5）
+                    ratio=0.01,  # 0.01 比例，达标 134 个时 134 * 0.01 -> ceil -> 2 个
+                    benchmark_rank=5,
+                    only_top_unit=False
                 )
 
                 if filtered_results:
@@ -1592,4 +1612,4 @@ if __name__ == "__main__":
         except Exception as e:
             logger.info(f"[FATAL] 💥 主程序异常退出: {str(e)}")
 
-        time.sleep(600)
+        time.sleep(60)
