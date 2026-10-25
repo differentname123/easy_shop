@@ -29,7 +29,7 @@ ADB_PATH = r"E:\chrome\platform-tools-latest-windows\platform-tools\adb.exe"
 VIA_PACKAGE = "mark.via"
 PDD_PACKAGE = "com.xunmeng.pinduoduo"
 
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SKU_DEBUG_DIR = os.path.join(BASE_DIR, "sku_debug_images")
@@ -613,6 +613,10 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
 
         cat_names = [c["name"] for c in categories]
         all_combos = list(itertools.product(*(c["items"] for c in categories)))
+        # 超过 60 种组合大概率是 OCR 误切了分类或者是异常多规格，直接跳过保护线程
+        if len(all_combos) > 60:
+            logger.warning(f"[SKU-WARN] 规格组合超标 ({len(all_combos)} > 60)，放弃提取以防阻塞")
+            return []
         logger.info(f"[SKU-TRAVERSE] 准备遍历规格维度 {cat_names}，共计 {len(all_combos)} 种笛卡尔积组合")
         results = []
 
@@ -766,14 +770,17 @@ class PddAdbBot:
         y = int(self.height * pct_y)
         self.click_point(x, y, desc=desc)
 
-
-
     def scroll_sku_up(self):
-        """在 SKU 弹窗区域向上滚动复位回顶部规格（手指从上往下滑）"""
         x = int(self.width * 0.5)
         y_start = int(self.height * 0.35)
         y_end = int(self.height * 0.75)
-        subprocess.run(f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 260', shell=True)
+        try:
+            subprocess.run(
+                f'"{ADB_PATH}" shell input swipe {x} {y_start} {x} {y_end} 260',
+                shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2.5
+            )
+        except Exception:
+            pass
 
     def get_screenshot_cv(self):
         """
