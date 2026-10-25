@@ -867,10 +867,12 @@ def safe_batch_update(product_manager, records):
     【安全批量更新封装】
     1. 价格与商品基础字段以当前最新抓取的数据为准进行更新。
     2. 对 _source_api 来源列表进行安全合并与追加，保留商品全部历史来源并保序去重。
-    3. 保护已被 RPA 抓取过真实多规格的商品（need_update_sku == False 或 sku_status == "success"），
-       防止重复采集将真实 sku_info 覆盖回默认单规格占位，或将 need_update_sku 重置为 True。
-    4. 保护库中已生成的非空 promotion_url，防止被空值覆盖。
-    5. 维护 history_price_info 历史价格列表：每次新增或更新商品时，自动追加当前时间、对应价格与商品名称 (name)。
+    3. 【新增：商品变动穿透重置】：若已入库商品的价格 (activity_price) 或名称 (name) 发生变动，
+       自动将其当做新商品穿透重置：重置 need_update_sku=True、sku_status="pending"、
+       sku_retry_count=0、need_reformat=True 等全套下游控制字段，确保重新触发大模型清洗与 RPA 规格抓取。
+    4. 对价格/名称未发生变动的稳定商品，继续保护已有 sku_info 与 need_update_sku，防止被默认占位覆盖。
+    5. 保护库中已生成的非空 promotion_url，防止被空值覆盖。
+    6. 维护 history_price_info 历史价格列表：每次新增或更新商品时，自动追加当前时间、对应价格与商品名称 (name)。
     """
     if not records:
         return {"new": 0, "update": 0}
@@ -884,6 +886,7 @@ def safe_batch_update(product_manager, records):
         ]
 
         if product_ids:
+            # 扩展 projection：增加 activity_price 和 original_price，用于识别商品价格变动
             existing_docs = product_manager.query(
                 {"product_id": {"$in": list(set(product_ids))}},
                 projection={
@@ -893,7 +896,9 @@ def safe_batch_update(product_manager, records):
                     "sku_status": 1,
                     "promotion_url": 1,
                     "history_price_info": 1,
-                    "name": 1,  # 补充查询商品名称，以便在当前记录缺失名称时兜底
+                    "name": 1,
+                    "activity_price": 1,
+                    "original_price": 1,
                 }
             )
 
@@ -972,12 +977,47 @@ def safe_batch_update(product_manager, records):
                 record["history_price_info"] = combined_history
                 history_price_map[pid] = combined_history
 
-                # 3. 保护已有字段不被默认占位或空值覆盖
+                # 3. 价格与名称变动监测与状态穿透重置
                 if old_doc:
-                    # 若该商品已完成过 RPA 真实规格提取，绝不用默认单规格覆盖 sku_info 和 need_update_sku
-                    if old_doc.get("need_update_sku") is False or old_doc.get("sku_status") == "success":
-                        record.pop("sku_info", None)
-                        record.pop("need_update_sku", None)
+                    # 获取旧记录的价格和名称
+                    raw_old_price = old_doc.get("activity_price")
+                    if raw_old_price is None:
+                        raw_old_price = old_doc.get("original_price", 0.0)
+                    old_price = _safe_float(raw_old_price, default=0.0)
+                    old_name = str(old_doc.get("name") or "").strip()
+
+                    # 判定价格或名称是否发生变化（浮点数比对保留两位精度）
+                    is_price_changed = (old_price > 0 and current_price > 0 and abs(current_price - old_price) >= 0.01)
+                    is_name_changed = bool(old_name and current_name and old_name != current_name)
+
+                    if is_price_changed or is_name_changed:
+                        # 【核心改动】：检测到商品变动，完全视为新商品，重置下游全链路控制字段
+                        logger.info(
+                            "🔄 [商品变动重置] 商品 [%s] 发生关键信息变更 (价格: %s -> %s, 名称变动: %s) -> 重置为新商品状态",
+                            pid, old_price, current_price, is_name_changed
+                        )
+                        # 重置 RPA SKU 采集全套字段
+                        record["need_update_sku"] = True
+                        record["sku_status"] = "pending"
+                        record["sku_retry_count"] = 0
+                        record["sku_error"] = ""
+                        record["sku_info"] = [
+                            {
+                                "价格": f"￥{current_price}",
+                                "截图地址": "",
+                            }
+                        ]
+
+                        # 重置大模型结构化清洗全套字段
+                        record["need_reformat"] = True
+                        record["format_status"] = "pending"
+                        record["format_retry_count"] = 0
+                        record["format_error"] = ""
+                    else:
+                        # 未发生变动时，沿用原保护机制：避免将已确认的多规格数据还原为单规格占位
+                        if old_doc.get("need_update_sku") is False or old_doc.get("sku_status") == "success":
+                            record.pop("sku_info", None)
+                            record.pop("need_update_sku", None)
 
                     # 若新记录未携带有效推广链接，但库中已有推广链接，绝不覆盖为空
                     if not record.get("promotion_url") and old_doc.get("promotion_url"):
@@ -990,7 +1030,6 @@ def safe_batch_update(product_manager, records):
             record.pop("history_price_info", None)
 
     return product_manager.update(records)
-
 
 
 # ==========================================
