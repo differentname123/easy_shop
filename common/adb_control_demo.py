@@ -554,7 +554,7 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None, extra_info=None):
                 # 【严格约束】：仅在已确认打开SKU面板(is_detail=True)但确实切不出规格框时，才标记致命不再重试
                 if is_detail and "未切出任何 SKU 规格框" in err_msg:
                     extra_info["no_sku_boxes"] = True
-                    extra_info["force_retry_count"] = 10
+                    extra_info["force_retry_count"] = 4
             return []
 
         h_img, w_img = current_img.shape[:2]
