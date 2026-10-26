@@ -613,10 +613,10 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
 
         cat_names = [c["name"] for c in categories]
         all_combos = list(itertools.product(*(c["items"] for c in categories)))
-        # 超过 60 种组合大概率是 OCR 误切了分类或者是异常多规格，直接跳过保护线程
-        if len(all_combos) > 60:
-            logger.warning(f"[SKU-WARN] 规格组合超标 ({len(all_combos)} > 60)，放弃提取以防阻塞")
-            return []
+        # # 超过 60 种组合大概率是 OCR 误切了分类或者是异常多规格，直接跳过保护线程
+        # if len(all_combos) > 60:
+        #     logger.warning(f"[SKU-WARN] 规格组合超标 ({len(all_combos)} > 60)，放弃提取以防阻塞")
+        #     return []
         logger.info(f"[SKU-TRAVERSE] 准备遍历规格维度 {cat_names}，共计 {len(all_combos)} 种笛卡尔积组合")
         results = []
 
