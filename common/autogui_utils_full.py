@@ -643,19 +643,81 @@ class PddAutomation(UIActionEngine):
         super().__init__(TRANSFER_APP_NAME)
 
     def click_home_button(self):
-        """点击拼多多小程序左上角小房子，复位回首页"""
-        if self.window and self.window.Exists(0, 0):
-            try:
-                # 先按一次 ESC，防止 SKU 弹窗拦截点击
+        """仅对拼多多小程序生效：点击左上角小房子复位回首页"""
+        try:
+            # 严格核对：只对拼多多执行该操作
+            pdd_win = auto.WindowControl(searchDepth=1, Name=TARGET_APP_NAME)
+            if pdd_win.Exists(0.5, 0.1):
                 auto.SendKeys('{Esc}')
                 time.sleep(0.05)
-                rect = self.window.BoundingRectangle
-                # 点击左上角小房子图标（高度与关闭按钮一致）
+                rect = pdd_win.BoundingRectangle
                 self.safe_click(rect.left + 30, rect.top + 55, "点击拼多多回到首页")
                 time.sleep(0.3)
-            except Exception as e:
-                logger.info(f"[WARN] 点击回到首页失败: {e}")
+        except Exception as e:
+            logger.info(f"[WARN] 点击回到首页失败: {e}")
 
+    def close_target_pdd_window(self):
+        """【安全隔离】仅定位并关闭拼多多窗口，绝对禁止误关闭中转小程序"""
+        try:
+            pdd_win = auto.WindowControl(searchDepth=1, Name=TARGET_APP_NAME)
+            if pdd_win.Exists(0.5, 0.1):
+                rect = pdd_win.BoundingRectangle
+                self.safe_click(rect.right - 25, rect.top + 60, "关闭拼多多窗口")
+                time.sleep(0.3)
+        except Exception as e:
+            logger.info(f"[WARN] 关闭拼多多窗口异常: {e}")
+
+    def ensure_transfer_clean_state(self, max_retries=3):
+        """
+        【自愈核心修复】
+        1. 针对已知系统弹窗进行针对性关闭；
+        2. 废除脆弱且必定误判的 ClassName='wrap' 检查；
+        3. 依据“输入框与跳转按钮就绪”作为环境健康的唯一黄金标准！
+        """
+        for _ in range(max_retries):
+            cleaned = False
+
+            # 1. 修复【不支持拖入文件】弹窗
+            title_unsupported = self.window.TextControl(Name="当前小程序不支持拖入文件")
+            if title_unsupported.Exists(0, 0):
+                btn_ok = self.window.ButtonControl(Name="确定")
+                if not btn_ok.Exists(0, 0):
+                    btn_ok = self.window.TextControl(Name="确定")
+                if btn_ok.Exists(0.3, 0):
+                    try:
+                        btn_ok.GetInvokePattern().Invoke()
+                    except Exception:
+                        btn_ok.Click(simulateMove=False)
+                    logger.info("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
+                    cleaned = True
+                    time.sleep(0.15)
+
+            # 2. 修复【残留的微信跳转授权】弹窗
+            title_jump = self.window.TextControl(Name="即将打开“拼多多”小程序")
+            if title_jump.Exists(0, 0):
+                btn_cancel = self.window.ButtonControl(Name="取消")
+                if not btn_cancel.Exists(0, 0):
+                    btn_cancel = self.window.TextControl(Name="取消")
+                if btn_cancel.Exists(0.3, 0):
+                    try:
+                        btn_cancel.GetInvokePattern().Invoke()
+                    except Exception:
+                        btn_cancel.Click(simulateMove=False)
+                    logger.info("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
+                    cleaned = True
+                    time.sleep(0.15)
+
+            if not cleaned:
+                break
+
+        # 核心判定准则：只要输入框存在，说明界面未被未知模态遮挡，环境即为干净
+        edit_box = self.window.EditControl()
+        jump_btn = self.window.ButtonControl(Name="跳转到该商品")
+        if edit_box.Exists(1, 0.2) and jump_btn.Exists(1, 0.2):
+            return True
+
+        logger.info("[WARN] 中转小程序核心控件被遮挡或未加载完成")
+        return False
     def close_current_window(self):
         """通用窗口关闭，用于清理拼多多窗口，保持桌面整洁"""
         if self.window and self.window.Exists(0, 0):
@@ -681,65 +743,6 @@ class PddAutomation(UIActionEngine):
             pass
         return ctrl.Name or ""
 
-    def ensure_transfer_clean_state(self, max_retries=3):
-        """
-        【自愈核心】检测非期望弹窗并自动消除，强行将中转站恢复至【情况2】干净状态
-        """
-        for _ in range(max_retries):
-            cleaned = False
-
-            # 1. 检查并修复【情况3】：不支持拖入文件弹窗
-            title_unsupported = self.window.TextControl(Name="当前小程序不支持拖入文件")
-            if title_unsupported.Exists(0, 0):
-                btn_ok = self.window.TextControl(Name="确定")
-                if btn_ok.Exists(0.5, 0):
-                    try:
-                        btn_ok.GetInvokePattern().Invoke()
-                    except Exception:
-                        btn_ok.Click(simulateMove=False)
-                    logger.info("[HEAL] 检测到'当前小程序不支持拖入文件'弹窗，已自动点击'确定'")
-                    cleaned = True
-                    time.sleep(0.1)
-
-            # 2. 检查并修复【情况1】：遗留的跳转弹窗
-            title_jump = self.window.TextControl(Name="即将打开“拼多多”小程序")
-            if title_jump.Exists(0, 0):
-                btn_cancel = self.window.TextControl(Name="取消")
-                if btn_cancel.Exists(0.5, 0):
-                    try:
-                        btn_cancel.GetInvokePattern().Invoke()
-                    except Exception:
-                        btn_cancel.Click(simulateMove=False)
-                    logger.info("[HEAL] 检测到残留的'即将打开拼多多'弹窗，已自动点击'取消'")
-                    cleaned = True
-                    time.sleep(0.1)
-
-            # 3. 检查是否有遮挡的 wrap 容器弹窗
-            wrap_modal = self.window.GroupControl(ClassName="wrap")
-            if wrap_modal.Exists(0, 0):
-                btn_cancel = wrap_modal.TextControl(Name="取消")
-                btn_ok = wrap_modal.TextControl(Name="确定")
-                if btn_cancel.Exists(0.2, 0):
-                    try:
-                        btn_cancel.GetInvokePattern().Invoke()
-                    except Exception:
-                        btn_cancel.Click(simulateMove=False)
-                    cleaned = True
-                elif btn_ok.Exists(0.2, 0):
-                    try:
-                        btn_ok.GetInvokePattern().Invoke()
-                    except Exception:
-                        btn_ok.Click(simulateMove=False)
-                    cleaned = True
-                time.sleep(0.1)
-
-            if not cleaned:
-                break
-        time.sleep(0.3)
-        wrap_modal = self.window.GroupControl(ClassName="wrap")
-        if wrap_modal.Exists(0, 0):
-            return False
-        return True
 
     def set_transfer_goods_id(self, goods_id, max_attempts=3):
         """
@@ -1131,15 +1134,20 @@ def batch_runner(product_list):
                     )
                     logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
 
-                    # 【核心修复时序】：
-                    # 1. 此时拼多多仍停留在失败现场（滑块页面未被提前摧毁），先执行滑块破解
-                    solve_pdd_captcha()
-                    # 2. 验证码处理完毕后，再将拼多多复位回首页，确保下次任务不受旧页面干扰
-                    bot.click_home_button()
-                    bot.close_current_window()
+                    # =========================================================
+                    # 【核心安全清理时序】：只针对拼多多，绝不误触中转小程序
+                    # =========================================================
+                    # 1. 只有拼多多弹出了且在现场时，才执行滑块处理与回退
+                    pdd_check = auto.WindowControl(searchDepth=1, Name=TARGET_APP_NAME)
+                    if pdd_check.Exists(0.5, 0.1):
+                        solve_pdd_captcha()
+                        bot.click_home_button()
+                        # bot.close_target_pdd_window()  # 安全关闭拼多多，绝不误碰合力汇
+                    else:
+                        logger.info("[CLEANUP] 未检测到拼多多残留窗口，跳过拼多多关闭清理")
 
                     logger.info("-" * 40)
-                    time.sleep(10)
+                    time.sleep(2)  # 原来的10秒过长，可调整为更平滑的2~3秒
                     batch_counts["failed"] += 1
                     consecutive_successes = 0
                     consecutive_failures += 1
