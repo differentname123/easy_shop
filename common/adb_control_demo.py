@@ -399,7 +399,7 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
     gray_mask = ((min_c >= 238) & (max_c <= 250) & ((max_c - min_c) <= 5)).astype(np.uint8) * 255
 
     # 兼容标准红框与黑金/旗舰店金棕色边框
-    is_std_red = (r >= 170) & (g <= 120) & (b <= 120) & ((r_i16 - g_i16) >= 60)
+    is_std_red = (r >= 160) & (g <= 135) & (b <= 135) & ((r_i16 - g_i16) >= 50)
     is_gold_brown = (r >= 110) & (b <= 135) & ((r_i16 - b_i16) >= 35) & ((r_i16 - g_i16) >= 15)
     theme_border_mask = (is_std_red | is_gold_brown).astype(np.uint8) * 255
 
@@ -407,7 +407,7 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
 
     raw_boxes = []
     kernel = np.ones((5, 5), np.uint8)
-    min_box_w = max(42, int(w_img * 0.08))
+    min_box_w = max(42, int(w_img * 0.035))
     min_box_h = max(25, int(h_img * 0.018))
     max_box_h = max(90, int(h_img * 0.055))
     dedup_tol = max(10, int(w_img * 0.015))
