@@ -253,10 +253,11 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
     with feedback_file_lock:
         feedback_data = _load_feedback_data_unsafe()
 
-    # 构建数据库查询条件：将分词正则下推到 MongoDB，大幅减少拉取到内存的数据量
+    # 构建数据库查询条件：将分词正则与 promotion_rate > 10 均下推到 MongoDB，大幅减少拉取到内存的数据量
     query_cond = {
         "format_status": "success",
         "updated_at": {"$gte": datetime.now(timezone.utc) - timedelta(hours=hours)},
+        "promotion_info.promotion_rate": {"$gt": 10},
     }
     if len(search_terms) == 1:
         query_cond["name"] = {"$regex": re.escape(search_terms[0]), "$options": "i"}
@@ -293,6 +294,17 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
 
         product_id = str(product.get("product_id") or product_url)
         if product_id in feedback_data:
+            continue
+
+        # 内存安全兜底：必须包含 promotion_info 且 promotion_rate > 10
+        raw_promo_info = product.get("promotion_info")
+        if not isinstance(raw_promo_info, dict):
+            continue
+        try:
+            promo_rate_val = float(raw_promo_info.get("promotion_rate", 0))
+            if promo_rate_val <= 10 or not math.isfinite(promo_rate_val):
+                continue
+        except (ValueError, TypeError):
             continue
 
         base_name = product.get("name") or ""
@@ -400,7 +412,8 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
                 "format_info": format_info_copy,
                 "activity_price": round(float(act_price), 2),
                 "is_suspicious": is_suspicious,
-                "_source_api": _source_api
+                "_source_api": _source_api,
+                "promotion_rate": promo_rate_val  # 记录推广比例
             })
 
     logger.info(f"搜索词：[{keyword}]，分词项：{search_terms}，过滤展开后的商品规格数量: {len(filtered_products)}")
@@ -564,6 +577,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
             "saved_price": product["saved_price"],
             "brand": product["brand"] or "",
             "activity_price": product["activity_price"],
+            "promotion_rate": product.get("promotion_rate"),
             "_source_api": product["_source_api"],
             "is_suspicious": product["is_suspicious"],
             "base_unit": product["base_unit"],
@@ -598,6 +612,7 @@ def search_product(keyword: str, min_match_score=10, hours=24, limit=0):
         "dominant_unit": dominant_unit,
         "unit_counts": unit_counts
     }
+
 
 # ============== 商品监控本地 JSON 安全维护与统计逻辑 ==============
 MONITOR_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitored_products.json")
