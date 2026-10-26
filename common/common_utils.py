@@ -51,6 +51,7 @@ def setup_logger(log_dir=r"W:\project\python_project\easy_shop\logs", app_name="
 
     # 按天切割日志
     log_file_path = os.path.join(log_dir, f"{app_name}.log")
+    print(f"[INFO] 日志文件路径: {log_file_path}")
     file_handler = TimedRotatingFileHandler(
         filename=log_file_path,
         when="midnight",

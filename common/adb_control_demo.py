@@ -13,14 +13,15 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import cv2
 from rapidocr_onnxruntime import RapidOCR
+from common.common_utils import read_json, setup_logger
 
 # === 项目内公共依赖 ===
-from common.goods_common_utils import gen_goods_segment_info, setup_logger
+logger = setup_logger(app_name="pdd_automation_adb")
+
+from common.goods_common_utils import gen_goods_segment_info
+
 from common.mongo_db.mongo_base import gen_db_object
 from common.mongo_db.mongo_manager import ProductManager
-from common.common_utils import read_json
-
-logger = setup_logger(app_name="pdd_automation_adb")
 
 # ==========================================
 # ⚙️ 全局配置区
