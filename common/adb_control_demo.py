@@ -323,7 +323,7 @@ def _extract_price_fast(img_bgr, price_anchor, save_path=None):
 
 
 def _parse_detail_page(img_bgr, min_cat_top=None):
-    """验证详情页并一次性解析价格锚点、规格分类、所有 SKU 框及是否完全展开状态（带详细诊断日志）"""
+    """验证详情页并一次性解析价格锚点、规格分类、所有 SKU 框及是否完全展开状态（带详细诊断日志与错误原因）"""
     h_img, w_img = img_bgr.shape[:2]
     scale = max(1.0, w_img / 500.0)
 
@@ -365,7 +365,7 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
             f"[PARSE-WARN] 页面校验未通过: confirm_y={confirm_y}, price_boxes数量={len(price_boxes)} "
             f"(画面尺寸: {w_img}x{h_img})"
         )
-        return False, None, [], False
+        return False, None, [], False, "页面校验未通过(未找到价格或确定按钮)"
 
     price_boxes.sort(key=lambda b: (b[0][1] // max(15, int(h_img * 0.015)), b[0][0]))
     price_anchor, price_init_text = price_boxes[0]
@@ -389,7 +389,6 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
         f"确定按钮Y={confirm_y} | 计算得 sku_top={sku_top}"
     )
 
-    # 三通道掩码切框（浅灰未选框 + 小程序浅粉选中框 + App红框选中框）
     # 三通道掩码切框（浅灰未选框 + 小程序浅粉选中框 + App红框/黑金棕框选中框）
     b, g, r = cv2.split(img_bgr)
     r_i16, g_i16, b_i16 = r.astype(np.int16), g.astype(np.int16), b.astype(np.int16)
@@ -469,7 +468,7 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
 
     if not sku_items:
         logger.info("[PARSE-WARN] 未切出任何 SKU 规格框！")
-        return True, price_anchor, [], is_fully_expanded
+        return True, price_anchor, [], is_fully_expanded, "未切出任何 SKU 规格框"
 
     min_sku_y = min(i["box"][1] for i in sku_items)
     cat_top = max(py + ph, min(sku_top - int(h_img * 0.025), min_sku_y - int(h_img * 0.055)))
@@ -489,7 +488,7 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
     categories.sort(key=lambda c: c["cy"])
     if not categories:
         logger.info(f"[PARSE-WARN] 未识别到任何规格分类名 (cat_top={cat_top})")
-        return True, price_anchor, [], is_fully_expanded
+        return True, price_anchor, [], is_fully_expanded, "未识别到任何规格分类名"
 
     unassigned_skus = []
     for sku in sku_items:
@@ -506,6 +505,10 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
         logger.info(f"[PARSE-WARN] 存在高于首个分类 '{categories[0]['name']}' 的未归属规格框: {unassigned_skus}")
 
     valid_categories = [c for c in categories if c["items"]]
+    if not valid_categories:
+        logger.info("[PARSE-WARN] 所有分类下的规格选项均为空")
+        return True, price_anchor, [], is_fully_expanded, "分类下的有效规格框为空"
+
     for c in valid_categories:
         item_summaries = []
         for s in c["items"]:
@@ -515,10 +518,9 @@ def _parse_detail_page(img_bgr, min_cat_top=None):
             item_summaries.append(f"{s['text']}({status_tag})")
         logger.info(f"[PARSE-CAT] 分类 【{c['name']}】 (cy={c['cy']:.0f}) -> {len(c['items'])} 个选项: {item_summaries}")
 
-    return True, price_anchor, valid_categories, is_fully_expanded
+    return True, price_anchor, valid_categories, is_fully_expanded, ""
 
-
-def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
+def get_pdd_sku_info(bot, id, debug=True, initial_img=None, extra_info=None):
     """
     通过 ADB 截图与点击获取所有有效（非缺货）SKU 规格组合、价格及截图
     支持复用状态机已捕获的首帧高清图 initial_img，并使用异步存图加速遍历
@@ -527,6 +529,8 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
         # 1. 校验是否处于详情规格页（优先复用传入的 initial_img，省去首次重复截屏）
         is_detail, price_anchor, top_categories, current_img = False, None, [], None
         is_fully_expanded = False
+        last_parse_err = ""
+
         for attempt in range(2):
             if attempt == 0 and initial_img is not None:
                 current_img = initial_img
@@ -534,7 +538,8 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
                 current_img = bot.get_screenshot_cv()
 
             if current_img is not None:
-                is_detail, price_anchor, top_categories, is_fully_expanded = _parse_detail_page(current_img)
+                is_detail, price_anchor, top_categories, is_fully_expanded, parse_err = _parse_detail_page(current_img)
+                last_parse_err = parse_err
                 if is_detail and top_categories:
                     break
             if attempt == 0:
@@ -542,7 +547,14 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
                 time.sleep(0.25)
 
         if not is_detail or not top_categories or current_img is None:
-            logger.info("[SKU-ERROR] 初始详情规格页解析失败或分类为空，终止提取")
+            err_msg = last_parse_err or "初始详情规格页解析失败或分类为空"
+            logger.info(f"[SKU-ERROR] {err_msg}，终止提取")
+            if extra_info is not None:
+                extra_info["sku_error"] = err_msg
+                # 命中“未切出任何 SKU 规格框”，设置不可重试标记
+                if "未切出任何 SKU 规格框" in err_msg:
+                    extra_info["no_sku_boxes"] = True
+                    extra_info["force_retry_count"] = 10
             return []
 
         h_img, w_img = current_img.shape[:2]
@@ -562,7 +574,7 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
 
             btm_img = bot.get_screenshot_cv()
             if btm_img is not None:
-                is_detail_btm, _, btm_categories, _ = _parse_detail_page(btm_img, min_cat_top=first_cat_top)
+                is_detail_btm, _, btm_categories, _, _ = _parse_detail_page(btm_img, min_cat_top=first_cat_top)
 
                 if is_detail_btm and btm_categories:
                     for btm_cat in btm_categories:
@@ -605,7 +617,7 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
             current_img = bot.get_screenshot_cv()
             if current_img is None:
                 return []
-            is_detail, price_anchor, categories, _ = _parse_detail_page(current_img, min_cat_top=first_cat_top)
+            is_detail, price_anchor, categories, _, _ = _parse_detail_page(current_img, min_cat_top=first_cat_top)
             if not is_detail or not categories:
                 logger.info("[SKU-ERROR] 上滑复位后无法解析顶部规格分类")
                 return []
@@ -614,10 +626,6 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
 
         cat_names = [c["name"] for c in categories]
         all_combos = list(itertools.product(*(c["items"] for c in categories)))
-        # # 超过 60 种组合大概率是 OCR 误切了分类或者是异常多规格，直接跳过保护线程
-        # if len(all_combos) > 60:
-        #     logger.warning(f"[SKU-WARN] 规格组合超标 ({len(all_combos)} > 60)，放弃提取以防阻塞")
-        #     return []
         logger.info(f"[SKU-TRAVERSE] 准备遍历规格维度 {cat_names}，共计 {len(all_combos)} 种笛卡尔积组合")
         results = []
 
@@ -649,7 +657,6 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
                         int(by + bh // 2),
                         desc=f"选择规格 [{cat_name}: {target_sku['text']}]"
                     )
-                    # ADB 进程启动自带约 80ms 通信延迟，此处仅需微等 0.06s 即可完成本地红框渲染
                     time.sleep(0.06)
                     current_img = bot.get_screenshot_cv()
                     if current_img is None:
@@ -678,7 +685,6 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
                 if debug:
                     screenshot_path = os.path.join(SKU_DEBUG_DIR, f"{id}_{idx}.png")
                     price_screenshot_path = os.path.join(SKU_DEBUG_DIR, f"{id}_{idx}_price.png")
-                    # 丢入后台线程池异步写盘，0 阻塞主线程
                     _img_save_executor.submit(_async_save_png, current_img.copy(), screenshot_path)
 
                 price_text = _extract_price_fast(
@@ -709,7 +715,6 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None):
     except Exception as e:
         logger.info(f"[SKU-FATAL] get_pdd_sku_info 发生未捕获异常: {e}")
         return []
-
 
 # ==========================================
 # 🤖 RPA 核心引擎 (极速 Raw 截屏 + 统一导航状态机版)
@@ -907,7 +912,7 @@ class PddAdbBot:
                 buf.tofile(save_path)
 
     def process_single_goods(self, promotion_url, goods_id, index, consecutive_successes=0, ocr=ocr_fast):
-        extra_info = {"is_group": False, "force_retry_count": None}
+        extra_info = {"is_group": False, "force_retry_count": None, "no_sku_boxes": False}
 
         # --- 步骤 1：极速重置 Via 浏览器并一步注入链接 ---
         stop_app(VIA_PACKAGE)
@@ -942,7 +947,6 @@ class PddAdbBot:
         buy_click_count = 0
         CLICK_RETRY_INTERVAL = 3.5  # 提升重试点击间隔，严防误下单
 
-        # 中间页防重连击冷却锁
         last_mid_click_time = 0.0
         MID_CLICK_COOLDOWN = 5.0
         CONFIRM_KEYWORDS = ("确定", "再来一单")
@@ -950,7 +954,6 @@ class PddAdbBot:
         last_pkg_check_time = time.time()
         final_img = None
 
-        # 核心优化 1：放宽全局时间预算至 26.0s，防止网页中间页慢拖垮详情页
         while time.time() - state_start_time < 26.0:
             try:
                 # 1. 前台包名轻量探测与 Via 防卡死
@@ -1038,10 +1041,9 @@ class PddAdbBot:
                         last_buy_click_time = time.time()
                         self.click_relative(pct_x, pct_y, f"动态点击购买 (第 {buy_click_count} 次)")
 
-                        # 🔒 核心优化 2：专有防误触静默观测期（严禁二次点击，绝不连击误下单）
                         observe_start = time.time()
                         while time.time() - observe_start < 3.5:
-                            time.sleep(0.35)  # 留出弹窗上滑动效渲染时间
+                            time.sleep(0.35)
                             chk_cv = self.get_screenshot_cv()
                             if chk_cv is None:
                                 continue
@@ -1058,7 +1060,6 @@ class PddAdbBot:
                                     f"[INFO] ✅ SKU 面板已完全展开并锁定 (安全观测耗时: {time.time() - observe_start:.2f}s)")
                                 break
 
-                        # 面板已展开则直接跳出大循环进行解析
                         if sku_ready:
                             break
                         continue
@@ -1123,11 +1124,13 @@ class PddAdbBot:
 
         # --- 步骤 4：遍历提取所有 SKU 规格组合及价格 ---
         logger.info(f"[TASK] [{index}] 步骤 3/3: 正在极速遍历提取所有 SKU 规格组合与价格...")
-        sku_info = get_pdd_sku_info(bot=self, id=goods_id, debug=DEBUG_MODE, initial_img=final_img)
+        sku_info = get_pdd_sku_info(bot=self, id=goods_id, debug=DEBUG_MODE, initial_img=final_img,
+                                    extra_info=extra_info)
         if not sku_info:
             path = os.path.join(ERROR_DIR, f"{goods_id}.png")
             self.save_error_screenshot(path)
-            return False, [], "未能提取到有效的SKU规格组合数据", extra_info
+            err_msg = extra_info.get("sku_error") or "未能提取到有效的SKU规格组合数据"
+            return False, [], err_msg, extra_info
 
         logger.info(f"[TASK] [{index}] 🎯 成功提取 {len(sku_info)} 个规格组合。")
 
@@ -1136,6 +1139,7 @@ class PddAdbBot:
             logger.info("[INFO] 循环连轴转达到 500 次，重启拼多多客户端释放资源。")
 
         return True, sku_info, "", extra_info
+
 # ==========================================
 # 🚦 任务调度引擎 (直接对接数据库)
 # ==========================================
@@ -1216,6 +1220,10 @@ def batch_runner(product_list):
                     consecutive_successes += 1
                     consecutive_failures = 0
                 else:
+                    # 判断是否为不可重试的致命状态（未切出任何 SKU 框、不支持配送等）
+                    force_retry = extra_info.get("force_retry_count")
+                    is_fatal_sku_error = extra_info.get("no_sku_boxes") or (force_retry is not None and force_retry >= 10)
+
                     update_data = {
                         "platform": product.get("platform", "pdd"),
                         "product_id": product["product_id"],
@@ -1223,10 +1231,14 @@ def batch_runner(product_list):
                         "sku_error": error_msg or "获取SKU列表为空",
                         "sku_updated_at": datetime.now(timezone.utc),
                     }
+
+                    # 核心改动：不再重试的商品，显式将 need_update_sku 置为 False，彻底移出候选查询
+                    if is_fatal_sku_error:
+                        update_data["need_update_sku"] = False
+
                     if source_api_update is not None:
                         update_data["_source_api"] = source_api_update
 
-                    force_retry = extra_info.get("force_retry_count")
                     if force_retry is not None:
                         update_data["sku_retry_count"] = force_retry
                         inc_dict = {}
@@ -1239,7 +1251,7 @@ def batch_runner(product_list):
                         increments=inc_dict,
                         upsert=False
                     )
-                    logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg}")
+                    logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg} (已调整数据库状态，标记为不再重试)")
 
                     restart_app(PDD_PACKAGE)
 
@@ -1292,7 +1304,6 @@ def batch_runner(product_list):
         f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}"
     )
     logger.info("=" * 50)
-
 
 # ==========================================
 # 📊 性价比计算与商品筛选核心模块

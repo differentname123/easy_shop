@@ -653,6 +653,7 @@ def run_promotion_round(product_manager):
     log("%s | 成功/失败/跳过: [%d/%d/%d] | 耗时: [%.2f 秒] | 失败摘要: [%s] | 跳过 ID: [%s]",
         message, counts["success"], failed, skipped, time.monotonic() - started,
         detail, ", ".join(map(str, skipped_ids)) or "无")
+    time.sleep(3600)
 
     return counts
 
