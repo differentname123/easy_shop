@@ -1597,8 +1597,8 @@ if __name__ == "__main__":
                     confirmed_products=confirmed_results,
                     target_configs=target_configs,
                     max_top=10,  # 原 top_n=1 改为期望的最大截取上限（如 10 或 5）
-                    ratio=0.01,  # 0.01 比例，达标 134 个时 134 * 0.01 -> ceil -> 2 个
-                    benchmark_rank=5,
+                    ratio=1,  # 0.01 比例，达标 134 个时 134 * 0.01 -> ceil -> 2 个
+                    benchmark_rank=500,
                     only_top_unit=False
                 )
 
