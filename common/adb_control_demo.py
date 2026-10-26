@@ -1632,32 +1632,39 @@ if __name__ == "__main__":
                     "sku_status": 1,
                     "sku_retry_count": 1,
                     "promotion_url": 1,
-                    "_source_api": 1
+                    "promotion_info": 1,
+                    "_source_api": 1,
                 }
 
+                # 1. 待更新 SKU 候选集
                 candidate_results = get_data_updated_within_24h(
                     hours=24,
                     limit=0,
                     extra_query={
                         "format_status": "success",
                         "need_update_sku": True,
+                        # 新增佣金率筛选
+                        "promotion_info.promotion_rate": {"$gt": 10},
                         "$or": [
                             {"sku_retry_count": {"$lte": 3}},
-                            {"sku_retry_count": {"$exists": False}}
-                        ]
+                            {"sku_retry_count": {"$exists": False}},
+                        ],
                     },
-                    projection=common_projection
+                    projection=common_projection,
                 )
 
+                # 2. 已确认有效数据集
                 confirmed_results = get_data_updated_within_24h(
                     hours=72,
                     limit=0,
                     extra_query={
                         "format_status": "success",
                         "sku_info": {"$exists": True, "$ne": []},
-                        "_source_api": {"$exists": True, "$ne": "group"}
+                        "_source_api": {"$exists": True, "$ne": "group"},
+                        # 新增佣金率筛选
+                        "promotion_info.promotion_rate": {"$gt": 10},
                     },
-                    projection=common_projection
+                    projection=common_projection,
                 )
 
                 filtered_results = filter_products_by_cost_effectiveness(
