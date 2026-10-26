@@ -1393,9 +1393,11 @@ def filter_products_by_cost_effectiveness(
         for item in candidate_products:
             if not bool(item.get("need_update_sku")):
                 continue
-            if (item.get("sku_retry_count") or 0) > 3:
-                continue
 
+            retry_count = item.get("sku_retry_count") or 0
+            # 核心修改：只放行大于3且小于6的商品，其余跳过
+            if not (3 < retry_count < 6):
+                continue
             item_name = (item.get("name") or "").lower()
             if not words or not item_name:
                 continue
@@ -1565,17 +1567,14 @@ if __name__ == "__main__":
 
                 }
 
-                # 1. 查询 12 小时内待抓取的候选商品 (need_update_sku 为 True)
+                # 1. 查询待抓取的二次兜底候选商品 (重试次数大于3且小于6，即 retry=4, 5)
                 candidate_results = get_data_updated_within_24h(
                     hours=24,
                     limit=0,
                     extra_query={
                         "format_status": "success",
                         "need_update_sku": True,
-                        "$or": [
-                            {"sku_retry_count": {"$lte": 3}},
-                            {"sku_retry_count": {"$exists": False}}
-                        ]
+                        "sku_retry_count": {"$gt": 3, "$lt": 6}  # 核心修改：只查大于3且小于6的
                     },
                     projection=common_projection
                 )

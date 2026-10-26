@@ -551,8 +551,8 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None, extra_info=None):
             logger.info(f"[SKU-ERROR] {err_msg}，终止提取")
             if extra_info is not None:
                 extra_info["sku_error"] = err_msg
-                # 命中“未切出任何 SKU 规格框”，设置不可重试标记
-                if "未切出任何 SKU 规格框" in err_msg:
+                # 【严格约束】：仅在已确认打开SKU面板(is_detail=True)但确实切不出规格框时，才标记致命不再重试
+                if is_detail and "未切出任何 SKU 规格框" in err_msg:
                     extra_info["no_sku_boxes"] = True
                     extra_info["force_retry_count"] = 10
             return []
@@ -715,7 +715,6 @@ def get_pdd_sku_info(bot, id, debug=True, initial_img=None, extra_info=None):
     except Exception as e:
         logger.info(f"[SKU-FATAL] get_pdd_sku_info 发生未捕获异常: {e}")
         return []
-
 # ==========================================
 # 🤖 RPA 核心引擎 (极速 Raw 截屏 + 统一导航状态机版)
 # ==========================================
@@ -1220,9 +1219,9 @@ def batch_runner(product_list):
                     consecutive_successes += 1
                     consecutive_failures = 0
                 else:
-                    # 判断是否为不可重试的致命状态（未切出任何 SKU 框、不支持配送等）
+                    # 【核心区分】：仅且仅当明确是“打开了SKU弹窗但未切出任何规格框”才彻底弃用
+                    is_fatal_sku_error = bool(extra_info.get("no_sku_boxes"))
                     force_retry = extra_info.get("force_retry_count")
-                    is_fatal_sku_error = extra_info.get("no_sku_boxes") or (force_retry is not None and force_retry >= 10)
 
                     update_data = {
                         "platform": product.get("platform", "pdd"),
@@ -1232,18 +1231,23 @@ def batch_runner(product_list):
                         "sku_updated_at": datetime.now(timezone.utc),
                     }
 
-                    # 核心改动：不再重试的商品，显式将 need_update_sku 置为 False，彻底移出候选查询
                     if is_fatal_sku_error:
+                        # 彻底关闭重试，从待抓取池中移除
                         update_data["need_update_sku"] = False
+                        update_data["sku_retry_count"] = force_retry if force_retry is not None else 10
+                        inc_dict = {}
+                        log_desc = "(已调整数据库 need_update_sku=False，彻底跳过不再重试)"
+                    else:
+                        # 普通故障（进入详情页失败、中间页超时等）：保持 need_update_sku，仅累加重试计数
+                        if force_retry is not None:
+                            update_data["sku_retry_count"] = force_retry
+                            inc_dict = {}
+                        else:
+                            inc_dict = {"sku_retry_count": 1}
+                        log_desc = "(已累加重试次数 sku_retry_count + 1，允许后续批次继续重试)"
 
                     if source_api_update is not None:
                         update_data["_source_api"] = source_api_update
-
-                    if force_retry is not None:
-                        update_data["sku_retry_count"] = force_retry
-                        inc_dict = {}
-                    else:
-                        inc_dict = {"sku_retry_count": 1}
 
                     product_manager.update(
                         update_data,
@@ -1251,7 +1255,7 @@ def batch_runner(product_list):
                         increments=inc_dict,
                         upsert=False
                     )
-                    logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg} (已调整数据库状态，标记为不再重试)")
+                    logger.info(f"[ERROR] ❌ 处理失败 ({goods_id}) -> {error_msg} {log_desc}")
 
                     restart_app(PDD_PACKAGE)
 
@@ -1304,7 +1308,6 @@ def batch_runner(product_list):
         f"[SYSTEM] 🎉 批量任务完毕！ 成功: {batch_counts['success']} | 跳过: {batch_counts['skipped']} | 失败: {batch_counts['failed']}"
     )
     logger.info("=" * 50)
-
 # ==========================================
 # 📊 性价比计算与商品筛选核心模块
 # ==========================================
