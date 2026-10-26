@@ -1,13 +1,68 @@
 import math
+import threading
 import time
 from pathlib import Path
-from common.common_utils import read_file_to_str, setup_logger, string_to_object
+from common.common_utils import (
+    read_file_to_str,
+    read_json,
+    save_json,
+    setup_logger,
+    string_to_object,
+)
 from common.model_api import generate_content
 
 logger = setup_logger(app_name="goods_format")
 
 SEGMENT_PROMPT_FILE_PATH = Path(__file__).resolve().parents[1] / "prompt" / "商品分词.txt"
 LLM_MAX_RETRIES = 3
+
+# 本地缓存文件路径及并发安全控制
+SEGMENT_CACHE_FILE_PATH = Path(__file__).resolve().parent / "goods_segment_cache.json"
+_CACHE_LOCK = threading.Lock()
+_SEGMENT_CACHE = {}
+_CACHE_MTIME = 0.0
+
+
+def _load_cache_safely():
+    """使用公共 read_json 安全读取本地缓存（带外部修改/多进程感知）。"""
+    global _SEGMENT_CACHE, _CACHE_MTIME
+    try:
+        if SEGMENT_CACHE_FILE_PATH.exists():
+            mtime = SEGMENT_CACHE_FILE_PATH.stat().st_mtime
+            if mtime != _CACHE_MTIME:
+                data = read_json(str(SEGMENT_CACHE_FILE_PATH))
+                _SEGMENT_CACHE = data if isinstance(data, dict) else {}
+                _CACHE_MTIME = mtime
+        else:
+            _SEGMENT_CACHE = {}
+            _CACHE_MTIME = 0.0
+    except Exception as exc:
+        logger.warning("⚠️ [商品分词/缓存] 读取缓存文件异常: %s", exc)
+        if _SEGMENT_CACHE is None:
+            _SEGMENT_CACHE = {}
+    return _SEGMENT_CACHE
+
+
+def _get_cached_segment(name: str):
+    """从本地缓存获取分词结果。"""
+    with _CACHE_LOCK:
+        cache = _load_cache_safely()
+        return cache.get(name)
+
+
+def _save_cached_segment(name: str, words: list):
+    """使用公共 save_json 安全更新并持久化本地缓存。"""
+    global _CACHE_MTIME
+    with _CACHE_LOCK:
+        cache = _load_cache_safely()
+        cache[name] = words
+        try:
+            SEGMENT_CACHE_FILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            save_json(str(SEGMENT_CACHE_FILE_PATH), cache)
+            if SEGMENT_CACHE_FILE_PATH.exists():
+                _CACHE_MTIME = SEGMENT_CACHE_FILE_PATH.stat().st_mtime
+        except Exception as exc:
+            logger.error("❌ [商品分词/缓存] 写入缓存文件失败: %s", exc)
 
 
 def _is_clean_string(value):
@@ -41,13 +96,13 @@ def check_segment_info(segment_dict):
     return True, cleaned_results, ""
 
 
-
 def gen_goods_segment_info(
         name,
         prompt_text=None,
         top_key=3,
         model="qwen/qwen3.8-27b",
         preset_model_group=None,
+        re_segment=False,
 ):
     """提取商品名称中权重最高的前 top_key 个核心词，直接返回字符串列表。
 
@@ -63,9 +118,15 @@ def gen_goods_segment_info(
 
     clean_name = name.strip()
     fallback = [clean_name]
-    if len(clean_name) <=3:
+    if len(clean_name) <= 3:
         return fallback  # 对于过短的商品名，直接返回原词，避免模型输出不稳定
 
+    # 缓存命中校验：若不强制重新分词，优先读取本地缓存
+    if not re_segment:
+        cached_words = _get_cached_segment(clean_name)
+        if cached_words is not None and isinstance(cached_words, list):
+            top_words = cached_words[:top_key] if (top_key and top_key > 0) else cached_words
+            return top_words if top_words else fallback
 
     # 2. 读取或复用外部传入的提示词文本
     if prompt_text is None:
@@ -117,6 +178,9 @@ def gen_goods_segment_info(
 
             # 4.3 按权重从大到小排序并截取 top_key 个
             sorted_words = sorted(cleaned_results, key=cleaned_results.get, reverse=True)
+            if sorted_words:
+                _save_cached_segment(clean_name, sorted_words)
+
             top_words = sorted_words[:top_key] if (top_key and top_key > 0) else sorted_words
 
             return top_words if top_words else fallback
