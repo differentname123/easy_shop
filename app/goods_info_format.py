@@ -823,7 +823,7 @@ if __name__ == "__main__":
     # 可以通过注释掉下面的某一行，非常灵活地控制启停哪个任务
     tasks = [
         format_task,
-        promotion_task
+        # promotion_task
     ]
 
     threads = []
