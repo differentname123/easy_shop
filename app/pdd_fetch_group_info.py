@@ -704,7 +704,7 @@ def web_search_intercept_task():
                     if last_time_str:
                         try:
                             last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=bj_tz)
-                            if (now_bj - last_time).total_seconds() < 2 * 3600:
+                            if (now_bj - last_time).total_seconds() < 4 * 3600:
                                 continue
                         except ValueError:
                             pass
