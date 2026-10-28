@@ -73,5 +73,5 @@ def fetch_taobao_uland(url):
 
 
 if __name__ == "__main__":
-    target_url = "https://s.click.taobao.com/kZr1tDi"
+    target_url = "https://s.click.taobao.com/byfKrDi"
     fetch_taobao_uland(target_url)
