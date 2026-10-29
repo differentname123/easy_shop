@@ -9,7 +9,7 @@
 1. 定时任务调度：每 1 小时自动运行一次，使用固定配置抓取。
 2. 调用活动商品列表接口，按「近2h销量」排序拉取商品。
 3. 对每个商品调用好单库 ratesurl 转链接口，生成「二合一链接」和「淘口令」。
-4. 访问商品详情页，解析右侧第 1 个推广群的社群实拍图与文案；缺失则回退到主图文案。
+4. 访问商品社群接口，解析右侧第 1 个推广群的社群实拍图与文案（保留原始图文顺序）；缺失则回退到主图文案。
 5. 下载商品素材图片到 material/ 文件夹。
 6. 每成功拉取并处理完一个商品，立即同步保存至汇总 JSON 文件（data/all_items.json）。
 7. 支持断点续跑：若商品已存在于汇总 JSON 中且数据完整，则自动跳过。
@@ -53,6 +53,10 @@ REQUEST_GAP = 0.4  # 每个商品处理间隔（秒），礼貌限速避免触�
 LIST_API = "https://www.haodanku.com/HolidayActivity/weal_list"
 # 商品详情页地址（用于提取右侧「推广内容」第一个社群的实拍图和文案）
 ITEM_DETAIL_URL = "https://www.haodanku.com/Item/details"
+# 商品信息接口（用于换取社群素材接口所需的 itemid）
+ITEM_INFO_API = "https://www.haodanku.com/detail/item_info"
+# 社群素材接口（获取右侧各推广群素材 JSON）
+ITEM_MATERIAL_API = "https://www.haodanku.com/ItemExtension/item_material"
 # 好单库官方「淘联商品转链」接口
 RATES_API = "http://v3.api.haodanku.com/ratesurl"
 
@@ -183,8 +187,8 @@ class HaoDanKuConverter:
 
 class CommunityMaterialExtractor:
     """
-    从好单库商品详情页（/Item/details?id={hdk_id}）提取右侧「推广内容」
-    第一个推广群（最新群）的实拍图片列表与推广文案。
+    从好单库社群素材接口及详情页提取右侧「推广内容」
+    第一个推广群（最新群）的实拍图片列表与推广文案，严格保留原始顺序。
     """
 
     @staticmethod
@@ -192,7 +196,7 @@ class CommunityMaterialExtractor:
         """规范化图片 URL，去除好单库缩略图后缀以获取高清原图。"""
         if not url:
             return ""
-        url = html_lib.unescape(url.strip())
+        url = html_lib.unescape(str(url).strip())
         if url.startswith("//"):
             url = "https:" + url
         if not url.startswith(("http://", "https://")):
@@ -232,15 +236,23 @@ class CommunityMaterialExtractor:
     @staticmethod
     def _clean_copy_text(raw_text: str, replacement_taoword: str = "", replacement_url: str = "") -> str:
         """
-        清理从详情页提取的社群文案：
+        清理从接口或页面提取的社群文案：
         - 还原 HTML 实体，保留换行与 emoji；
         - 若文案中包含原群残留的淘口令占位或下单链接，可按需替换为自己的淘口令/链接。
         """
-        if not raw_text:
+        if not raw_text or not isinstance(raw_text, str):
             return ""
-        text = re.sub(r"<br\s*/?>", "\n", raw_text, flags=re.IGNORECASE)
-        text = re.sub(r"<[^>]+>", "", text)
+        soup = BeautifulSoup(raw_text, "html.parser")
+        for tag in soup.find_all(["script", "style"]):
+            tag.decompose()
+        for br in soup.find_all("br"):
+            br.replace_with("\n")
+        for tag in soup.find_all(["p", "div", "li", "blockquote", "pre"]):
+            tag.insert_before("\n")
+            tag.insert_after("\n")
+        text = soup.get_text("", strip=False)
         text = html_lib.unescape(text)
+
         lines = [line.strip() for line in text.splitlines()]
         cleaned_lines = []
         for line in lines:
@@ -259,6 +271,90 @@ class CommunityMaterialExtractor:
 
         return result
 
+    @classmethod
+    def extract_from_api_data(
+            cls,
+            groups: list,
+            taoword: str = "",
+            two_in_one_url: str = "",
+            max_images: int = 5,
+    ) -> Tuple[List[str], str, str, List[dict]]:
+        """
+        从 /ItemExtension/item_material 返回的社群列表中提取第一个推广群的：
+        (图片URL列表, 社群推广文案, 推广群名称, 有序素材列表)
+        截断规则：最多保留 5 张社群图片，文案也只保留截止到第 5 张图片所在块的文案。
+        """
+        if not isinstance(groups, list) or not groups:
+            return [], "", "", []
+
+        group = groups[0]
+        if not isinstance(group, dict):
+            return [], "", "", []
+
+        group_name = str(group.get("name") or "").strip()
+        content = group.get("content") or []
+        if not isinstance(content, list):
+            return [], "", "", []
+
+        images: List[str] = []
+        texts: List[str] = []
+        ordered_material: List[dict] = []
+        seq = 1
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+
+            # 若此前已集满 5 张图，后续整个素材块（包括多余的后续文案）彻底停止读取
+            if len(images) >= max_images:
+                break
+
+            # 1. 块内图片（严格按原顺序，最多提取满 max_images 张）
+            block_images = block.get("image") or []
+            if isinstance(block_images, list):
+                for img_url in block_images:
+                    clean_url = cls._clean_img_url(str(img_url))
+                    if clean_url:
+                        images.append(clean_url)
+                        ordered_material.append({
+                            "sequence": seq,
+                            "type": "image",
+                            "url": clean_url,
+                            "local_path": None,
+                        })
+                        seq += 1
+                        if len(images) >= max_images:
+                            break
+
+            # 2. 块例文案 show_text（保留截止到第 5 张图所在块的文案）
+            raw_text = block.get("show_text") or ""
+            if raw_text:
+                clean_text = cls._clean_copy_text(raw_text, taoword, two_in_one_url)
+                if clean_text:
+                    texts.append(clean_text)
+                    ordered_material.append({
+                        "sequence": seq,
+                        "type": "text",
+                        "content": clean_text,
+                        "text": clean_text,
+                    })
+                    seq += 1
+
+            # 3. 视频素材（若有）
+            videos = block.get("video") or []
+            if isinstance(videos, list):
+                for v_url in videos:
+                    v_url_str = str(v_url).strip()
+                    if v_url_str:
+                        ordered_material.append({
+                            "sequence": seq,
+                            "type": "video",
+                            "url": v_url_str,
+                        })
+                        seq += 1
+
+        copy_text = "\n\n".join(texts).strip()
+        return images, copy_text, group_name, ordered_material
     @classmethod
     def extract_from_html(
             cls,
@@ -553,34 +649,75 @@ class ActivityCrawler:
 
     # ---------------- 详情页社群素材抓取 ----------------
     def fetch_community_material(
-            self, hdk_id: str, taoword: str = "", two_in_one_url: str = ""
-    ) -> Tuple[List[str], str, str]:
-        """提取右侧「推广内容」第一个推广群（最新）的图片 URL 列表、文案与群名称。"""
-        detail_url = f"{ITEM_DETAIL_URL}?id={hdk_id}"
+            self, hdk_id: str, taoword: str = "", two_in_one_url: str = "", fallback_itemid: str = ""
+    ) -> Tuple[List[str], str, str, List[dict]]:
+        """提取右侧「推广内容」第一个推广群（最新）的图片 URL 列表、文案、群名称与按原始顺序排列的素材项。"""
         headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Referer": f"https://www.haodanku.com/Activity/index?id={ACTIVITY_ID}",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Referer": f"{ITEM_DETAIL_URL}?id={hdk_id}",
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/plain, */*",
         }
-        last_err = None
+
+        # 1. 优先调用 /detail/item_info 获取素材接口所必须的 itemid
+        api_item_id = fallback_itemid
         for attempt in range(1, MAX_RETRY + 1):
             try:
-                resp = self.session.get(detail_url, headers=headers, timeout=15)
-                resp.raise_for_status()
+                resp = self.session.get(ITEM_INFO_API, params={"id": hdk_id}, headers=headers, timeout=15)
+                if resp.status_code == 200:
+                    info_json = resp.json()
+                    if str(info_json.get("status")) == "1" and isinstance(info_json.get("data"), dict):
+                        fetched_id = info_json["data"].get("itemid")
+                        if fetched_id:
+                            api_item_id = str(fetched_id).strip()
+                            break
+            except Exception as e:
+                logger.warning("[商品信息获取重试] id=%s 第 %d/%d 次失败: %s", hdk_id, attempt, MAX_RETRY, e)
+                time.sleep(1 * attempt)
+
+        # 2. 调用 /ItemExtension/item_material 获取官方社群素材接口数据
+        if api_item_id:
+            for attempt in range(1, MAX_RETRY + 1):
+                try:
+                    resp = self.session.get(ITEM_MATERIAL_API, params={"itemid": api_item_id}, headers=headers, timeout=15)
+                    if resp.status_code == 200:
+                        mat_json = resp.json()
+                        if str(mat_json.get("code")) == "200":
+                            groups = mat_json.get("data")
+                            if isinstance(groups, list) and groups:
+                                return CommunityMaterialExtractor.extract_from_api_data(
+                                    groups, taoword=taoword, two_in_one_url=two_in_one_url
+                                )
+                except Exception as e:
+                    logger.warning("[社群素材获取重试] itemid=%s 第 %d/%d 次失败: %s", api_item_id, attempt, MAX_RETRY, e)
+                    time.sleep(1 * attempt)
+
+        # 3. 若接口无数据，回退尝试页面 HTML 提取作为保底方案
+        try:
+            detail_url = f"{ITEM_DETAIL_URL}?id={hdk_id}"
+            resp = self.session.get(detail_url, headers=headers, timeout=15)
+            if resp.status_code == 200:
                 resp.encoding = resp.apparent_encoding or "utf-8"
                 imgs, copy_txt, group_name = CommunityMaterialExtractor.extract_from_html(
                     resp.text, taoword=taoword, two_in_one_url=two_in_one_url
                 )
-                return imgs, copy_txt, group_name
-            except Exception as e:
-                last_err = e
-                logger.warning(
-                    "[详情页重试] id=%s 第 %d/%d 次失败: %s",
-                    hdk_id, attempt, MAX_RETRY, e,
-                )
-                time.sleep(1 * attempt)
+                if imgs or copy_txt:
+                    ordered = []
+                    seq_i = 1
+                    for u in imgs:
+                        ordered.append({"sequence": seq_i, "type": "image", "url": u, "local_path": None})
+                        seq_i += 1
+                    if copy_txt:
+                        ordered.append({"sequence": seq_i, "type": "text", "content": copy_txt, "text": copy_txt})
+                    return imgs, copy_txt, group_name, ordered
+        except Exception as e:
+            logger.warning("[详情页HTML解析重试失败] id=%s: %s", hdk_id, e)
 
-        logger.warning("[详情页获取失败] id=%s: %s", hdk_id, last_err)
-        return [], "", ""
+        return [], "", "", []
 
     # ---------------- 素材下载 ----------------
     @staticmethod
@@ -615,10 +752,11 @@ class ActivityCrawler:
         return local_path
 
     # ---------------- 单个商品处理 ----------------
+
     def process_item(self, item: dict) -> str:
         """
         处理单个商品，返回状态：ok / skip / fail。
-        每成功处理一个商品，即刻同步保存到汇总 JSON 中。
+        社群素材与官方图/推荐语并列拉取，互不顶替，每处理完一个商品立即同步持久化。
         """
         raw_id = item.get("id")
         itemid = (item.get("itemid") or "").strip()
@@ -632,14 +770,14 @@ class ActivityCrawler:
         record_id = str(raw_id).strip()
         general_index = item.get("general_index")
 
-        # 断点续跑：只在汇总 JSON 中核查是否已存在且数据完整
+        # 断点续跑：只在汇总 JSON 中核查是否已存在且并列字段完整
         if not self.force:
             existing = self.all_items_map.get(record_id)
             if (
                     isinstance(existing, dict)
                     and existing.get("two_in_one_url")
-                    and "material_images" in existing
-                    and "general_index" in existing
+                    and "ordered_material" in existing
+                    and "item_images" in existing
             ):
                 logger.info(
                     "[已处理跳过] id=%s (itemid=%s) %s",
@@ -658,56 +796,67 @@ class ActivityCrawler:
             logger.error("[商品处理失败] id=%s (itemid=%s): %s", record_id, itemid, conv.get("msg"))
             return "fail"
 
-        # 2) 详情页社群素材抓取
-        comm_imgs, comm_copy, comm_group = self.fetch_community_material(
+        # 2) 并列拉取 A：社群推广素材（最多 5 张图及截止文案）
+        comm_imgs, comm_copy, comm_group, ordered_material = self.fetch_community_material(
             hdk_id=record_id,
             taoword=conv["taoword"] or "",
             two_in_one_url=conv["two_in_one_url"] or "",
+            fallback_itemid=itemid,
         )
 
-        if comm_imgs or comm_copy:
-            material_source = "community_first_group"
-            logger.info(
-                "[社群素材命中] id=%s | 推广群: %s | 社群图: %d 张",
-                record_id, comm_group or "第1个推广群", len(comm_imgs),
-            )
-        else:
-            material_source = "official_fallback"
-            logger.info(
-                "[社群素材为空] id=%s 详情页暂无社群推广群素材，回退使用列表页主图与推荐语",
-                record_id,
-            )
-
-        # 3) 聚合图片并下载
-        img_urls = list(comm_imgs)
-        if not img_urls:
-            if item.get("itempic"):
-                img_urls.append(item["itempic"])
-            if item.get("images"):
-                img_urls.extend([u for u in item["images"].split(",") if u.strip()])
-
-        seen, uniq_urls = set(), []
-        for u in img_urls:
+        seen_comm, uniq_comm_urls = set(), []
+        for u in comm_imgs:
             u = self._normalize_url(u)
-            if u and u not in seen:
-                seen.add(u)
-                uniq_urls.append(u)
+            if u and u not in seen_comm:
+                seen_comm.add(u)
+                uniq_comm_urls.append(u)
+                if len(uniq_comm_urls) >= 5:
+                    break
 
-        local_paths = []
-        for i, u in enumerate(uniq_urls, start=1):
+        url_to_comm_path = {}
+        comm_local_paths = []
+        for i, u in enumerate(uniq_comm_urls, start=1):
             try:
-                local_paths.append(self._download_image(u, record_id, i))
+                # 文件名标识为 _comm_，与官方主图区分
+                l_path = self._download_image(u, f"{record_id}_comm", i)
+                comm_local_paths.append(l_path)
+                url_to_comm_path[u] = l_path
             except Exception as e:
-                logger.warning("[图片下载失败] id=%s -> %s: %s", record_id, u, e)
+                logger.warning("[社群图片下载失败] id=%s -> %s: %s", record_id, u, e)
 
-        # 4) 确定文案
-        real_content = (
-                comm_copy.strip()
-                or (item.get("itemdesc") or "").strip()
-                or (item.get("itemtitle") or item.get("itemshorttitle") or "").strip()
-        )
+        # 回填有序素材列表中的本地路径
+        for entry in ordered_material:
+            if entry.get("type") == "image":
+                entry["local_path"] = url_to_comm_path.get(entry.get("url"))
 
-        # 5) 组装记录
+        # 3) 并列拉取 B：官方主图与推荐语（独立下载与保存，不被社群素材顶替）
+        item_desc = (item.get("itemdesc") or "").strip()
+
+        official_imgs = []
+        if item.get("itempic"):
+            official_imgs.append(item["itempic"])
+        if item.get("images"):
+            official_imgs.extend([u for u in item["images"].split(",") if u.strip()])
+
+        seen_item, uniq_item_urls = set(), []
+        for u in official_imgs:
+            u = self._normalize_url(u)
+            if u and u not in seen_item:
+                seen_item.add(u)
+                uniq_item_urls.append(u)
+                if len(uniq_item_urls) >= 5:
+                    break
+
+        item_local_paths = []
+        for i, u in enumerate(uniq_item_urls, start=1):
+            try:
+                # 文件名标识为 _item_，代表商品主图/轮播图
+                l_path = self._download_image(u, f"{record_id}_item", i)
+                item_local_paths.append(l_path)
+            except Exception as e:
+                logger.warning("[官方主图下载失败] id=%s -> %s: %s", record_id, u, e)
+
+        # 4) 组装记录（两组素材并列存放，互不覆盖）
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
         record = {
             "id": record_id,  # 商品唯一标识（好单库 ID）
@@ -716,11 +865,21 @@ class ActivityCrawler:
             "item_title": item.get("itemtitle"),
             "two_in_one_url": conv["two_in_one_url"],  # 转换后的二合一链接
             "taoword": conv["taoword"],  # 淘口令
-            "real_content": real_content,  # 社群推广文案
+
+            # ===== 1. 社群素材区（独立字段） =====
             "community_group": comm_group,  # 推广群名称
-            "material_source": material_source,  # 素材来源
-            "material_images": local_paths,  # 本地图片路径
-            "source_image_urls": uniq_urls,  # 原图片 URL
+            "community_content": comm_copy,  # 社群推广文案
+            "community_images": comm_local_paths,  # 社群实拍图本地路径（最多5张）
+            "ordered_material": ordered_material,  # 原始社群素材图文顺序列表（图文截断至前5张）
+
+            # ===== 2. 官方素材区（并列独立字段） =====
+            "item_desc": item_desc,  # 官方推荐语/文案
+            "item_images": item_local_paths,  # 官方主图及轮播图本地路径（最多5张）
+
+            # 兼容旧调用字段
+            "real_content": comm_copy,  # 兼容保留
+            "material_images": comm_local_paths,  # 兼容保留
+
             "detail_url": f"{ITEM_DETAIL_URL}?id={record_id}",
             "coupon_money": conv.get("coupon_money") or item.get("couponmoney"),
             "item_price": item.get("itemprice"),  # 原价
@@ -738,8 +897,8 @@ class ActivityCrawler:
         self._save_all_items()
 
         logger.info(
-            "[已保存至汇总] id=%s | 好单指数=%s | 图片 %d 张 | %s",
-            record_id, general_index, len(local_paths), (record["item_title"] or "")[:24],
+            "[已保存至汇总] id=%s | 社群图: %d 张 | 官方主图: %d 张 | %s",
+            record_id, len(comm_local_paths), len(item_local_paths), (record["item_title"] or "")[:24],
         )
         return "ok"
 
@@ -774,12 +933,12 @@ class ActivityCrawler:
                     stats["fail"] += 1
                 time.sleep(REQUEST_GAP)
 
-        logger.info(
-            "本轮抓取完毕：成功 %d，跳过 %d，失败 %d | 汇总文件现有商品 %d 条 (%s)",
-            stats["ok"], stats["skip"], stats["fail"],
-            len(self.all_items_map), ALL_ITEMS_JSON,
-        )
-        return stats
+            logger.info(
+                "本轮抓取完毕：成功 %d，跳过 %d，失败 %d | 汇总文件现有商品 %d 条 (%s)",
+                stats["ok"], stats["skip"], stats["fail"],
+                len(self.all_items_map), ALL_ITEMS_JSON,
+            )
+            return stats
 
 
 # ==================== 5. 定时常驻运行入口 ====================
