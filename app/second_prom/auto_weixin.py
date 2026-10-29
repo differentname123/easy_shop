@@ -28,7 +28,7 @@ except Exception:
 # =========================================================================
 
 # ================= 固定测试参数 =================
-TARGET_GROUP = "好货分享"  # 目标好友/群聊名称
+TARGET_GROUP = "📝 每日自购抄作业"  # 目标好友/群聊名称
 POLL_INTERVAL = 3600    # 轮询时间间隔（秒）：1小时
 # ===============================================
 
@@ -155,10 +155,26 @@ def get_window_dynamic_roi(hwnd, roi_type="search"):
     return screenshot, np.array(screenshot)
 
 
+import re
+
+
+def clean_for_ocr_compare(text: str) -> str:
+    """
+    清洗文本：去除 Emoji、空格和特殊标点，仅保留中文、英文字母和数字。
+    用于解决 OCR 无法识别 Emoji 和空格引起的误判。
+    """
+    if not text:
+        return ""
+    # 只保留 中文字符 (\u4e00-\u9fa5)、英文字母 (a-zA-Z) 和 数字 (0-9)
+    return re.sub(r"[^\u4e00-\u9fa5a-zA-Z0-9]", "", text)
+
+
 def verify_text_with_ocr(hwnd, roi_type, expected_text, timeout=2.0):
-    """带调试截图输出的 OCR 轮询校验"""
+    """带调试截图输出的 OCR 轮询校验（支持忽略 Emoji / 标点 / 空格智能比对）"""
     start_time = time.time()
-    clean_target = expected_text.strip()
+    # 提取目标的核心文字（去除 📝 和空格，只剩 "每日自购抄作业"）
+    clean_target = clean_for_ocr_compare(expected_text)
+
     last_img = None
     last_detected = ""
 
@@ -173,11 +189,17 @@ def verify_text_with_ocr(hwnd, roi_type, expected_text, timeout=2.0):
             ]
             last_detected = "".join(detected_lines)
 
-            # 支持包含匹配（自动兼容类似 '好货分享(2)' 中的群人数后缀）
-            if clean_target in last_detected or any(
-                clean_target in line for line in detected_lines
-            ):
+            # 对 OCR 识别出的文本同样进行清洗
+            clean_detected_all = clean_for_ocr_compare(last_detected)
+
+            # 核心判断：只要清洗后的核心关键词命中即可通过
+            if clean_target and clean_target in clean_detected_all:
                 return True, last_detected
+
+            # 分行检查（双重保险）
+            for line in detected_lines:
+                if clean_target and clean_target in clean_for_ocr_compare(line):
+                    return True, last_detected
 
         time.sleep(0.2)
 
@@ -188,7 +210,6 @@ def verify_text_with_ocr(hwnd, roi_type, expected_text, timeout=2.0):
         logger.info(f"[!] 校验未命中，已保存现场截屏至: {os.path.abspath(debug_filename)}")
 
     return False, last_detected
-
 
 def locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
     """结合 OCR 安全拦截的会话导航流程"""
