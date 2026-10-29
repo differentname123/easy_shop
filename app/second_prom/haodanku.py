@@ -832,10 +832,83 @@ class ActivityCrawler:
 
         return selected_text, selected_images
 
+    @staticmethod
+    def _format_price(price):
+        """
+        格式化价格显示，去除无效的尾随 0（例如 219.00 -> 219，20.50 -> 20.5）。
+        - 入参 price: str | int | float
+        - 出参: str 格式化后的价格字符串
+        """
+        if price is None:
+            return ""
+        price_str = str(price).strip()
+        try:
+            val = float(price_str)
+            if val.is_integer():
+                return str(int(val))
+            return f"{val:.2f}".rstrip("0").rstrip(".")
+        except (ValueError, TypeError):
+            return price_str
+
+    @classmethod
+    def _build_official_recommend_desc(cls, item, coupon_money=None):
+        """
+        根据 item 数据动态生成结构化官方推荐语言。
+
+        【生成规则】
+        - 第1行：活动引导语（如 ★天猫双11狂欢节 官方立减85折起★）
+        - 第2行：短标题 / 商品标题
+        - 第3行：价格行（原价：xx元，券后价【xx元】；若无优惠券则不生成本行）
+        - 第4行：商品详情原始推荐文案 itemdesc
+        """
+        lines = []
+
+        # 1. 第1行：大促活动引导文案
+        activity_info = item.get("activity_info")
+        if isinstance(activity_info, list) and activity_info:
+            act_obj = activity_info[0]
+            if isinstance(act_obj, dict):
+                raw_guide = act_obj.get("guide_article") or act_obj.get("name") or ""
+                # 清洗制表符和多余连续空格
+                clean_guide = re.sub(r"\s+", " ", str(raw_guide)).strip()
+                if clean_guide:
+                    lines.append(clean_guide)
+
+        # 2. 第2行：推荐标题（优先使用短标题）
+        title = (item.get("itemshorttitle") or item.get("itemtitle") or "").strip()
+        if title:
+            lines.append(title)
+
+        # 3. 第3行：价格行（判断是否有优惠券，无券则不展示此行）
+        coupon_val = coupon_money if coupon_money is not None else item.get("couponmoney")
+        has_coupon = False
+        try:
+            has_coupon = float(coupon_val or 0) > 0
+        except (ValueError, TypeError):
+            has_coupon = False
+
+        if has_coupon:
+            p_str = cls._format_price(item.get("itemprice"))
+            end_p_str = cls._format_price(item.get("itemendprice"))
+            if p_str and end_p_str:
+                lines.append(f"原价：{p_str}元，券后价【{end_p_str}元】")
+            elif end_p_str:
+                lines.append(f"券后价【{end_p_str}元】")
+            elif p_str:
+                lines.append(f"原价：{p_str}元")
+
+        # 4. 第4行：商品原始推荐文案
+        desc = (item.get("itemdesc") or "").strip()
+        if desc:
+            lines.append(desc)
+
+        return "\n".join(lines).strip()
+
     def process_item(self, item):
         """
-        处理单个商品全流程：校验 -> 断点判断 -> 转链 -> 社群与官方素材双路拉取下载 -> 提炼首组图文 -> 汇总持久化。
-        - 入参 item: dict，来自列表接口的单商品原始字典（需含 id, itemid, itemtitle, itempic 等 Key）。
+        处理单个商品全流程：
+        校验 -> 断点判断(若存在则增量更新动态元数据) -> 转链 -> 社群与官方素材双路下载 -> 生成官方推荐文案 -> 提炼首组图文 -> 汇总持久化。
+        - 入参 item: dict，来自列表接口的单商品原始字典。
         - 出参: str，处理结果状态码 ("ok" | "skip" | "fail")。
         """
         raw_id = item.get("id")
@@ -848,24 +921,60 @@ class ActivityCrawler:
             return "fail"
 
         record_id = str(raw_id).strip()
-        short_title = (item.get("itemtitle") or item.get("itemshorttitle") or "")[:20]
+        short_title = (item.get("itemshorttitle") or item.get("itemtitle") or "")[:20]
 
-        # 断点续跑校验
-        if not self.force:
-            existing = self.all_items_map.get(record_id)
-            if (
-                    isinstance(existing, dict)
-                    and existing.get("two_in_one_url")
-                    and "ordered_material" in existing
-                    and "item_images" in existing
-            ):
-                logger.info(
-                    "[断点续跑/跳过] 商品已在汇总库中且素材完整 | 商品ID: [%s] | 淘系ID: [%s] | 标题: 【%s】",
-                    record_id, itemid, (existing.get("item_title") or "")[:20],
-                )
-                return "skip"
+        # ==================== 1. 断点续跑校验与元数据增量更新 ====================
+        existing = self.all_items_map.get(record_id)
+        is_material_complete = (
+                not self.force
+                and isinstance(existing, dict)
+                and bool(existing.get("two_in_one_url"))
+                and "ordered_material" in existing
+                and "item_images" in existing
+        )
 
-        # 1. 高佣转链
+        if is_material_complete:
+            # 商品已有完整转链及图文素材，跳过转链与重复下载大图，但全面更新最新的动态业务字段
+            coupon_val = existing.get("coupon_money") or item.get("couponmoney")
+            official_desc = self._build_official_recommend_desc(item, coupon_money=coupon_val)
+            now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+            # 同步最新商品动态属性
+            existing["item_title"] = item.get("itemtitle") or existing.get("item_title")
+            existing["item_short_title"] = item.get("itemshorttitle") or existing.get("item_short_title")
+            existing["general_index"] = item.get("general_index")
+            existing["item_price"] = item.get("itemprice")
+            existing["item_end_price"] = item.get("itemendprice")
+            existing["coupon_money"] = coupon_val
+            existing["sale_2h"] = item.get("itemsale2")
+            existing["todaysale"] = item.get("todaysale")
+            existing["itemsale"] = item.get("itemsale")
+            existing["tkrates"] = item.get("tkrates")
+            existing["tkmoney"] = item.get("tkmoney")
+            existing["shop_name"] = item.get("shopname")
+            existing["shop_type"] = item.get("shoptype")
+            existing["brand_name"] = item.get("brand_name")
+            existing["activity_plan"] = item.get("activity_plan")
+            existing["raw_itemdesc"] = (item.get("itemdesc") or "").strip()
+            existing["item_desc"] = official_desc
+            existing["updated_at"] = now_str
+
+            # 若先前未获取到社群素材，发群正文 real_content 同步更新为最新官方推荐语
+            if not existing.get("community_content"):
+                existing["real_content"] = official_desc
+
+            self.all_items_map[record_id] = existing
+            self._save_all_items()
+
+            logger.info(
+                "[断点续跑/更新字段] 商品素材已完整，已更新最新动态字段 | 商品ID: [%s] | 淘系ID: [%s] | "
+                "2h销量: [%s] | 今日销量: [%s] | 券后价: [%s元] | 标题: 【%s】",
+                record_id, itemid, item.get("itemsale2") or "-", item.get("todaysale") or "-",
+                                   item.get("itemendprice") or "-", short_title,
+            )
+            return "skip"
+
+        # ==================== 2. 高佣转链 ====================
         title = item.get("itemtitle") or item.get("itemshorttitle") or ""
         conv = self.converter.convert_item(
             itemid=itemid,
@@ -879,7 +988,7 @@ class ActivityCrawler:
             )
             return "fail"
 
-        # 2. 拉取并下载 A 路素材：社群实拍图与文案
+        # ==================== 3. 拉取并下载 A 路素材：社群实拍图与文案 ====================
         comm_imgs, comm_copy, comm_group, ordered_material = self.fetch_community_material(
             hdk_id=record_id,
             taoword=conv["taoword"] or "",
@@ -889,12 +998,11 @@ class ActivityCrawler:
         comm_local_paths, url_to_comm_path = self._download_batch_images(
             comm_imgs, f"{record_id}_comm", "社群实拍图", max_count=MAX_ITEM_IMAGES
         )
-        # 将下载成功的本地绝对路径写回 ordered_material，供后续单组素材提取使用
         for entry in ordered_material:
             if entry.get("type") == "image":
                 entry["local_path"] = url_to_comm_path.get(entry.get("url"))
 
-        # 3. 拉取并下载 B 路素材：官方主图与轮播图
+        # ==================== 4. 拉取并下载 B 路素材：官方主图与轮播图 ====================
         official_imgs = [item["itempic"]] if item.get("itempic") else []
         if item.get("images"):
             official_imgs.extend(u for u in item["images"].split(",") if u.strip())
@@ -902,33 +1010,35 @@ class ActivityCrawler:
             official_imgs, f"{record_id}_item", "官方主图", max_count=MAX_ITEM_IMAGES
         )
 
-        # 4. 根据 ordered_material 精准提炼「首组完整图文素材」
+        # ==================== 5. 生成官方推荐语言与首组素材提炼 ====================
+        coupon_val = conv.get("coupon_money") or item.get("couponmoney")
+        official_desc = self._build_official_recommend_desc(item, coupon_money=coupon_val)
         selected_content, selected_material_images = self._extract_material_group(ordered_material)
 
-        # 确定最终 real_content 和 material_images：
-        # 优先使用提炼出的社群首组图文；若社群完全无素材，则降级采纳官方文案与官方主图
+        # 优先使用社群首组图文；若无社群素材，则降级采纳官方推荐文案与官方主图
         if selected_content or selected_material_images:
             final_real_content = selected_content
             final_material_images = selected_material_images
         else:
-            final_real_content = (item.get("itemdesc") or "").strip()
+            final_real_content = official_desc
             final_material_images = item_local_paths
 
-        # 5. 组装完整记录并实时原子落盘
+        # ==================== 6. 组装完整记录并原子落盘 ====================
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-        coupon_val = conv.get("coupon_money") or item.get("couponmoney")
         record = {
             "id": record_id,
             "item_id": itemid,
             "general_index": item.get("general_index"),
             "item_title": item.get("itemtitle"),
+            "item_short_title": item.get("itemshorttitle"),
             "two_in_one_url": conv["two_in_one_url"],
             "taoword": conv["taoword"],
             "community_group": comm_group,
             "community_content": comm_copy,
             "community_images": comm_local_paths,
             "ordered_material": ordered_material,
-            "item_desc": (item.get("itemdesc") or "").strip(),
+            "item_desc": official_desc,
+            "raw_itemdesc": (item.get("itemdesc") or "").strip(),
             "item_images": item_local_paths,
             "real_content": final_real_content,
             "material_images": final_material_images,
@@ -937,11 +1047,17 @@ class ActivityCrawler:
             "item_price": item.get("itemprice"),
             "item_end_price": item.get("itemendprice"),
             "sale_2h": item.get("itemsale2"),
+            "todaysale": item.get("todaysale"),
+            "itemsale": item.get("itemsale"),
             "tkrates": item.get("tkrates"),
             "tkmoney": item.get("tkmoney"),
             "shop_name": item.get("shopname"),
+            "shop_type": item.get("shoptype"),
+            "brand_name": item.get("brand_name"),
+            "activity_plan": item.get("activity_plan"),
             "added_at": now_str,
             "created_at": now_str,
+            "updated_at": now_str,
         }
 
         self.all_items_map[record_id] = record
@@ -954,6 +1070,8 @@ class ActivityCrawler:
             len(final_real_content), len(final_material_images), short_title,
         )
         return "ok"
+
+
     def run(self, pages, start_page=1):
         """
         执行指定页数范围的批量抓取任务。

@@ -322,7 +322,7 @@ def format_promo_message(item: dict) -> str:
     taoword = item.get("taoword", "").strip()
 
     # 极简拼装：卖点/攻略 + 极简引导 + 淘口令
-    return f"{content}\n\n整段复制打开淘宝即可{taoword}"
+    return f"{content}\n{taoword}整段复制打开淘宝即可"
 
 
 def poll_and_send_goods(
@@ -330,17 +330,20 @@ def poll_and_send_goods(
     target_group=TARGET_GROUP,
     poll_interval=3600,
     send_count=0,
+    sort_field="sale_2h",
+    reverse=True,
 ):
     """定时轮询数据列表，筛选未发送成功的商品进行推送。
 
     :param data_path: 数据 JSON 文件路径
     :param target_group: 目标发送群聊/好友
     :param poll_interval: 轮询时间间隔（秒）
-    :param send_count: 本轮要发送的商品个数，默认 0 表示全部发送；>0
-    则按 general_index 降序选前 N 个
+    :param send_count: 本轮要发送的商品个数，默认 0 表示全部发送；>0 则按排序字段选前 N 个
+    :param sort_field: 排序基准字段，默认 'sale_2h'，可灵活指定为 'general_index', 'tkrates', 'item_price' 等
+    :param reverse: True 为降序（从高到低），False 为升序（从低到高）
     """
     logger.info(
-        f"[*] 微信自动轮询推送服务已启动 | 周期: {poll_interval}s | 本轮发送上限: {'全部' if send_count <= 0 else send_count} 个..."
+        f"[*] 微信自动轮询推送服务已启动 | 周期: {poll_interval}s | 排序字段: {sort_field} ({'降序' if reverse else '升序'}) | 本轮发送上限: {'全部' if send_count <= 0 else send_count} 个..."
     )
 
     while True:
@@ -370,22 +373,22 @@ def poll_and_send_goods(
                             "[*] 本轮扫描完成：暂无待发送的数据。"
                         )
                     else:
-                        # 2. 按照 general_index 分数降序排列（转为 float 安全处理）
-                        def parse_general_index(obj):
+                        # 2. 按照指定字段动态排序（转为 float 安全处理）
+                        def parse_sort_val(obj):
                             try:
-                                return float(obj.get("general_index", 0))
+                                return float(obj.get(sort_field, 0))
                             except (ValueError, TypeError):
                                 return 0.0
 
                         pending_items.sort(
-                            key=parse_general_index, reverse=True
+                            key=parse_sort_val, reverse=reverse
                         )
 
                         # 3. 截取本轮要发送的目标商品
                         if send_count > 0:
                             items_to_send = pending_items[:send_count]
                             logger.info(
-                                f"[*] 待发送商品共 {len(pending_items)} 件，本轮按热度取前 {len(items_to_send)} 件发送。"
+                                f"[*] 待发送商品共 {len(pending_items)} 件，本轮按 [{sort_field}] 取前 {len(items_to_send)} 件发送。"
                             )
                         else:
                             items_to_send = pending_items
@@ -399,9 +402,9 @@ def poll_and_send_goods(
                                 "item_id", "未知ID"
                             )
                             item_title = item.get("item_title", "")
-                            score = item.get("general_index", "0")
+                            sort_val = item.get(sort_field, "0")
                             logger.info(
-                                f"[*] ({idx}/{len(items_to_send)}) 准备发送: [{item_id}] (热度分: {score}) - {item_title}"
+                                f"[*] ({idx}/{len(items_to_send)}) 准备发送: [{item_id}] ({sort_field}: {sort_val}) - {item_title}"
                             )
 
                             # 组装图片
@@ -446,5 +449,7 @@ if __name__ == "__main__":
         data_path=r"W:\project\python_project\easy_shop\app\second_prom\data\all_items.json",
         target_group=TARGET_GROUP,
         poll_interval=3600,
-        send_count=5,  # 👈 传入 0 表示发全部；传入 5 表示只按热度分发前 5 件
+        send_count=1,          # 👈 传入 0 表示发全部；传入 5 表示只取前 5 件
+        sort_field="sale_2h",  # 👈 默认按 sale_2h 排序；后续可随意替换为 general_index, tkrates, item_price 等
+        reverse=True,          # 👈 True 为降序（值越大越先发），False 为升序
     )
