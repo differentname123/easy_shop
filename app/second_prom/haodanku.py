@@ -34,7 +34,8 @@ import time
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from common.common_utils import setup_logger
+from common.common_utils import setup_logger, read_file_to_str
+from common.model_api import generate_content
 
 logger = setup_logger(app_name="haodanku")
 
@@ -42,7 +43,7 @@ logger = setup_logger(app_name="haodanku")
 HAODANKU_APIKEY = "9D3E0E43E5FD"
 MY_PID = "mm_328750149_3161250458_115832850163"
 TB_NAME = "不同名字123"
-
+PROMPT_FILE_PATH = "W:\project\python_project\easy_shop\prompt\种草话术生成.txt"
 # ==================== 2. 调度与抓取固定参数 ====================
 RUN_INTERVAL = 3600
 FIXED_PAGES = 1
@@ -1124,15 +1125,214 @@ class ActivityCrawler:
         return stats
 
 
-def main():
-    """常驻定时调度入口：每间隔 RUN_INTERVAL 秒执行一轮抓取任务，并确保资源安全释放。"""
+def _validate_copy_content(raw_content: str):
+    """
+    清洗并验证大模型返回的 JSON 结构。
+
+    验证字段：
+    - product_name: 核心品名及规格
+    - verified_price: 以图片核实后的真实到手价或单价
+    - conflict_resolved: 若图文有冲突，说明修正了什么（无冲突填'无'）
+    - key_reason: 核心低价/排雷理由
+    - wechat_copy: 微信群/朋友圈促单文案
+
+    出参: tuple (is_valid: bool, parsed_data: dict | None, err_msg: str)
+    """
+    if not raw_content or not isinstance(raw_content, str):
+        return False, None, "大模型返回内容为空"
+
+    text = raw_content.strip()
+    # 提取 Markdown 代码块中的 JSON 文本
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        text = match.group(1).strip()
+    else:
+        # 兼容未包含在 markdown 代码块但含有大括号的情况
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start: end + 1].strip()
+
+    try:
+        data = json.loads(text)
+    except Exception as e:
+        return False, None, f"JSON 反序列化失败: {e}"
+
+    if not isinstance(data, dict):
+        return False, None, "JSON 根节点非字典对象"
+
+    required_keys = [
+        "product_name",
+        "verified_price",
+        "conflict_resolved",
+        "key_reason",
+        "wechat_copy",
+    ]
+    missing_keys = [k for k in required_keys if k not in data or not str(data[k]).strip()]
+    if missing_keys:
+        return False, None, f"缺失必要字段或字段值为空: {missing_keys}"
+
+    return True, data, ""
+
+
+def batch_generate_wechat_copy():
+    """
+    扫描本地汇总商品，筛选符合条件的商品批量调用大模型生成种草话术：
+    1. 扫描条件: 生成失败次数 < 3 且 尚未生成 wechat_copy
+    2. 提示词组装: 基础提示词 + item_desc + community_content
+    3. 图片组装: item_images 与 material_images 去重合并（过滤无效/不存在的路径）
+    4. 重试机制: 单商品调用失败最多重试 3 次，全部失败则累计生成次数并落盘
+    5. 成功处理: 更新 wechat_copy、记录生成时间 copy_generated_at 并立即原子落盘
+    """
+    if not os.path.exists(ALL_ITEMS_JSON):
+        logger.warning("[话术生成/跳过] 本地商品汇总库不存在 | 路径: <%s>", ALL_ITEMS_JSON)
+        return
+
+    try:
+        with open(ALL_ITEMS_JSON, "r", encoding="utf-8") as f:
+            items_list = json.load(f)
+    except Exception as e:
+        logger.error("❌ [话术生成/读取失败] 读取本地商品文件失败: %s", e)
+        return
+
+    if not isinstance(items_list, list):
+        logger.warning("[话术生成/跳过] 商品库数据非列表格式，无法遍历")
+        return
+
+    base_prompt = read_file_to_str(PROMPT_FILE_PATH)
+    if not base_prompt:
+        logger.error("❌ [话术生成/终止] 未读取到基础提示词模版，请检查文件路径: <%s>", PROMPT_FILE_PATH)
+        return
+
+    # 扫描符合条件的商品
+    candidates = []
+    for item in items_list:
+        if not isinstance(item, dict):
+            continue
+        attempts = item.get("copy_gen_attempts", 0)
+        has_copy = bool(item.get("wechat_copy") and str(item.get("wechat_copy")).strip())
+        if attempts < 3 and not has_copy:
+            candidates.append(item)
+
     logger.info(
-        "[守护进程/启动] 好单库定时抓取服务已启动 | 巡检周期: [%d秒] | 单次抓取页数: [%d页] | 强制刷新: [%s]",
+        "[话术生成/扫描] 扫描完毕 | 库内总数: [%d] | 待生成任务数: [%d]",
+        len(items_list), len(candidates),
+    )
+
+    if not candidates:
+        return
+
+    def _save_current_state():
+        """原子保存当前全量商品列表到磁盘"""
+        tmp_path = f"{ALL_ITEMS_JSON}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f_out:
+                json.dump(items_list, f_out, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, ALL_ITEMS_JSON)
+        except Exception as err:
+            logger.error("❌ [话术生成/落盘失败] 保存商品数据异常: %s", err)
+
+    LLM_MAX_RETRIES = 3
+
+    for idx, item in enumerate(candidates, start=1):
+        item_id = item.get("id") or item.get("item_id")
+        short_title = (item.get("item_short_title") or item.get("item_title") or "")[:20]
+
+        # 1. 组装输入文本: 基础 Prompt + 官方描述 + 社群素材
+        item_desc = item.get("item_desc") or ""
+        community_content = item.get("community_content") or ""
+        prompt_text = (
+            f"{base_prompt}\n\n"
+            f"【商品官方信息与描述】\n{item_desc}\n\n"
+            f"【社群素材文案】\n{community_content}"
+        )
+
+        # 2. 组装图片路径: item_images + material_images 去重并校验本地存在性
+        combined_imgs = (item.get("item_images") or []) + (item.get("material_images") or [])
+        file_paths = []
+        seen_paths = set()
+        for p in combined_imgs:
+            if p and p not in seen_paths:
+                seen_paths.add(p)
+                if os.path.exists(p):
+                    file_paths.append(p)
+
+        logger.info(
+            "[话术生成/处理中] 开始生成商品文案 | 进度: [%d/%d] | 商品ID: [%s] | 关联图数: [%d张] | 标题: 【%s】",
+            idx, len(candidates), item_id, len(file_paths), short_title,
+        )
+
+        success = False
+        last_error = ""
+
+        # 3. 循环重试 3 次
+        for attempt in range(1, LLM_MAX_RETRIES + 1):
+            try:
+                result = generate_content(
+                    prompt=prompt_text,
+                    preset_model_group="low",
+                    file_paths=file_paths,
+                )
+                if result.get("status") != "✅ 成功":
+                    detail = "；".join(str(e) for e in (result.get("error_history") or []))
+                    raise RuntimeError(detail or result.get("content") or "模型调用返回非成功状态")
+
+                raw_content = result.get("content", "")
+                is_valid, parsed_data, err_msg = _validate_copy_content(raw_content)
+                if not is_valid:
+                    raise ValueError(err_msg)
+
+                # 4. 生成成功：更新 wechat_copy 及生成时间
+                item["wechat_copy"] = parsed_data["wechat_copy"]
+                item["copy_generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                # 保存扩展结构以便审计追溯（可选）
+                item["copy_meta"] = {
+                    "product_name": parsed_data.get("product_name"),
+                    "verified_price": parsed_data.get("verified_price"),
+                    "conflict_resolved": parsed_data.get("conflict_resolved"),
+                    "key_reason": parsed_data.get("key_reason"),
+                }
+                _save_current_state()
+
+                logger.info(
+                    "✅ [话术生成/成功] 商品文案生成并落盘 | 商品ID: [%s] | 重试轮次: [%d/%d] | 文案字数: [%d字]",
+                    item_id, attempt, LLM_MAX_RETRIES, len(item["wechat_copy"]),
+                )
+                success = True
+                break
+
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "[话术生成/重试] 接口调用或格式校验失败 | 商品ID: [%s] | 轮次: [%d/%d] | 原因: %s",
+                    item_id, attempt, LLM_MAX_RETRIES, last_error,
+                )
+                if attempt < LLM_MAX_RETRIES:
+                    time.sleep(2 ** attempt)
+
+        # 5. 3次全失败：增加尝试次数并保存
+        if not success:
+            item["copy_gen_attempts"] = item.get("copy_gen_attempts", 0) + 1
+            item["copy_gen_last_error"] = last_error
+            _save_current_state()
+            logger.error(
+                "❌ [话术生成/彻底失败] 商品文案3次尝试均失败 | 商品ID: [%s] | 当前累计失败次数: [%d] | 最终原因: %s",
+                item_id, item["copy_gen_attempts"], last_error,
+            )
+
+        time.sleep(0.5)
+
+
+def main():
+    """常驻定时调度入口：每间隔 RUN_INTERVAL 秒串行执行「数据抓取」与「种草话术生成」。"""
+    logger.info(
+        "[守护进程/启动] 好单库定时抓取与文案生成服务已启动 | 巡检周期: [%d秒] | 单次抓取页数: [%d页] | 强制刷新: [%s]",
         RUN_INTERVAL, FIXED_PAGES, FORCE_REFRESH,
     )
 
     while True:
         crawler = None
+        # 1. 抓取与双源素材落地
         try:
             converter = HaoDanKuConverter(
                 apikey=HAODANKU_APIKEY, pid=MY_PID, tb_name=TB_NAME
@@ -1141,19 +1341,31 @@ def main():
             crawler.run(pages=FIXED_PAGES, start_page=FIXED_START_PAGE)
         except Exception as e:
             logger.error(
-                "❌ [全局巡检/崩溃] 定时巡检主流程发生未预期的顶层异常 | 故障原因: %s (将在下个周期自动尝试恢复)",
+                "❌ [抓取流程/异常] 定时抓取主流程发生未预期的顶层异常 | 故障原因: %s (将在下个周期自动尝试恢复)",
                 e, exc_info=True,
             )
         finally:
             if crawler is not None:
                 crawler.close()
 
+        # 2. 串行执行种草话术生成
+        try:
+            logger.info("[守护进程/流水线] 抓取流程完成，开始串行触发种草话术生成任务")
+            batch_generate_wechat_copy()
+        except Exception as e:
+            logger.error(
+                "❌ [话术流程/异常] 种草话术生成流程发生未预期的异常 | 故障原因: %s",
+                e, exc_info=True,
+            )
+
         logger.info(
-            "[守护进程/休眠] 本轮巡检周期结束，等待进入下一轮 | 休眠时长: [%d秒]",
+            "[守护进程/休眠] 本轮抓取与话术生成任务已全部结束，等待进入下一轮 | 休眠时长: [%d秒]",
             RUN_INTERVAL,
         )
         time.sleep(RUN_INTERVAL)
 
 
 if __name__ == "__main__":
+    # batch_generate_wechat_copy()
+
     main()
