@@ -27,13 +27,9 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from bs4 import BeautifulSoup, Tag
 
-# ==================== 1. 日志格式配置 ====================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger("HDK_Activity")
+from common.common_utils import setup_logger
+
+logger = setup_logger(app_name="haodanku")
 
 # ==================== 2. 专属配置信息 ====================
 HAODANKU_APIKEY = "9D3E0E43E5FD"  # 好单库专属 APIKEY
