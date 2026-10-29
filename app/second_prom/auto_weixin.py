@@ -288,7 +288,7 @@ def send_wechat_payload(
                     time.sleep(0.6)
                     auto.SendKeys("{Enter}")
                     time.sleep(0.4)
-
+    time.sleep(len(valid_images) * 0.5 + 0.2)  # 缓冲图片发送间隔
     # 2. 发送文本
     if text_content:
         logger.info("[*] 正在输入并发送文本...")
@@ -307,79 +307,144 @@ def send_wechat_payload(
 from datetime import datetime
 
 
-def poll_and_send_goods(data_path="auto_weixin.json", target_group=TARGET_GROUP, poll_interval=3600):
+def format_promo_message(item: dict) -> str:
     """
-    定时轮询数据列表，筛选未发送成功的商品进行推送。
-    先发送全部图片，再发送拼接后的淘口令文案，完成后回写发送状态与时间。
+    极简社群文案：去除所有冗余表格字段，仅保留核心卖点与极简行动召唤
     """
-    logger.info(f"[*] 微信自动轮询推送服务已启动，轮询周期: {poll_interval // 3600} 小时...")
+    # 核心卖点文案（优先取 real_content，自带真实的抢购攻略和优惠提示）
+    content = (
+            item.get("real_content")
+            or item.get("item_title")
+            or item.get("item_desc", "")
+    ).strip()
+
+    # 淘口令
+    taoword = item.get("taoword", "").strip()
+
+    # 极简拼装：卖点/攻略 + 极简引导 + 淘口令
+    return f"{content}\n\n整段复制打开淘宝即可{taoword}"
+
+
+def poll_and_send_goods(
+    data_path="auto_weixin.json",
+    target_group=TARGET_GROUP,
+    poll_interval=3600,
+    send_count=0,
+):
+    """定时轮询数据列表，筛选未发送成功的商品进行推送。
+
+    :param data_path: 数据 JSON 文件路径
+    :param target_group: 目标发送群聊/好友
+    :param poll_interval: 轮询时间间隔（秒）
+    :param send_count: 本轮要发送的商品个数，默认 0 表示全部发送；>0
+    则按 general_index 降序选前 N 个
+    """
+    logger.info(
+        f"[*] 微信自动轮询推送服务已启动 | 周期: {poll_interval}s | 本轮发送上限: {'全部' if send_count <= 0 else send_count} 个..."
+    )
 
     while True:
         try:
             if not os.path.exists(data_path):
-                logger.warning(f"[-] 未找到数据文件: {data_path}，等待下次轮询...")
+                logger.warning(
+                    f"[-] 未找到数据文件: {data_path}，等待下次轮询..."
+                )
             else:
                 goods_list = read_json(data_path)
 
-                # 兼容顶层直接为列表的数据结构
                 if not isinstance(goods_list, list):
-                    logger.error(f"[-] 数据格式异常：预期为列表格式 [{{...}}]，实际类型为 {type(goods_list)}")
+                    logger.error(
+                        f"[-] 数据格式异常：预期为列表格式 [{{...}}]，实际类型为 {type(goods_list)}"
+                    )
                 else:
-                    has_pending = False
-                    for item in goods_list:
-                        if not isinstance(item, dict):
-                            continue
+                    # 1. 筛选出待发送的商品列表
+                    pending_items = [
+                        item
+                        for item in goods_list
+                        if isinstance(item, dict)
+                        and not item.get("send_status")
+                    ]
 
-                        # 过滤已发送成功的记录（若未发送或此前发送失败 send_status 为 False 则继续发送）
-                        if item.get("send_status") is True:
-                            continue
+                    if not pending_items:
+                        logger.info(
+                            "[*] 本轮扫描完成：暂无待发送的数据。"
+                        )
+                    else:
+                        # 2. 按照 general_index 分数降序排列（转为 float 安全处理）
+                        def parse_general_index(obj):
+                            try:
+                                return float(obj.get("general_index", 0))
+                            except (ValueError, TypeError):
+                                return 0.0
 
-                        has_pending = True
-                        item_id = item.get("id") or item.get("item_id", "未知ID")
-                        item_title = item.get("item_title", "")
-                        logger.info(f"[*] 发现待发送商品: [{item_id}] {item_title}")
-
-                        # 1. 组装待发送图片路径列表
-                        image_list = item.get("material_images", [])
-
-                        # 2. 组装待发送文本内容（real_content 换行 + 领券方法及淘口令）
-                        real_content = item.get("real_content", "")
-                        taoword = item.get("taoword", "")
-                        text_content = f"{real_content}\n【领券方法】:{taoword}/ 长按复制该信息，打开手机淘宝，即可领券下单"
-
-                        # 3. 执行微信发送（send_wechat_payload 内部逻辑：先批量发送图片，随后发送文本）
-                        send_success = send_wechat_payload(
-                            target_group=target_group,
-                            text_content=text_content,
-                            image_list=image_list,
-                            batch_images=True,
+                        pending_items.sort(
+                            key=parse_general_index, reverse=True
                         )
 
-                        # 4. 回写发送状态与时间
-                        item["send_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        item["send_status"] = send_success
+                        # 3. 截取本轮要发送的目标商品
+                        if send_count > 0:
+                            items_to_send = pending_items[:send_count]
+                            logger.info(
+                                f"[*] 待发送商品共 {len(pending_items)} 件，本轮按热度取前 {len(items_to_send)} 件发送。"
+                            )
+                        else:
+                            items_to_send = pending_items
+                            logger.info(
+                                f"[*] 本轮将发送全部待推送商品，共 {len(items_to_send)} 件。"
+                            )
 
-                        # 即时回写保存 JSON，防止程序意外中断丢失进度
-                        save_json(data_path, goods_list)
-                        logger.info(f"[+] 商品 [{item_id}] 处理完成，发送结果: {send_success}，状态已持久化。")
+                        # 4. 依次执行发送
+                        for idx, item in enumerate(items_to_send, start=1):
+                            item_id = item.get("id") or item.get(
+                                "item_id", "未知ID"
+                            )
+                            item_title = item.get("item_title", "")
+                            score = item.get("general_index", "0")
+                            logger.info(
+                                f"[*] ({idx}/{len(items_to_send)}) 准备发送: [{item_id}] (热度分: {score}) - {item_title}"
+                            )
 
-                        # 多个商品之间缓冲 3 秒，避免发送动作过快引发微信界面响应错乱
-                        time.sleep(3)
+                            # 组装图片
+                            image_list = item.get("material_images", [])
 
-                    if not has_pending:
-                        logger.info("[*] 本轮扫描完成：暂无待发送的数据。")
+                            # 组装经过美化排版的文本
+                            text_content = format_promo_message(item)
+
+                            # 执行微信发送（先图后文）
+                            send_success = send_wechat_payload(
+                                target_group=target_group,
+                                text_content=text_content,
+                                image_list=image_list,
+                                batch_images=True,
+                            )
+
+                            # 回写状态与时间（item 为引用，会直接同步回 goods_list）
+                            item["send_time"] = datetime.now().strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            )
+                            item["send_status"] = send_success
+
+                            # 每次发送后立即持久化保存，避免中断丢失状态
+                            save_json(data_path, goods_list)
+                            logger.info(
+                                f"[+] 商品 [{item_id}] 处理完成，结果: {send_success}，状态已持久化。"
+                            )
+
+                            # 商品间隔缓冲 3 秒，防止发送过快引发客户端响应异常
+                            time.sleep(3)
 
         except Exception as e:
             logger.error(f"[-] 轮询流程执行异常: {e}", exc_info=True)
 
-        logger.info(f"[*] 进入休眠，将在 {poll_interval // 3600} 小时后执行下一次检查...")
+        logger.info(
+            f"[*] 进入休眠，将在 {poll_interval} 秒后执行下一次检查..."
+        )
         time.sleep(poll_interval)
 
-
 if __name__ == "__main__":
-    # 启动轮询：默认每 3600 秒（1小时）轮询一次 "auto_weixin.json"
     poll_and_send_goods(
         data_path=r"W:\project\python_project\easy_shop\app\second_prom\data\all_items.json",
         target_group=TARGET_GROUP,
-        poll_interval=3600
+        poll_interval=3600,
+        send_count=5,  # 👈 传入 0 表示发全部；传入 5 表示只按热度分发前 5 件
     )
