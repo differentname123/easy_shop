@@ -229,11 +229,12 @@ if __name__ == "__main__":
 
   # 测试示例：包含加密商品ID和优惠券ID的完整线报
   sample_input = """
-    3CE12色哑光珠光眼影盘
-    原价319.00元，券后价【111.91元】
-    领券：https://uland.taobao.com/quan/detail?sellerId=4730117177653490850&activityId=6779888a46b04c3ead7be8c03ddd06c1
-    下单:https://uland.TaoBao.com/item/edetail?id=Vkp4rv8u6tw5R3kwYkh2XYieUy-OJzVevmuZrXNm2B2SN
-    券后119，淘金币后96.92，**后87 （319-官方立减39-券161-24.15淘金币-7.09限时**） 3CE终于做大盘眼影了，外形很有质感，粉质一如既往的好，细腻不浮粉，配色百搭，水
+
+补啦！！吾岛无蔗糖酸奶100g共23杯
+原价：396元，券后价【69元】
+领319元优惠券：https://uland.taobao.com/quan/detail?sellerId=262335239059225760&activityId=b8c58024b71044a4b73f7aaff5dc988b
+下单链接：https://uland.TaoBao.com/item/edetail?id=aOR5eYKTotMJz8G3rohQ8RuOUP-kWDMaAmt84q0pzjKt2
+下单默认加赠酸奶3杯 吾岛旗舰店•无蔗糖酸奶100g 任选④件
     """
 
   # 执行转换

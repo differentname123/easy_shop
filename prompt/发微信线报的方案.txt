@@ -1,0 +1,144 @@
+最终最简单、最稳妥的方案就是：「主机负责存数据，虚拟机常驻一个 Python 轮询脚本负责发微信」。
+
+无需搞复杂的 HTTP 接口调用。主机只管往自己的本地数据库插数据、往文件夹存图；虚拟机里的脚本自己连主机查数据、取图、发群，整套方案只需 3 步 即可落地。
+
+第一步：主机端（打通数据与素材通道）
+
+1.  共享素材目录：
+      - 在你的素材文件夹（例如 D:\线报素材）右键 -> 属性 -> 共享 -> 添加 Everyone 并设为“读取”。
+2.  查出主机的虚拟 IP：
+      - 主机按 Win + R 运行 cmd，输入 ipconfig，找到虚拟网卡（Hyper-V 的 vEthernet 或 VMware 的
+        VMnet8）的 IPv4 地址，例如：192.168.137.1。
+3.  数据库放行：
+      - 确保你的数据库配置允许局域网连接（监听 0.0.0.0），防火墙允许对应端口（如 MySQL 3306）。
+
+第二步：虚拟机端（环境准备）
+
+1.  映射素材盘：
+      - 打开虚拟机的“此电脑” -> 点击上方 “映射网络驱动器” -> 驱动器选 Z:，路径填 \\192.168.137.1\线报素材。
+      - 以后你在主机存入 D:\线报素材\1.jpg，虚拟机里直接通过 Z:\1.jpg 就能读到。
+2.  登录官方微信：
+      - 打开官方 PC 微信，登录你的微信账号。
+3.  安装 Python 依赖库：
+      - 虚拟机里打开命令行安装：
+        pip install uiautomation pywin32 pymysql pillow pyperclip
+
+第三步：虚拟机端运行发信脚本（单个 Python 脚本搞定）
+
+在虚拟机里保存并运行以下 worker.py，它会每隔几秒自动查主机数据库，有待发线报就自动切群发送：
+
+import time
+import random
+import io
+import os
+import pymysql
+import uiautomation as auto
+import win32clipboard
+from PIL import Image
+import pyperclip
+
+# ================= 配置区域 =================
+# 主机虚拟网卡 IP 与数据库配置
+DB_CONFIG = {
+    'host': '192.168.137.1', # 改成你主机的虚拟 IP
+    'port': 3306,
+    'user': 'root',
+    'password': 'your_password',
+    'database': 'deals_db'
+}
+
+def set_clipboard_image(image_path: str):
+    """把 Z 盘的图片以位图格式塞入剪贴板"""
+    if not os.path.exists(image_path):
+        return False
+    image = Image.open(image_path)
+    output = io.BytesIO()
+    image.convert("RGB").save(output, "BMP")
+    data = output.getvalue()[14:]  # 截取 DIB 数据
+    output.close()
+    
+    win32clipboard.OpenClipboard()
+    win32clipboard.EmptyClipboard()
+    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+    win32clipboard.CloseClipboard()
+    return True
+
+def send_to_wechat(group_name: str, text: str, image_name: str = None):
+    """控制官方微信发消息核心逻辑"""
+    # 1. 唤起微信
+    wx = auto.WindowControl(searchDepth=1, ClassName='WeChatMainWndForPC')
+    wx.SetActive()
+    time.sleep(0.3)
+
+    # 2. 搜索目标群名并进入
+    auto.SendKeys('{Ctrl}f')
+    time.sleep(0.2)
+    pyperclip.copy(group_name)
+    auto.SendKeys('{Ctrl}v')
+    time.sleep(0.6)  # 等待搜索结果列表显示
+    auto.SendKeys('{Enter}')
+    time.sleep(0.5)
+
+    # 3. 发送图片（如果有）
+    if image_name:
+        image_full_path = os.path.join("Z:\\", image_name)
+        if set_clipboard_image(image_full_path):
+            auto.SendKeys('{Ctrl}v')
+            time.sleep(0.5)
+            auto.SendKeys('{Enter}')
+            time.sleep(0.8)
+
+    # 4. 发送文本
+    if text:
+        pyperclip.copy(text)
+        auto.SendKeys('{Ctrl}v')
+        time.sleep(0.3)
+        auto.SendKeys('{Enter}')
+
+def main_loop():
+    print("[*] 微信自动化发单节点已启动，等待待发数据...")
+    while True:
+        try:
+            conn = pymysql.connect(**DB_CONFIG)
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+
+            # 查询 1 条待发送的任务 (假设 status=0 为未发送)
+            cursor.execute("SELECT * FROM send_tasks WHERE status = 0 LIMIT 1")
+            task = cursor.fetchone()
+
+            if task:
+                target = task['target_group']
+                content = task['content']
+                img = task.get('image_name')
+
+                print(f"[+] 正在向 [{target}] 发送线报...")
+                send_to_wechat(target, content, img)
+
+                # 标记该任务为已发送 (status=1)
+                cursor.execute("UPDATE send_tasks SET status = 1 WHERE id = %s", (task['id'],))
+                conn.commit()
+
+                # 防封关键：群与群之间拟人随机延迟 4~8 秒
+                sleep_time = random.uniform(4.0, 8.0)
+                print(f" -> 发送成功，休眠 {sleep_time:.2f} 秒...")
+                time.sleep(sleep_time)
+            else:
+                # 没有新线报时，轮询等待 3 秒
+                time.sleep(3)
+
+            conn.close()
+
+        except Exception as e:
+            print(f"[!] 执行异常: {e}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main_loop()
+
+日常怎么用？
+
+1.  启动一次：把虚拟机开机，打开微信扫码登录，双击启动上面的 worker.py，然后直接把虚拟机窗口最小化。
+2.  日常推送：
+      - 你在主机上想发哪条线报，直接把图片丢到 D:\线报素材，在主机的数据库表里 INSERT 一条记录（指定群名、文案、图片文件名）。
+      - 最小化在后台的虚拟机就会自动秒级响应，取图、进群、发送。
+3.  完全无感：宿主机鼠标键盘没有任何被抢占的动作，发消息走的是官方客户端界面模拟，安全度最高。
