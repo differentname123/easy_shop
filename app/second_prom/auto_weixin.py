@@ -12,6 +12,9 @@ import win32con
 import win32gui
 import win32process
 
+from common.common_utils import read_json, save_json, setup_logger
+logger = setup_logger(app_name="pdd_captcha")
+
 # ================= 启用 Windows 原生高 DPI 感知 (防止坐标偏移) =================
 try:
     # 启用 Per-Monitor DPI Aware (Windows 8.1+)
@@ -182,7 +185,7 @@ def verify_text_with_ocr(hwnd, roi_type, expected_text, timeout=2.0):
     debug_filename = f"debug_{roi_type}_failed.png"
     if last_img:
         last_img.save(debug_filename)
-        print(f"[!] 校验未命中，已保存现场截屏至: {os.path.abspath(debug_filename)}")
+        logger.info(f"[!] 校验未命中，已保存现场截屏至: {os.path.abspath(debug_filename)}")
 
     return False, last_detected
 
@@ -191,7 +194,7 @@ def locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
     """结合 OCR 安全拦截的会话导航流程"""
     activate_window(hwnd, wx_ctrl)
 
-    print(f"[*] 正在检索目标: [{target_group}]...")
+    logger.info(f"[*] 正在检索目标: [{target_group}]...")
     # 唤醒搜索框并清空
     auto.SendKeys("{Ctrl}f")
     time.sleep(0.15)
@@ -207,13 +210,13 @@ def locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
         hwnd, roi_type="search", expected_text=target_group, timeout=2.0
     )
     if not matched:
-        print(
+        logger.info(
             f"[-] 安全阻断：搜索下拉列表中未匹配到 [{target_group}]（识别到: '{detected}'），防止误发！"
         )
         auto.SendKeys("{Esc}")
         return False
 
-    print(f"[+] 搜索列表校验通过 (命中: {detected})，回车进入会话...")
+    logger.info(f"[+] 搜索列表校验通过 (命中: {detected})，回车进入会话...")
     auto.SendKeys("{Enter}")
     time.sleep(0.6)  # 留足时间让会话 Header 和聊天记录完成渲染
 
@@ -222,12 +225,12 @@ def locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
         hwnd, roi_type="header", expected_text=target_group, timeout=2.0
     )
     if not header_matched:
-        print(
+        logger.info(
             f"[-] 安全阻断：会话进入异常！顶部 Header 识别为 '{header_text}'，与目标不一致！"
         )
         return False
 
-    print(f"[+] 目标会话确认就绪: [{target_group}] (Header: {header_text})")
+    logger.info(f"[+] 目标会话确认就绪: [{target_group}] (Header: {header_text})")
 
     # 激活并聚焦输入框
     edit_box = wx_ctrl.EditControl(searchDepth=8)
@@ -242,43 +245,43 @@ def send_wechat_payload(
     target_group, text_content=None, image_list=None, batch_images=True
 ):
     if not target_group:
-        print("[-] 目标群名不能为空")
+        logger.info("[-] 目标群名不能为空")
         return False
 
-    print("[*] 正在捕获微信主窗口...")
+    logger.info("[*] 正在捕获微信主窗口...")
     hwnd, wx_ctrl = get_wechat_main_window()
     if not hwnd:
-        print("[-] 未能找到微信主界面，请确认微信已启动登录！")
+        logger.info("[-] 未能找到微信主界面，请确认微信已启动登录！")
         return False
 
     rect = win32gui.GetWindowRect(hwnd)
-    print(
+    logger.info(
         f"[+] 成功锁定微信 (HWND: {hwnd}) | 坐标: ({rect[0]}, {rect[1]}) 宽高: {rect[2]-rect[0]}x{rect[3]-rect[1]}"
     )
 
     if not locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
-        print(f"[-] 进入目标群聊 [{target_group}] 失败，流程中断。")
+        logger.info(f"[-] 进入目标群聊 [{target_group}] 失败，流程中断。")
         return False
 
     # 1. 发送图片（保留透明度通道）
     if image_list:
         valid_images = [p for p in image_list if os.path.exists(p)]
         if not valid_images:
-            print("[-] 本地未找到有效图片路径")
+            logger.info("[-] 本地未找到有效图片路径")
         elif batch_images:
-            print(f"[*] 批量导入 {len(valid_images)} 张图片至剪贴板...")
+            logger.info(f"[*] 批量导入 {len(valid_images)} 张图片至剪贴板...")
             if set_clipboard_files(valid_images):
                 time.sleep(0.1)
                 auto.SendKeys("{Ctrl}v")
                 time.sleep(0.8)
                 auto.SendKeys("{Enter}")
                 time.sleep(0.4)
-                print("[+] 图片批量发送完成")
+                logger.info("[+] 图片批量发送完成")
             else:
-                print("[-] 图片写入剪贴板失败")
+                logger.info("[-] 图片写入剪贴板失败")
         else:
             for idx, img in enumerate(valid_images, start=1):
-                print(f"[*] 发送第 {idx}/{len(valid_images)} 张图片: {img}")
+                logger.info(f"[*] 发送第 {idx}/{len(valid_images)} 张图片: {img}")
                 if set_clipboard_files([img]):
                     time.sleep(0.1)
                     auto.SendKeys("{Ctrl}v")
@@ -288,20 +291,24 @@ def send_wechat_payload(
 
     # 2. 发送文本
     if text_content:
-        print("[*] 正在输入并发送文本...")
+        logger.info("[*] 正在输入并发送文本...")
         pyperclip.copy(text_content)
         time.sleep(0.1)
         auto.SendKeys("{Ctrl}v")
         time.sleep(0.2)
         auto.SendKeys("{Enter}")
         time.sleep(0.3)
-        print("[+] 文本发送完成")
+        logger.info("[+] 文本发送完成")
 
-    print(f"[+] 任务结束：已向 [{target_group}] 完成全部投递。")
+    logger.info(f"[+] 任务结束：已向 [{target_group}] 完成全部投递。")
     return True
 
 
 if __name__ == "__main__":
+    data_path = "auto_weixin.json"
+    goods_info = read_json(data_path)
+    save_json(goods_info, data_path)
+
     send_wechat_payload(
         target_group=TARGET_GROUP,
         text_content=TEXT_CONTENT,
