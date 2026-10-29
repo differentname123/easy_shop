@@ -2,6 +2,7 @@
 import ctypes
 import os
 import time
+from datetime import datetime
 import numpy as np
 from PIL import ImageGrab
 import pyperclip
@@ -13,7 +14,7 @@ import win32gui
 import win32process
 
 from common.common_utils import read_json, save_json, setup_logger
-logger = setup_logger(app_name="pdd_captcha")
+logger = setup_logger(app_name="auto_weixin")
 
 # ================= 启用 Windows 原生高 DPI 感知 (防止坐标偏移) =================
 try:
@@ -28,8 +29,7 @@ except Exception:
 
 # ================= 固定测试参数 =================
 TARGET_GROUP = "好货分享"  # 目标好友/群聊名称
-TEXT_CONTENT = "测试数据"
-IMAGE_LIST = [r"E:\chrome\1759238147.png"]
+POLL_INTERVAL = 3600    # 轮询时间间隔（秒）：1小时
 # ===============================================
 
 ocr = RapidOCR()
@@ -304,14 +304,82 @@ def send_wechat_payload(
     return True
 
 
-if __name__ == "__main__":
-    data_path = "auto_weixin.json"
-    goods_info = read_json(data_path)
-    save_json(goods_info, data_path)
+from datetime import datetime
 
-    send_wechat_payload(
+
+def poll_and_send_goods(data_path="auto_weixin.json", target_group=TARGET_GROUP, poll_interval=3600):
+    """
+    定时轮询数据列表，筛选未发送成功的商品进行推送。
+    先发送全部图片，再发送拼接后的淘口令文案，完成后回写发送状态与时间。
+    """
+    logger.info(f"[*] 微信自动轮询推送服务已启动，轮询周期: {poll_interval // 3600} 小时...")
+
+    while True:
+        try:
+            if not os.path.exists(data_path):
+                logger.warning(f"[-] 未找到数据文件: {data_path}，等待下次轮询...")
+            else:
+                goods_list = read_json(data_path)
+
+                # 兼容顶层直接为列表的数据结构
+                if not isinstance(goods_list, list):
+                    logger.error(f"[-] 数据格式异常：预期为列表格式 [{{...}}]，实际类型为 {type(goods_list)}")
+                else:
+                    has_pending = False
+                    for item in goods_list:
+                        if not isinstance(item, dict):
+                            continue
+
+                        # 过滤已发送成功的记录（若未发送或此前发送失败 send_status 为 False 则继续发送）
+                        if item.get("send_status") is True:
+                            continue
+
+                        has_pending = True
+                        item_id = item.get("id") or item.get("item_id", "未知ID")
+                        item_title = item.get("item_title", "")
+                        logger.info(f"[*] 发现待发送商品: [{item_id}] {item_title}")
+
+                        # 1. 组装待发送图片路径列表
+                        image_list = item.get("material_images", [])
+
+                        # 2. 组装待发送文本内容（real_content 换行 + 领券方法及淘口令）
+                        real_content = item.get("real_content", "")
+                        taoword = item.get("taoword", "")
+                        text_content = f"{real_content}\n【领券方法】:{taoword}/ 长按复制该信息，打开手机淘宝，即可领券下单"
+
+                        # 3. 执行微信发送（send_wechat_payload 内部逻辑：先批量发送图片，随后发送文本）
+                        send_success = send_wechat_payload(
+                            target_group=target_group,
+                            text_content=text_content,
+                            image_list=image_list,
+                            batch_images=True,
+                        )
+
+                        # 4. 回写发送状态与时间
+                        item["send_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        item["send_status"] = send_success
+
+                        # 即时回写保存 JSON，防止程序意外中断丢失进度
+                        save_json(data_path, goods_list)
+                        logger.info(f"[+] 商品 [{item_id}] 处理完成，发送结果: {send_success}，状态已持久化。")
+
+                        # 多个商品之间缓冲 3 秒，避免发送动作过快引发微信界面响应错乱
+                        time.sleep(3)
+
+                    if not has_pending:
+                        logger.info("[*] 本轮扫描完成：暂无待发送的数据。")
+
+        except Exception as e:
+            logger.error(f"[-] 轮询流程执行异常: {e}", exc_info=True)
+
+        logger.info(f"[*] 进入休眠，将在 {poll_interval // 3600} 小时后执行下一次检查...")
+        time.sleep(poll_interval)
+
+
+if __name__ == "__main__":
+    # 启动轮询：默认每 3600 秒（1小时）轮询一次 "auto_weixin.json"
+    poll_and_send_goods(
+        data_path=r"W:\project\python_project\easy_shop\app\second_prom\data\all_items.json",
         target_group=TARGET_GROUP,
-        text_content=TEXT_CONTENT,
-        image_list=IMAGE_LIST,
-        batch_images=True,
+        poll_interval=3600
     )
