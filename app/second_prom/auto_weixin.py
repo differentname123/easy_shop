@@ -283,7 +283,7 @@ def send_wechat_payload(
     if not locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
         logger.info(f"[-] 进入目标群聊 [{target_group}] 失败，流程中断。")
         return False
-
+    valid_images=[]
     # 1. 发送图片（保留透明度通道）
     if image_list:
         valid_images = [p for p in image_list if os.path.exists(p)]
