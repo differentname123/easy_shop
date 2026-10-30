@@ -46,7 +46,7 @@ TB_NAME = "不同名字123"
 PROMPT_FILE_PATH = "W:\project\python_project\easy_shop\prompt\种草话术生成.txt"
 # ==================== 2. 调度与抓取固定参数 ====================
 RUN_INTERVAL = 3600
-FIXED_PAGES = 1
+FIXED_PAGES = 10
 FIXED_START_PAGE = 1
 FORCE_REFRESH = False
 
