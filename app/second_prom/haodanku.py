@@ -3,7 +3,7 @@
 """
 =====================================================================
 [功能摘要]
-好单库「近2h销量」活动商品定时抓取、淘宝联盟高佣转链、社群/官方双源素材下载与增量落盘服务。
+好单库「近2h销量」活动商品定时抓取、淘宝联盟高佣转链、社群/官方双源素材下载与增量入库服务。
 
 [输入数据]
 1. 静态配置：好单库 APIKEY、淘宝联盟 PID、授权淘宝昵称、活动 ID (24) 及定时周期参数。
@@ -11,20 +11,22 @@
    - 活动列表接口 (LIST_API)：返回分页商品基础字典列表（含 id, itemid, itemtitle, itempic 等）。
    - 官方转链接口 (RATES_API)：输入 itemid/PID，返回二合一推广链接与淘口令。
    - 社群素材接口 (ITEM_INFO_API / ITEM_MATERIAL_API) 及详情页 HTML：返回推广群图文列表。
-3. 本地状态文件：`data/all_items.json` 历史商品汇总列表（用于断点续跑校验）。
+3. 数据库记录：MongoDB `products` 集合中的历史商品记录（用于断点续跑校验与增量更新）。
 
 [数据流转/交互]
-定时调度器 (main) -> 拉取活动页商品列表 (fetch_page) -> 断点续跑过滤 (process_item)
+定时调度器 (main) -> 拉取活动页商品列表 (fetch_page) -> 数据库断点续跑校验 (process_item)
 -> 淘联高佣转链 (convert_item) -> 拉取社群素材，接口无数据则降级解析详情页 HTML (fetch_community_material)
--> 清洗文案并注入淘口令 (_clean_copy_text) -> 分别对前5张社群实拍图与前5张官方主图去重并下载 (_download_batch_images)
--> 组装社群与官方并列素材结构 -> 临时文件原子替换写入汇总 JSON (_save_all_items)。
+-> 清洗文案并注入淘口令 (_clean_copy_text) -> 分别对前9张社群实拍图与前9张官方主图去重并下载 (_download_batch_images)
+-> 组装社群与官方并列素材结构并对齐数据库统一字段 -> 安全增量写入 MongoDB (safe_batch_update)。
 
 [输出数据]
-1. 汇总数据文件：`data/all_items.json`，包含所有已处理商品的转链信息、社群素材、官方素材及价格销量元数据。
-2. 本地图片文件：`material/{id}_comm_{01..05}.{ext}`（社群实拍图）与 `material/{id}_item_{01..05}.{ext}`（官方主图）。
+1. 数据库记录：MongoDB `products` 集合，包含统一字段（platform, product_id, name, brand, original_price, activity_price, saved_price, promotion_url, product_url, promotion_info, sku_info 等）及好单库专属素材字段。
+2. 本地图片文件：`material/{id}_comm_{01..09}.{ext}`（社群实拍图）与 `material/{id}_item_{01..09}.{ext}`（官方主图）。
 =====================================================================
 """
 
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
 import html as html_lib
 import json
 import os
@@ -36,6 +38,8 @@ from bs4 import BeautifulSoup, Tag
 
 from common.common_utils import setup_logger, read_file_to_str, string_to_object
 from common.model_api import generate_content
+from common.mongo_db.mongo_base import gen_db_object
+from common.mongo_db.mongo_manager import ProductManager
 
 logger = setup_logger(app_name="haodanku")
 
@@ -43,7 +47,7 @@ logger = setup_logger(app_name="haodanku")
 HAODANKU_APIKEY = "9D3E0E43E5FD"
 MY_PID = "mm_328750149_3161250458_115832850163"
 TB_NAME = "不同名字123"
-PROMPT_FILE_PATH = "W:\project\python_project\easy_shop\prompt\种草话术生成.txt"
+PROMPT_FILE_PATH = r"W:\project\python_project\easy_shop\prompt\种草话术生成.txt"
 # ==================== 2. 调度与抓取固定参数 ====================
 RUN_INTERVAL = 3600
 FIXED_PAGES = 10
@@ -67,7 +71,6 @@ RATES_API = "http://v3.api.haodanku.com/ratesurl"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MATERIAL_DIR = os.path.join(BASE_DIR, "material")
 DATA_DIR = os.path.join(BASE_DIR, "data")
-ALL_ITEMS_JSON = os.path.join(DATA_DIR, "all_items.json")
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -97,6 +100,186 @@ IGNORE_IMG_KEYWORDS = (
 AVATAR_CLASS_MARKERS = (
     "avatar", "head", "group-list", "grouplist", "left-nav", "user", "icon", "logo"
 )
+
+
+def _safe_float(val, default=0.0):
+    """安全将字符串或数值转为 float"""
+    if val is None or val == "":
+        return default
+    try:
+        return round(float(val), 2)
+    except (ValueError, TypeError):
+        return default
+
+
+def safe_batch_update(product_manager, records):
+    """
+    【安全批量更新封装】
+    1. 价格与商品基础字段以当前最新抓取的数据为准进行更新。
+    2. 对 _source_api 来源列表进行安全合并与追加，保留商品全部历史来源并保序去重。
+    3. 【新增：商品变动穿透重置】：若已入库商品的价格 (activity_price) 或名称 (name) 发生变动，
+       自动将其当做新商品穿透重置：重置 need_update_sku=True、sku_status="pending"、
+       sku_retry_count=0、need_reformat=True 等全套下游控制字段，确保重新触发大模型清洗与 RPA 规格抓取。
+    4. 对价格/名称未发生变动的稳定商品，继续保护已有 sku_info 与 need_update_sku，防止被默认占位覆盖。
+    5. 保护库中已生成的非空 promotion_url，防止被空值覆盖。
+    6. 维护 history_price_info 历史价格列表：每次新增或更新商品时，自动追加当前时间、对应价格与商品名称 (name)。
+    """
+    if not records:
+        return {"new": 0, "update": 0}
+
+    bj_tz = timezone(timedelta(hours=8))
+
+    try:
+        product_ids = [
+            str(r["product_id"]) for r in records
+            if r.get("product_id")
+        ]
+
+        if product_ids:
+            # 扩展 projection：增加 activity_price 和 original_price，用于识别商品价格变动
+            existing_docs = product_manager.query(
+                {"product_id": {"$in": list(set(product_ids))}},
+                projection={
+                    "product_id": 1,
+                    "_source_api": 1,
+                    "need_update_sku": 1,
+                    "sku_status": 1,
+                    "promotion_url": 1,
+                    "history_price_info": 1,
+                    "name": 1,
+                    "activity_price": 1,
+                    "original_price": 1,
+                }
+            )
+
+            source_api_map = {}
+            existing_doc_map = {}
+            history_price_map = {}
+
+            if existing_docs:
+                for doc in existing_docs:
+                    pid = str(doc.get("product_id"))
+                    existing_doc_map[pid] = doc
+
+                    # 提取已有的 _source_api
+                    old_source = doc.get("_source_api")
+                    if old_source:
+                        if isinstance(old_source, list):
+                            source_api_map[pid] = [str(item) for item in old_source if item]
+                        elif isinstance(old_source, str):
+                            source_api_map[pid] = [old_source]
+                        else:
+                            source_api_map[pid] = [str(old_source)]
+
+                    # 提取已有的 history_price_info
+                    old_history = doc.get("history_price_info")
+                    if isinstance(old_history, list):
+                        history_price_map[pid] = [
+                            item for item in old_history if isinstance(item, dict)
+                        ]
+                    else:
+                        history_price_map[pid] = []
+
+            for record in records:
+                pid = str(record.get("product_id"))
+                old_doc = existing_doc_map.get(pid) or {}
+
+                # 1. 合并 _source_api
+                current_source = record.get("_source_api")
+                if current_source is not None:
+                    if isinstance(current_source, list):
+                        new_sources = [str(s) for s in current_source if s]
+                    elif isinstance(current_source, str):
+                        new_sources = [current_source] if current_source else []
+                    else:
+                        new_sources = [str(current_source)]
+
+                    existing_sources = source_api_map.get(pid, [])
+                    combined_sources = list(dict.fromkeys(existing_sources + new_sources))
+                    record["_source_api"] = combined_sources
+                    source_api_map[pid] = combined_sources
+
+                # 2. 组装并追加 history_price_info（新增与更新均追加当前时间、对应价格以及商品名称）
+                raw_time = record.get("updated_at")
+                if isinstance(raw_time, datetime):
+                    if raw_time.tzinfo is None:
+                        raw_time = raw_time.replace(tzinfo=timezone.utc)
+                    time_str = raw_time.astimezone(bj_tz).strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    time_str = datetime.now(bj_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+                raw_price = record.get("activity_price")
+                if raw_price is None:
+                    raw_price = record.get("original_price", 0.0)
+                current_price = _safe_float(raw_price, default=0.0)
+
+                # 提取商品名：优先从当前抓取记录获取，缺失时使用旧文档记录兜底
+                current_name = str(record.get("name") or old_doc.get("name") or "").strip()
+
+                price_entry = {
+                    "time": time_str,
+                    "price": current_price,
+                    "name": current_name,
+                }
+
+                existing_history = history_price_map.get(pid, [])
+                combined_history = existing_history + [price_entry]
+                record["history_price_info"] = combined_history
+                history_price_map[pid] = combined_history
+
+                # 3. 价格与名称变动监测与状态穿透重置
+                if old_doc:
+                    # 获取旧记录的价格和名称
+                    raw_old_price = old_doc.get("activity_price")
+                    if raw_old_price is None:
+                        raw_old_price = old_doc.get("original_price", 0.0)
+                    old_price = _safe_float(raw_old_price, default=0.0)
+                    old_name = str(old_doc.get("name") or "").strip()
+
+                    # 判定价格或名称是否发生变化（浮点数比对保留两位精度）
+                    is_price_changed = (old_price > 0 and current_price > 0 and abs(current_price - old_price) >= 0.01)
+                    is_name_changed = bool(old_name and current_name and old_name != current_name)
+
+                    if is_price_changed or is_name_changed:
+                        # 【核心改动】：检测到商品变动，完全视为新商品，重置下游全链路控制字段
+                        logger.info(
+                            "🔄 [商品变动重置] 商品 [%s] 发生关键信息变更 (价格: %s -> %s, 名称变动: %s) -> 重置为新商品状态",
+                            pid, old_price, current_price, is_name_changed
+                        )
+                        # 重置 RPA SKU 采集全套字段
+                        record["need_update_sku"] = True
+                        record["sku_status"] = "pending"
+                        record["sku_retry_count"] = 0
+                        record["sku_error"] = ""
+                        record["sku_info"] = [
+                            {
+                                "价格": f"￥{current_price}",
+                                "截图地址": "",
+                            }
+                        ]
+
+                        # 重置大模型结构化清洗全套字段
+                        record["need_reformat"] = True
+                        record["format_status"] = "pending"
+                        record["format_retry_count"] = 0
+                        record["format_error"] = ""
+                    else:
+                        # 未发生变动时，沿用原保护机制：避免将已确认的多规格数据还原为单规格占位
+                        if old_doc.get("need_update_sku") is False or old_doc.get("sku_status") == "success":
+                            record.pop("sku_info", None)
+                            record.pop("need_update_sku", None)
+
+                    # 若新记录未携带有效推广链接，但库中已有推广链接，绝不覆盖为空
+                    if not record.get("promotion_url") and old_doc.get("promotion_url"):
+                        record.pop("promotion_url", None)
+
+    except Exception as e:
+        logger.error("[安全更新/来源与历史价格合并异常] 查询失败，退回直接入库模式 | 错误: %s", e)
+        # 若预查询异常，移除可能半途生成的 history_price_info，防止覆盖丢失库中已有的长历史记录
+        for record in records:
+            record.pop("history_price_info", None)
+
+    return product_manager.update(records)
 
 
 class HaoDanKuConverter:
@@ -489,10 +672,11 @@ class CommunityMaterialExtractor:
 
 
 class ActivityCrawler:
-    """活动商品抓取主控器：统筹列表分页拉取、转链、双源素材下载与汇总 JSON 持久化。"""
+    """活动商品抓取主控器：统筹列表分页拉取、转链、双源素材下载与 MongoDB 数据库持久化。"""
 
-    def __init__(self, converter, force=False):
+    def __init__(self, converter, product_manager, force=False):
         self.converter = converter
+        self.product_manager = product_manager
         self.force = force
         self.session = requests.Session()
         self.session.headers.update({
@@ -501,66 +685,30 @@ class ActivityCrawler:
         })
         os.makedirs(MATERIAL_DIR, exist_ok=True)
         os.makedirs(DATA_DIR, exist_ok=True)
-        self.all_items_map = self._load_all_items()
 
     def close(self):
         """释放当前爬虫实例及转链器的 HTTP 会话资源。"""
         self.session.close()
         self.converter.close()
 
-    def _load_all_items(self):
+    def _get_existing_product(self, product_id, hdk_id=""):
         """
-        从本地汇总 JSON 加载历史商品记录。
-        - 出参: dict[str, dict]，以好单库商品字符串 ID 为 Key，商品完整记录字典为 Value。
+        从 MongoDB 查询已存在的商品记录（优先按统一的纯数字淘系商品 ID `product_id` 查询，兼容按好单库 `id` 查询）。
         """
-        if not os.path.exists(ALL_ITEMS_JSON):
-            return {}
-
-        items_map = {}
         try:
-            with open(ALL_ITEMS_JSON, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-
-            records = []
-            if isinstance(raw_data, list):
-                records = raw_data
-            elif isinstance(raw_data, dict):
-                if isinstance(raw_data.get("items"), list):
-                    records = raw_data["items"]
-                else:
-                    for k, v in raw_data.items():
-                        if isinstance(v, dict):
-                            v["id"] = str(v.get("id") or k)
-                            records.append(v)
-
-            for entry in records:
-                if isinstance(entry, dict) and entry.get("id") is not None:
-                    items_map[str(entry["id"])] = entry
-
-            logger.info(
-                "[汇总数据/初始化] 成功加载本地历史商品库 | 历史记录数: [%d] | 路径: <%s>",
-                len(items_map), ALL_ITEMS_JSON,
-            )
+            docs = self.product_manager.query({"product_id": str(product_id)})
+            if docs and isinstance(docs, list):
+                return docs[0]
+            if hdk_id:
+                docs_by_hdk = self.product_manager.query({"id": str(hdk_id)})
+                if docs_by_hdk and isinstance(docs_by_hdk, list):
+                    return docs_by_hdk[0]
         except Exception as e:
             logger.warning(
-                "[汇总数据/初始化] 读取本地汇总文件异常，将初始化为空库重新创建 | 路径: <%s> | 可能原因: 文件损坏或格式非法(%s)",
-                ALL_ITEMS_JSON, e,
+                "[数据库查询/异常] 查询历史商品记录失败，将按新商品处理 | product_id: [%s] | 原因: %s",
+                product_id, e,
             )
-        return items_map
-
-    def _save_all_items(self):
-        """采用临时文件 + os.replace 原子写入汇总 JSON，防止进程中断导致数据文件损坏。"""
-        tmp_path = f"{ALL_ITEMS_JSON}.tmp"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(list(self.all_items_map.values()), f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, ALL_ITEMS_JSON)
-        except Exception as e:
-            logger.error(
-                "❌ [汇总数据/落盘失败] 写入商品汇总 JSON 文件时发生严重故障 | 目标路径: <%s> | 故障原因: 磁盘空间不足或文件权限受限(%s)",
-                ALL_ITEMS_JSON, e,
-            )
-            raise
+        return None
 
     def fetch_page(self, page_no):
         """
@@ -777,9 +925,9 @@ class ActivityCrawler:
             # 1. 采纳首个文案
             first_text_node = ordered_material[start_idx]
             selected_text = (
-                    first_text_node.get("content")
-                    or first_text_node.get("text")
-                    or ""
+                first_text_node.get("content")
+                or first_text_node.get("text")
+                or ""
             ).strip()
 
             # 2. 收集紧随其后的连续图片，遇到下一个文本即截断结束
@@ -820,9 +968,9 @@ class ActivityCrawler:
                 item = ordered_material[next_idx]
                 if isinstance(item, dict) and item.get("type") == "text":
                     selected_text = (
-                            item.get("content")
-                            or item.get("text")
-                            or ""
+                        item.get("content")
+                        or item.get("text")
+                        or ""
                     ).strip()
                     # 采纳该文案后立即终止，后面的文字2、图片3等全部舍弃
                     break
@@ -905,15 +1053,113 @@ class ActivityCrawler:
 
         return "\n".join(lines).strip()
 
+    def _build_db_record(self, item, record_id, itemid, coupon_val, official_desc, base_fields):
+        """
+        构建与数据库现有结构对齐的商品记录字典：
+        相同含义的字段统一使用原数据库字段名称（product_id, name, brand, original_price, activity_price,
+        saved_price, promotion_url, product_url, image_url, sales_tip, promotion_info, sku_info 等）。
+        """
+        now_utc = datetime.now(timezone.utc)
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        original_price = _safe_float(item.get("itemprice"))
+        raw_end_price = _safe_float(item.get("itemendprice"))
+        activity_price = raw_end_price if raw_end_price > 0 else original_price
+
+        saved_price = _safe_float(coupon_val)
+        if saved_price <= 0 and original_price > activity_price > 0:
+            saved_price = round(original_price - activity_price, 2)
+
+        name = (item.get("itemtitle") or item.get("itemshorttitle") or base_fields.get("name") or "").strip()
+        short_title = (item.get("itemshorttitle") or item.get("itemtitle") or base_fields.get("item_short_title") or "").strip()
+        brand = (item.get("brand_name") or item.get("shopname") or base_fields.get("brand") or "").strip()
+        shop_name = (item.get("shopname") or base_fields.get("shop_name") or "").strip()
+        category = (
+            item.get("fqcat")
+            or item.get("category_name")
+            or base_fields.get("category")
+            or f"好单库_活动{ACTIVITY_ID}"
+        )
+
+        raw_sale = item.get("itemsale") or item.get("itemsale2") or item.get("todaysale")
+        sales_tip = f"已售{raw_sale}" if raw_sale else str(base_fields.get("sales_tip") or "")
+
+        image_url = CommunityMaterialExtractor.normalize_url(
+            item.get("itempic") or base_fields.get("image_url") or ""
+        )
+        promotion_url = base_fields.get("promotion_url") or ""
+        product_url = f"https://item.taobao.com/item.htm?id={itemid}"
+
+        commission_rate = _safe_float(item.get("tkrates"))
+        est_commission = _safe_float(item.get("tkmoney"))
+
+        default_sku_info = [
+            {
+                "价格": f"￥{activity_price}",
+                "截图地址": "",
+            }
+        ]
+
+        record = {
+            # ===== 与数据库原方案完全对齐的核心字段 =====
+            "platform": "taobao",
+            "product_id": itemid,
+            "item_id": itemid,
+            "category": str(category),
+            "_source_api": ["haodanku_activity"],
+            "name": name,
+            "brand": brand,
+            "sales_tip": sales_tip,
+            "image_url": image_url,
+            "original_price": original_price,
+            "activity_price": activity_price,
+            "saved_price": saved_price,
+            "promotion_url": promotion_url,
+            "product_url": product_url,
+            "promotion_info": {
+                "promotion_rate": commission_rate,
+                "estimated_commission": est_commission,
+                "has_mall_coupon": saved_price > 0,
+                "shop_title": shop_name,
+            },
+            "sku_info": default_sku_info,
+            "need_update_sku": True,
+            "updated_at": now_utc,
+
+            # ===== 好单库业务与素材扩展字段 =====
+            "id": record_id,
+            "general_index": item.get("general_index"),
+            "item_short_title": short_title,
+            "taoword": base_fields.get("taoword"),
+            "community_group": base_fields.get("community_group", ""),
+            "community_content": base_fields.get("community_content", ""),
+            "community_images": base_fields.get("community_images", []),
+            "ordered_material": base_fields.get("ordered_material", []),
+            "item_desc": official_desc,
+            "raw_itemdesc": (item.get("itemdesc") or "").strip(),
+            "item_images": base_fields.get("item_images", []),
+            "real_content": base_fields.get("real_content", official_desc),
+            "material_images": base_fields.get("material_images", []),
+            "detail_url": f"{ITEM_DETAIL_URL}?id={record_id}",
+            "sale_2h": item.get("itemsale2"),
+            "todaysale": item.get("todaysale"),
+            "itemsale": item.get("itemsale"),
+            "shop_type": item.get("shoptype"),
+            "activity_plan": item.get("activity_plan"),
+            "added_at": base_fields.get("added_at") or now_str,
+            "created_at": base_fields.get("created_at") or now_str,
+        }
+        return record
+
     def process_item(self, item):
         """
         处理单个商品全流程：
-        校验 -> 断点判断(若存在则增量更新动态元数据) -> 转链 -> 社群与官方素材双路下载 -> 生成官方推荐文案 -> 提炼首组图文 -> 汇总持久化。
+        校验 -> 断点判断(若存在则增量更新动态元数据) -> 转链 -> 社群与官方素材双路下载 -> 生成官方推荐文案 -> 提炼首组图文 -> 数据库持久化。
         - 入参 item: dict，来自列表接口的单商品原始字典。
         - 出参: str，处理结果状态码 ("ok" | "skip" | "fail")。
         """
         raw_id = item.get("id")
-        itemid = (item.get("itemid") or "").strip()
+        itemid = str(item.get("itemid") or "").strip()
         if raw_id is None or not str(raw_id).strip() or not itemid:
             logger.warning(
                 "[商品校验/跳过] 商品基础数据缺失核心主键，无法处理 | 好单库ID: [%s] | 淘系ID: [%s]",
@@ -925,53 +1171,63 @@ class ActivityCrawler:
         short_title = (item.get("itemshorttitle") or item.get("itemtitle") or "")[:20]
 
         # ==================== 1. 断点续跑校验与元数据增量更新 ====================
-        existing = self.all_items_map.get(record_id)
+        existing = self._get_existing_product(product_id=itemid, hdk_id=record_id)
+        existing_promo_url = (existing or {}).get("promotion_url") or (existing or {}).get("two_in_one_url")
         is_material_complete = (
-                not self.force
-                and isinstance(existing, dict)
-                and bool(existing.get("two_in_one_url"))
-                and "ordered_material" in existing
-                and "item_images" in existing
+            not self.force
+            and isinstance(existing, dict)
+            and bool(existing_promo_url)
+            and "ordered_material" in existing
+            and "item_images" in existing
         )
 
         if is_material_complete:
-            # 商品已有完整转链及图文素材，跳过转链与重复下载大图，但全面更新最新的动态业务字段
-            coupon_val = existing.get("coupon_money") or item.get("couponmoney")
+            # 商品已有完整转链及图文素材，跳过转链与重复下载大图，但全面更新最新的动态业务字段入库
+            coupon_val = item.get("couponmoney")
+            if coupon_val is None:
+                coupon_val = existing.get("saved_price") or existing.get("coupon_money")
             official_desc = self._build_official_recommend_desc(item, coupon_money=coupon_val)
-            now_str = time.strftime("%Y-%m-%d %H:%M:%S")
 
-            # 同步最新商品动态属性
-            existing["item_title"] = item.get("itemtitle") or existing.get("item_title")
-            existing["item_short_title"] = item.get("itemshorttitle") or existing.get("item_short_title")
-            existing["general_index"] = item.get("general_index")
-            existing["item_price"] = item.get("itemprice")
-            existing["item_end_price"] = item.get("itemendprice")
-            existing["coupon_money"] = coupon_val
-            existing["sale_2h"] = item.get("itemsale2")
-            existing["todaysale"] = item.get("todaysale")
-            existing["itemsale"] = item.get("itemsale")
-            existing["tkrates"] = item.get("tkrates")
-            existing["tkmoney"] = item.get("tkmoney")
-            existing["shop_name"] = item.get("shopname")
-            existing["shop_type"] = item.get("shoptype")
-            existing["brand_name"] = item.get("brand_name")
-            existing["activity_plan"] = item.get("activity_plan")
-            existing["raw_itemdesc"] = (item.get("itemdesc") or "").strip()
-            existing["item_desc"] = official_desc
-            existing["updated_at"] = now_str
-
-            # 若先前未获取到社群素材，发群正文 real_content 同步更新为最新官方推荐语
+            real_content = existing.get("real_content") or ""
             if not existing.get("community_content"):
-                existing["real_content"] = official_desc
+                real_content = official_desc
 
-            self.all_items_map[record_id] = existing
-            self._save_all_items()
+            base_fields = {
+                "name": existing.get("name") or existing.get("item_title"),
+                "item_short_title": existing.get("item_short_title"),
+                "brand": existing.get("brand") or existing.get("brand_name"),
+                "shop_name": (existing.get("promotion_info") or {}).get("shop_title") or existing.get("shop_name"),
+                "category": existing.get("category"),
+                "sales_tip": existing.get("sales_tip"),
+                "image_url": existing.get("image_url"),
+                "promotion_url": existing_promo_url,
+                "taoword": existing.get("taoword"),
+                "community_group": existing.get("community_group", ""),
+                "community_content": existing.get("community_content", ""),
+                "community_images": existing.get("community_images", []),
+                "ordered_material": existing.get("ordered_material", []),
+                "item_images": existing.get("item_images", []),
+                "real_content": real_content,
+                "material_images": existing.get("material_images", []),
+                "added_at": existing.get("added_at"),
+                "created_at": existing.get("created_at"),
+            }
+
+            update_record = self._build_db_record(
+                item=item,
+                record_id=record_id,
+                itemid=itemid,
+                coupon_val=coupon_val,
+                official_desc=official_desc,
+                base_fields=base_fields,
+            )
+            safe_batch_update(self.product_manager, [update_record])
 
             logger.info(
-                "[断点续跑/更新字段] 商品素材已完整，已更新最新动态字段 | 商品ID: [%s] | 淘系ID: [%s] | "
+                "[断点续跑/更新字段] 商品素材已完整，已更新最新动态字段入库 | 商品ID: [%s] | 淘系ID: [%s] | "
                 "2h销量: [%s] | 今日销量: [%s] | 券后价: [%s元] | 标题: 【%s】",
                 record_id, itemid, item.get("itemsale2") or "-", item.get("todaysale") or "-",
-                                   item.get("itemendprice") or "-", short_title,
+                item.get("itemendprice") or "-", short_title,
             )
             return "skip"
 
@@ -1024,54 +1280,40 @@ class ActivityCrawler:
             final_real_content = official_desc
             final_material_images = item_local_paths
 
-        # ==================== 6. 组装完整记录并原子落盘 ====================
+        # ==================== 6. 组装完整记录并写入 MongoDB ====================
         now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-        record = {
-            "id": record_id,
-            "item_id": itemid,
-            "general_index": item.get("general_index"),
-            "item_title": item.get("itemtitle"),
-            "item_short_title": item.get("itemshorttitle"),
-            "two_in_one_url": conv["two_in_one_url"],
+        base_fields = {
+            "promotion_url": conv["two_in_one_url"],
             "taoword": conv["taoword"],
             "community_group": comm_group,
             "community_content": comm_copy,
             "community_images": comm_local_paths,
             "ordered_material": ordered_material,
-            "item_desc": official_desc,
-            "raw_itemdesc": (item.get("itemdesc") or "").strip(),
             "item_images": item_local_paths,
             "real_content": final_real_content,
             "material_images": final_material_images,
-            "detail_url": f"{ITEM_DETAIL_URL}?id={record_id}",
-            "coupon_money": coupon_val,
-            "item_price": item.get("itemprice"),
-            "item_end_price": item.get("itemendprice"),
-            "sale_2h": item.get("itemsale2"),
-            "todaysale": item.get("todaysale"),
-            "itemsale": item.get("itemsale"),
-            "tkrates": item.get("tkrates"),
-            "tkmoney": item.get("tkmoney"),
-            "shop_name": item.get("shopname"),
-            "shop_type": item.get("shoptype"),
-            "brand_name": item.get("brand_name"),
-            "activity_plan": item.get("activity_plan"),
-            "added_at": now_str,
-            "created_at": now_str,
-            "updated_at": now_str,
+            "added_at": (existing or {}).get("added_at") or now_str,
+            "created_at": (existing or {}).get("created_at") or now_str,
         }
 
-        self.all_items_map[record_id] = record
-        self._save_all_items()
+        record = self._build_db_record(
+            item=item,
+            record_id=record_id,
+            itemid=itemid,
+            coupon_val=coupon_val,
+            official_desc=official_desc,
+            base_fields=base_fields,
+        )
+
+        safe_batch_update(self.product_manager, [record])
 
         logger.info(
-            "[商品处理/完成] 转链与素材落盘成功 | 商品ID: [%s] | 淘系ID: [%s] | 券面额: [%s元] | "
+            "[商品处理/完成] 转链与素材入库成功 | 商品ID: [%s] | 淘系ID: [%s] | 券面额: [%s元] | "
             "采纳文案字数: [%d字] | 采纳图数: [%d张] | 标题: 【%s】",
             record_id, itemid, coupon_val or 0,
             len(final_real_content), len(final_material_images), short_title,
         )
         return "ok"
-
 
     def run(self, pages, start_page=1):
         """
@@ -1115,8 +1357,8 @@ class ActivityCrawler:
                 time.sleep(REQUEST_GAP)
 
             logger.info(
-                "[批次汇总] 本轮抓取任务执行完毕 | 成功: [%d] | 跳过: [%d] | 失败: [%d] | 汇总库累计商品: [%d条] | 存储路径: <%s>",
-                stats["ok"], stats["skip"], stats["fail"], len(self.all_items_map), ALL_ITEMS_JSON,
+                "[批次汇总] 本轮抓取任务执行完毕 | 成功: [%d] | 跳过: [%d] | 失败: [%d] | 存储目标: <MongoDB>",
+                stats["ok"], stats["skip"], stats["fail"],
             )
             # : 疑似业务边界缺陷预警 —— 原代码将 `return stats` 缩进在 `for page_no` 循环体末尾！
             # 这会导致：1) 当 FIXED_PAGES > 1 时，只要第一页成功执行完就会立刻 return 退出，后续页码永远不会被抓取；
@@ -1155,150 +1397,152 @@ def _validate_copy_content(raw_content: str):
 
 def batch_generate_wechat_copy():
     """
-    扫描本地汇总商品，筛选符合条件的商品批量调用大模型生成种草话术：
+    扫描数据库中的好单库商品，筛选符合条件的商品批量调用大模型生成种草话术：
     1. 扫描条件: 生成失败次数 < 3 且 尚未生成 wechat_copy
     2. 提示词组装: 基础提示词 + item_desc + community_content
     3. 图片组装: item_images 与 material_images 去重合并（过滤无效/不存在的路径）
-    4. 重试机制: 单商品调用失败最多重试 3 次，全部失败则累计生成次数并落盘
-    5. 成功处理: 更新 wechat_copy、记录生成时间 copy_generated_at 并立即原子落盘
+    4. 重试机制: 单商品调用失败最多重试 3 次，全部失败则累计生成次数并更新入库
+    5. 成功处理: 更新 wechat_copy、记录生成时间 copy_generated_at 并立即更新入库
     """
-    if not os.path.exists(ALL_ITEMS_JSON):
-        logger.warning("[话术生成/跳过] 本地商品汇总库不存在 | 路径: <%s>", ALL_ITEMS_JSON)
-        return
-
-    try:
-        with open(ALL_ITEMS_JSON, "r", encoding="utf-8") as f:
-            items_list = json.load(f)
-    except Exception as e:
-        logger.error("❌ [话术生成/读取失败] 读取本地商品文件失败: %s", e)
-        return
-
-    if not isinstance(items_list, list):
-        logger.warning("[话术生成/跳过] 商品库数据非列表格式，无法遍历")
-        return
-
     base_prompt = read_file_to_str(PROMPT_FILE_PATH)
     if not base_prompt:
         logger.error("❌ [话术生成/终止] 未读取到基础提示词模版，请检查文件路径: <%s>", PROMPT_FILE_PATH)
         return
 
-    # 扫描符合条件的商品
-    candidates = []
-    for item in items_list:
-        if not isinstance(item, dict):
-            continue
-        attempts = item.get("copy_gen_attempts", 0)
-        has_copy = bool(item.get("wechat_copy") and str(item.get("wechat_copy")).strip())
-        if attempts < 3 and not has_copy:
-            candidates.append(item)
+    with closing(gen_db_object()) as db_instance:
+        db_instance.ping()
+        product_manager = ProductManager(db_instance)
 
-    logger.info(
-        "[话术生成/扫描] 扫描完毕 | 库内总数: [%d] | 待生成任务数: [%d]",
-        len(items_list), len(candidates),
-    )
-
-    if not candidates:
-        return
-
-    def _save_current_state():
-        """原子保存当前全量商品列表到磁盘"""
-        tmp_path = f"{ALL_ITEMS_JSON}.tmp"
         try:
-            with open(tmp_path, "w", encoding="utf-8") as f_out:
-                json.dump(items_list, f_out, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, ALL_ITEMS_JSON)
-        except Exception as err:
-            logger.error("❌ [话术生成/落盘失败] 保存商品数据异常: %s", err)
+            items_list = product_manager.query({"_source_api": "haodanku_activity"}) or []
+        except Exception as e:
+            logger.error("❌ [话术生成/读取失败] 查询数据库商品失败: %s", e)
+            return
 
-    LLM_MAX_RETRIES = 3
+        if not isinstance(items_list, list):
+            logger.warning("[话术生成/跳过] 商品库数据非列表格式，无法遍历")
+            return
 
-    for idx, item in enumerate(candidates, start=1):
-        item_id = item.get("id") or item.get("item_id")
-        short_title = (item.get("item_short_title") or item.get("item_title") or "")[:20]
-
-        # 1. 组装输入文本: 基础 Prompt + 官方描述 + 社群素材
-        item_desc = item.get("item_desc") or ""
-        community_content = item.get("community_content") or ""
-        prompt_text = (
-            f"{base_prompt}\n\n"
-            f"【商品官方信息与描述】\n{item_desc}\n\n"
-            f"【社群素材文案】\n{community_content}"
-        )
-
-        # 2. 组装图片路径: item_images + material_images 去重并校验本地存在性
-        combined_imgs = (item.get("item_images") or []) + (item.get("material_images") or [])
-        file_paths = []
-        seen_paths = set()
-        for p in combined_imgs:
-            if p and p not in seen_paths:
-                seen_paths.add(p)
-                if os.path.exists(p):
-                    file_paths.append(p)
+        # 扫描符合条件的商品
+        candidates = []
+        for item in items_list:
+            if not isinstance(item, dict):
+                continue
+            attempts = item.get("copy_gen_attempts", 0)
+            has_copy = bool(item.get("wechat_copy") and str(item.get("wechat_copy")).strip())
+            if attempts < 3 and not has_copy:
+                candidates.append(item)
 
         logger.info(
-            "[话术生成/处理中] 开始生成商品文案 | 进度: [%d/%d] | 商品ID: [%s] | 关联图数: [%d张] | 标题: 【%s】",
-            idx, len(candidates), item_id, len(file_paths), short_title,
+            "[话术生成/扫描] 扫描完毕 | 库内好单库商品总数: [%d] | 待生成任务数: [%d]",
+            len(items_list), len(candidates),
         )
 
-        success = False
-        last_error = ""
+        if not candidates:
+            return
 
-        # 3. 循环重试 3 次
-        for attempt in range(1, LLM_MAX_RETRIES + 1):
-            try:
-                result = generate_content(
-                    prompt=prompt_text,
-                    preset_model_group="low",
-                    file_paths=file_paths,
-                )
-                if result.get("status") != "✅ 成功":
-                    detail = "；".join(str(e) for e in (result.get("error_history") or []))
-                    raise RuntimeError(detail or result.get("content") or "模型调用返回非成功状态")
+        LLM_MAX_RETRIES = 3
 
-                raw_content = result.get("content", "")
-                is_valid, parsed_data, err_msg = _validate_copy_content(raw_content)
-                if not is_valid:
-                    raise ValueError(err_msg)
+        for idx, item in enumerate(candidates, start=1):
+            product_id = str(item.get("product_id") or item.get("item_id") or "").strip()
+            item_id = item.get("id") or product_id
+            short_title = (item.get("item_short_title") or item.get("name") or item.get("item_title") or "")[:20]
 
-                # 4. 生成成功：更新 wechat_copy 及生成时间
-                item["wechat_copy"] = parsed_data["wechat_copy"]
-                item["copy_generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                # 保存扩展结构以便审计追溯（可选）
-                item["copy_meta"] = {
-                    "product_name": parsed_data.get("product_name"),
-                    "verified_price": parsed_data.get("verified_price"),
-                    "conflict_resolved": parsed_data.get("conflict_resolved"),
-                    "key_reason": parsed_data.get("key_reason"),
-                }
-                _save_current_state()
-
-                logger.info(
-                    "✅ [话术生成/成功] 商品文案生成并落盘 | 商品ID: [%s] | 重试轮次: [%d/%d] | 文案字数: [%d字]",
-                    item_id, attempt, LLM_MAX_RETRIES, len(item["wechat_copy"]),
-                )
-                success = True
-                break
-
-            except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
-                logger.warning(
-                    "[话术生成/重试] 接口调用或格式校验失败 | 商品ID: [%s] | 轮次: [%d/%d] | 原因: %s",
-                    item_id, attempt, LLM_MAX_RETRIES, last_error,
-                )
-                if attempt < LLM_MAX_RETRIES:
-                    time.sleep(2 ** attempt)
-
-        # 5. 3次全失败：增加尝试次数并保存
-        if not success:
-            item["copy_gen_attempts"] = item.get("copy_gen_attempts", 0) + 1
-            item["copy_gen_last_error"] = last_error
-            _save_current_state()
-            logger.error(
-                "❌ [话术生成/彻底失败] 商品文案3次尝试均失败 | 商品ID: [%s] | 当前累计失败次数: [%d] | 最终原因: %s",
-                item_id, item["copy_gen_attempts"], last_error,
+            # 1. 组装输入文本: 基础 Prompt + 官方描述 + 社群素材
+            item_desc = item.get("item_desc") or ""
+            community_content = item.get("community_content") or ""
+            prompt_text = (
+                f"{base_prompt}\n\n"
+                f"【商品官方信息与描述】\n{item_desc}\n\n"
+                f"【社群素材文案】\n{community_content}"
             )
 
-        time.sleep(0.5)
+            # 2. 组装图片路径: item_images + material_images 去重并校验本地存在性
+            combined_imgs = (item.get("item_images") or []) + (item.get("material_images") or [])
+            file_paths = []
+            seen_paths = set()
+            for p in combined_imgs:
+                if p and p not in seen_paths:
+                    seen_paths.add(p)
+                    if os.path.exists(p):
+                        file_paths.append(p)
+
+            logger.info(
+                "[话术生成/处理中] 开始生成商品文案 | 进度: [%d/%d] | 商品ID: [%s] | 关联图数: [%d张] | 标题: 【%s】",
+                idx, len(candidates), item_id, len(file_paths), short_title,
+            )
+
+            success = False
+            last_error = ""
+
+            # 3. 循环重试 3 次
+            for attempt in range(1, LLM_MAX_RETRIES + 1):
+                try:
+                    result = generate_content(
+                        prompt=prompt_text,
+                        preset_model_group="low",
+                        file_paths=file_paths,
+                    )
+                    if result.get("status") != "✅ 成功":
+                        detail = "；".join(str(e) for e in (result.get("error_history") or []))
+                        raise RuntimeError(detail or result.get("content") or "模型调用返回非成功状态")
+
+                    raw_content = result.get("content", "")
+                    is_valid, parsed_data, err_msg = _validate_copy_content(raw_content)
+                    if not is_valid:
+                        raise ValueError(err_msg)
+
+                    # 4. 生成成功：更新 wechat_copy 及生成时间入库
+                    patch_doc = {
+                        "product_id": product_id,
+                        "wechat_copy": parsed_data["wechat_copy"],
+                        "copy_generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "copy_meta": {
+                            "product_name": parsed_data.get("product_name"),
+                            "verified_price": parsed_data.get("verified_price"),
+                            "conflict_resolved": parsed_data.get("conflict_resolved"),
+                            "key_reason": parsed_data.get("key_reason"),
+                        },
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                    product_manager.update([patch_doc])
+
+                    logger.info(
+                        "✅ [话术生成/成功] 商品文案生成并入库 | 商品ID: [%s] | 重试轮次: [%d/%d] | 文案字数: [%d字]",
+                        item_id, attempt, LLM_MAX_RETRIES, len(patch_doc["wechat_copy"]),
+                    )
+                    success = True
+                    break
+
+                except Exception as exc:
+                    last_error = f"{type(exc).__name__}: {exc}"
+                    logger.warning(
+                        "[话术生成/重试] 接口调用或格式校验失败 | 商品ID: [%s] | 轮次: [%d/%d] | 原因: %s",
+                        item_id, attempt, LLM_MAX_RETRIES, last_error,
+                    )
+                    if attempt < LLM_MAX_RETRIES:
+                        time.sleep(2 ** attempt)
+
+            # 5. 3次全失败：增加尝试次数并保存入库
+            if not success:
+                new_attempts = item.get("copy_gen_attempts", 0) + 1
+                fail_patch = {
+                    "product_id": product_id,
+                    "copy_gen_attempts": new_attempts,
+                    "copy_gen_last_error": last_error,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+                try:
+                    product_manager.update([fail_patch])
+                except Exception as err:
+                    logger.error("❌ [话术生成/入库失败] 保存失败计数异常: %s", err)
+
+                logger.error(
+                    "❌ [话术生成/彻底失败] 商品文案3次尝试均失败 | 商品ID: [%s] | 当前累计失败次数: [%d] | 最终原因: %s",
+                    item_id, new_attempts, last_error,
+                )
+
+            time.sleep(0.5)
 
 
 def main():
@@ -1310,13 +1554,16 @@ def main():
 
     while True:
         crawler = None
-        # 1. 抓取与双源素材落地
+        # 1. 抓取与双源素材落地入库
         try:
-            converter = HaoDanKuConverter(
-                apikey=HAODANKU_APIKEY, pid=MY_PID, tb_name=TB_NAME
-            )
-            crawler = ActivityCrawler(converter, force=FORCE_REFRESH)
-            crawler.run(pages=FIXED_PAGES, start_page=FIXED_START_PAGE)
+            with closing(gen_db_object()) as db_instance:
+                db_instance.ping()
+                product_manager = ProductManager(db_instance)
+                converter = HaoDanKuConverter(
+                    apikey=HAODANKU_APIKEY, pid=MY_PID, tb_name=TB_NAME
+                )
+                crawler = ActivityCrawler(converter, product_manager=product_manager, force=FORCE_REFRESH)
+                crawler.run(pages=FIXED_PAGES, start_page=FIXED_START_PAGE)
         except Exception as e:
             logger.error(
                 "❌ [抓取流程/异常] 定时抓取主流程发生未预期的顶层异常 | 故障原因: %s (将在下个周期自动尝试恢复)",
