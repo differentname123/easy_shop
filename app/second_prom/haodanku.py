@@ -1088,7 +1088,7 @@ class ActivityCrawler:
             item.get("itempic") or base_fields.get("image_url") or ""
         )
         promotion_url = base_fields.get("promotion_url") or ""
-        product_url = f"https://item.taobao.com/item.htm?id={itemid}"
+        product_url = f"https://uland.TaoBao.com/item/edetail?id={itemid}"
 
         commission_rate = _safe_float(item.get("tkrates"))
         est_commission = _safe_float(item.get("tkmoney"))
