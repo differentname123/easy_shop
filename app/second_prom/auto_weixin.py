@@ -276,9 +276,6 @@ def send_wechat_payload(
         return False
 
     rect = win32gui.GetWindowRect(hwnd)
-    logger.info(
-        f"[+] 成功锁定微信 (HWND: {hwnd}) | 坐标: ({rect[0]}, {rect[1]}) 宽高: {rect[2]-rect[0]}x{rect[3]-rect[1]}"
-    )
 
     if not locate_and_enter_chat_safe(hwnd, wx_ctrl, target_group):
         logger.info(f"[-] 进入目标群聊 [{target_group}] 失败，流程中断。")
