@@ -34,7 +34,7 @@ import time
 import requests
 from bs4 import BeautifulSoup, Tag
 
-from common.common_utils import setup_logger, read_file_to_str
+from common.common_utils import setup_logger, read_file_to_str, string_to_object
 from common.model_api import generate_content
 
 logger = setup_logger(app_name="haodanku")
@@ -1141,31 +1141,9 @@ def _validate_copy_content(raw_content: str):
     if not raw_content or not isinstance(raw_content, str):
         return False, None, "大模型返回内容为空"
 
-    text = raw_content.strip()
-    # 提取 Markdown 代码块中的 JSON 文本
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if match:
-        text = match.group(1).strip()
-    else:
-        # 兼容未包含在 markdown 代码块但含有大括号的情况
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            text = text[start: end + 1].strip()
-
-    try:
-        data = json.loads(text)
-    except Exception as e:
-        return False, None, f"JSON 反序列化失败: {e}"
-
-    if not isinstance(data, dict):
-        return False, None, "JSON 根节点非字典对象"
+    data = string_to_object(raw_content)
 
     required_keys = [
-        "product_name",
-        "verified_price",
-        "conflict_resolved",
-        "key_reason",
         "wechat_copy",
     ]
     missing_keys = [k for k in required_keys if k not in data or not str(data[k]).strip()]
@@ -1348,20 +1326,20 @@ def main():
             if crawler is not None:
                 crawler.close()
 
-        # 2. 串行执行种草话术生成
-        try:
-            logger.info("[守护进程/流水线] 抓取流程完成，开始串行触发种草话术生成任务")
-            batch_generate_wechat_copy()
-        except Exception as e:
-            logger.error(
-                "❌ [话术流程/异常] 种草话术生成流程发生未预期的异常 | 故障原因: %s",
-                e, exc_info=True,
-            )
-
-        logger.info(
-            "[守护进程/休眠] 本轮抓取与话术生成任务已全部结束，等待进入下一轮 | 休眠时长: [%d秒]",
-            RUN_INTERVAL,
-        )
+        # # 2. 串行执行种草话术生成
+        # try:
+        #     logger.info("[守护进程/流水线] 抓取流程完成，开始串行触发种草话术生成任务")
+        #     batch_generate_wechat_copy()
+        # except Exception as e:
+        #     logger.error(
+        #         "❌ [话术流程/异常] 种草话术生成流程发生未预期的异常 | 故障原因: %s",
+        #         e, exc_info=True,
+        #     )
+        #
+        # logger.info(
+        #     "[守护进程/休眠] 本轮抓取与话术生成任务已全部结束，等待进入下一轮 | 休眠时长: [%d秒]",
+        #     RUN_INTERVAL,
+        # )
         time.sleep(RUN_INTERVAL)
 
 
