@@ -15,6 +15,8 @@
 import time
 import json
 import hashlib
+import traceback
+
 import requests
 from common.common_utils import get_config, setup_logger
 
@@ -416,6 +418,7 @@ def generate_smart_promotion_url(client_id, client_secret, pid, goods_sign, cash
         if hb_url_list:
             return {"status": "success", "link_type": "官方超级红包", "data": hb_url_list[0]}
     except Exception:
+        traceback.print_exc()
         pass  # 降级进入常规普通生链
 
     # 策略 3：标准兜底推广
