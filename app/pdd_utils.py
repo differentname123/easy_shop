@@ -629,9 +629,21 @@ if __name__ == "__main__":
     # else:
     #     logger.error(f"❌ 生成备案链接失败，请检查网络或应用权限：{auth_res['error_msg']}")
 
+    # test_sign = "E972eAOuh2pgMvVTwvTBW0rkpF2EFZSW_JQ9LNEKcbl"
+    #
+    # logger.info(f"======== 🚀 测试单品精确查询 | goods_sign: [{test_sign}] ========")
+    #
+    # # 调用 Detail 接口查单品
+    # goods_info = get_unified_pdd_goods_info(
+    #     client_id=pdd_client_id,
+    #     client_secret=pdd_client_secret,
+    #     pid=pdd_pid,
+    #     goods_sign=test_sign,
+    # )
 
-    test_keyword = "无线游戏手柄"
-    test_limit = 100
+
+    test_keyword = "https://p.pinduoduo.com/rmTkxbV0?sc=EFAC"
+    test_limit = 10
     logger.info(f"======== 🚀 开始测试关键词搜索 | 关键词: [{test_keyword}] | 限制获取: [{test_limit}条] ========")
 
     search_result = search_pdd_goods_by_keyword(
