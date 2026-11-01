@@ -55,20 +55,36 @@ body {
   overflow-x: hidden;
 }
 
-/* ================== 通用头部 & 智能 Sticky 导航栏 ================== */
+/* ================== 通用头部 & 智能手势隐现悬浮导航栏 ================== */
 .top-header {
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 540px;
   z-index: 100;
   background: #ffffff;
   box-shadow: 0 1px 6px rgba(0,0,0,0.06);
-  transition: transform 0.25s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
   will-change: transform;
 }
 
 .top-header.header-hidden {
-  transform: translateY(-100%) !important;
+  transform: translate(-50%, -100%) !important;
   pointer-events: none;
+}
+
+.tab-page.tab-home {
+  padding-top: 88px;
+}
+
+.tab-page.tab-boom {
+  padding-top: 126px;
+}
+
+.tab-page.tab-user {
+  padding-top: 0;
 }
 
 .search-box {

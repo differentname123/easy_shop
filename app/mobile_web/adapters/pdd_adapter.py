@@ -44,6 +44,29 @@ class PddAdapter(BasePlatformAdapter):
         self.client_secret = client_secret
         self.pid = pid
 
+    def _normalize_goods_summary(self, raw_cleaned: dict) -> dict:
+        """极简商品卡片摘要对象：专供列表推荐与搜索，减少冗余字段，极大加快首屏加载与解析速度"""
+        price = raw_cleaned.get("min_group_price_yuan", 0.0)
+        coupon_discount = raw_cleaned.get("coupon_discount_yuan", 0.0)
+        final_price = round(max(0.0, price - coupon_discount), 2) if raw_cleaned.get("has_coupon") else price
+
+        return {
+            "platform": self.platform_code,
+            "platform_name": self.platform_name,
+            "goods_id": str(raw_cleaned.get("goods_id", "")),
+            "goods_sign": raw_cleaned.get("goods_sign", ""),
+            "name": raw_cleaned.get("goods_name", ""),
+            "image_url": raw_cleaned.get("goods_image_url") or raw_cleaned.get("goods_thumbnail_url", ""),
+            "price": final_price,
+            "original_price": price,
+            "coupon_amount": coupon_discount,
+            "has_coupon": raw_cleaned.get("has_coupon", False),
+            "commission_rate": round(raw_cleaned.get("promotion_rate", 0) / 10.0, 1),
+            "commission_amount": raw_cleaned.get("estimated_commission_yuan", 0.0),
+            "sales_tip": raw_cleaned.get("sales_tip", "0"),
+            "mall_name": raw_cleaned.get("mall_name", "品牌官方店"),
+        }
+
     def _normalize_goods(self, raw_cleaned: dict) -> dict:
         """将清洗后的商品数据转化为统一、规范且包含多图轮播的对外商品详情对象"""
         price = raw_cleaned.get("min_group_price_yuan", 0.0)
@@ -154,7 +177,7 @@ class PddAdapter(BasePlatformAdapter):
             for item in goods_list:
                 cleaned = clean_goods_item(item, source_type=f"pdd_recommend_{channel_type}")
                 if cleaned:
-                    normalized_list.append(self._normalize_goods(cleaned))
+                    normalized_list.append(self._normalize_goods_summary(cleaned))
 
             return {
                 "status": "success",
@@ -199,7 +222,7 @@ class PddAdapter(BasePlatformAdapter):
             for item in goods_list:
                 cleaned = clean_goods_item(item, source_type="pdd_search")
                 if cleaned:
-                    normalized_list.append(self._normalize_goods(cleaned))
+                    normalized_list.append(self._normalize_goods_summary(cleaned))
 
             return {
                 "status": "success",

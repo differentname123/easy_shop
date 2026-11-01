@@ -68,8 +68,7 @@ class ProductRepository:
             cursor = self.col.find(filter_query).sort(sort_spec).skip(skip).limit(page_size)
             items = []
             for doc in cursor:
-                item_detail = self._normalize_doc(doc)
-                items.append(item_detail)
+                items.append(self._normalize_doc_summary(doc))
 
             return {
                 "status": "success",
@@ -90,6 +89,41 @@ class ProductRepository:
                 "has_more": False,
                 "data": [],
             }
+
+    def _normalize_doc_summary(self, doc: Dict[str, Any]) -> Dict[str, Any]:
+        """极简爆品卡片摘要对象：仅提取列表所需字段，大幅提升查询与网络传输速度"""
+        activity_price = doc.get("activity_price") or doc.get("price") or 0.0
+        original_price = doc.get("original_price") or activity_price
+        saved_price = doc.get("saved_price") or max(0.0, round(original_price - activity_price, 2))
+
+        commission = doc.get("estimated_commission_yuan")
+        if not commission:
+            commission = round(float(activity_price) * 0.1, 2)
+            if commission < 0.1:
+                commission = 0.50
+
+        updated_at_dt = doc.get("updated_at")
+        updated_at_str = updated_at_dt.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at_dt, "strftime") else str(updated_at_dt or "")
+
+        return {
+            "platform": doc.get("platform", "pdd"),
+            "platform_name": "拼多多" if doc.get("platform") == "pdd" else ("淘宝" if doc.get("platform") == "taobao" else "京东"),
+            "product_id": str(doc.get("product_id", "")),
+            "goods_id": str(doc.get("product_id", "")),
+            "goods_sign": doc.get("goods_sign") or "",
+            "name": doc.get("name", "未命名商品"),
+            "brand": doc.get("brand") or "官方甄选",
+            "category": doc.get("category") or "精选爆品",
+            "price": round(float(activity_price), 2),
+            "original_price": round(float(original_price), 2),
+            "saved_price": round(float(saved_price), 2),
+            "coupon_amount": round(float(saved_price), 2),
+            "has_coupon": saved_price > 0,
+            "commission_amount": commission,
+            "sales_tip": doc.get("sales_tip") or "热销中",
+            "image_url": doc.get("image_url") or "",
+            "updated_at": updated_at_str,
+        }
 
     def _normalize_doc(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         """将 Mongo 原生商品文档转化为统一、规范且富含详情的对象"""

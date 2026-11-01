@@ -395,75 +395,20 @@ const app = createApp({
       loadBoomGoods(true);
     };
 
-    // ==================== 商品详情深度浏览与二级生链 ====================
-    const openGoodsDetail = async (item) => {
-      // 立即使用已有数据填充，秒显抽屉，消除点击空白感
-      const baseImages = (item.carousel_images && item.carousel_images.length) 
-        ? item.carousel_images 
-        : [item.image_url].filter(Boolean);
-
-      const brandName = item.brand || item.brand_name || '官方甄选';
-      const catName = item.category || item.category_name || '精品好物';
-      const salesTip = item.sales_tip || '热卖中';
-
-      currentGoods.value = {
-        ...item,
-        carousel_images: baseImages.length ? baseImages : ['https://img.pddpic.com/mms-avatar/default_avatar.png'],
-        service_guarantees: item.service_guarantees || [
-          '🛡️ 正品保障 · 假一赔十',
-          '📦 退货包运费 · 极速退款',
-          '⚡ 48小时极速出库',
-          '💰 平台百亿补贴官方特惠'
-        ],
-        shop_ratings: item.shop_ratings || {
-          desc_score: '4.8 (高)',
-          serv_score: '4.9 (高)',
-          lgst_score: '4.8 (高)'
-        },
-        specs: item.specs || [
-          { label: '商品品牌', value: brandName },
-          { label: '所属品类', value: catName },
-          { label: '累计销量', value: `已拼 ${salesTip} 件` },
-          { label: '发货保障', value: '48小时闪电极速发出 (赠送运费险)' },
-          { label: '售后承诺', value: '支持7天无理由退换货 · 假一赔十' }
-        ],
-        coupon_info: item.coupon_info || {
-          valid_tip: '领券后今日内有效，限时限量抢购'
-        }
-      };
-
-      hasGeneratedLink.value = false;
-      convertedLinkInfo.value = null;
-      isGoodsModalOpen.value = true;
-      isDetailLoading.value = true;
-
-      // 异步获取官方/数据库全量深度详情（多图、实拍轮播、满减券起止与规格参数）
+    // ==================== 商品跳转至独立通用全屏详情大页 ====================
+    const openGoodsDetail = (item) => {
+      // 预置卡片简要数据到 sessionStorage，实现详情页 0ms 瞬间无白屏秒开渲染
       try {
-        const params = new URLSearchParams({
-          platform: item.platform || 'pdd',
-          goods_sign: item.goods_sign || '',
-          goods_id: item.goods_id || item.product_id || '',
-          uid: uid.value || '',
-        });
-        const res = await fetch(`/api/home/detail?${params.toString()}`);
-        const data = await res.json();
-        if (data.status === 'success' && data.data) {
-          const detail = data.data;
-          currentGoods.value = {
-            ...currentGoods.value,
-            ...detail,
-            carousel_images: (detail.carousel_images && detail.carousel_images.length) ? detail.carousel_images : currentGoods.value.carousel_images,
-            service_guarantees: detail.service_guarantees || currentGoods.value.service_guarantees,
-            shop_ratings: detail.shop_ratings || currentGoods.value.shop_ratings,
-            specs: detail.specs || currentGoods.value.specs,
-            coupon_info: detail.coupon_info || currentGoods.value.coupon_info,
-          };
-        }
-      } catch (e) {
-        console.warn('获取商品深度详情失败，保留已有数据:', e);
-      } finally {
-        isDetailLoading.value = false;
-      }
+        sessionStorage.setItem('current_goods_summary', JSON.stringify(item));
+      } catch (e) {}
+
+      const params = new URLSearchParams({
+        goods_id: item.goods_id || item.product_id || '',
+        goods_sign: item.goods_sign || '',
+        platform: item.platform || 'pdd',
+        uid: uid.value || '',
+      });
+      window.location.href = `/detail?${params.toString()}`;
     };
 
     const handleGenerateLink = async () => {
@@ -589,29 +534,28 @@ const app = createApp({
 
     // ==================== 手势与滚动监听 (智能显隐顶部栏 & 触底自动加载) ====================
     let touchStartY = 0;
-    let touchLastY = 0;
 
     const onTouchStart = (e) => {
       if (e.touches && e.touches[0]) {
         touchStartY = e.touches[0].clientY;
-        touchLastY = touchStartY;
       }
     };
 
     const onTouchMove = (e) => {
       if (e.touches && e.touches[0]) {
         const currentY = e.touches[0].clientY;
-        const deltaY = currentY - touchLastY;
+        const deltaY = currentY - touchStartY;
         const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
 
-        // 手指往上滑 (deltaY < -6 且离开顶部) -> 立即隐藏顶部栏
-        if (deltaY < -6 && scrollTop > 30) {
+        // 用户手指往上滑 (deltaY < -10 且离开顶部) -> 立即平滑收起隐藏顶部栏
+        if (deltaY < -10 && scrollTop > 30) {
           isHeaderHidden.value = true;
-        } else if (deltaY > 6) {
-          // 手指往下滑 -> 立即滑出顶部栏
+          touchStartY = currentY;
+        } else if (deltaY > 10) {
+          // 用户手指往下滑 (deltaY > 10) -> 立即滑出展现顶部栏
           isHeaderHidden.value = false;
+          touchStartY = currentY;
         }
-        touchLastY = currentY;
       }
     };
 
@@ -620,18 +564,21 @@ const app = createApp({
       const scrollHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, document.scrollingElement ? document.scrollingElement.scrollHeight : 0);
       const clientHeight = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight;
 
-      // 1. 顶部栏智能显隐：根据滚动方向判定
-      const diff = scrollTop - lastScrollTop;
-      if (scrollTop > 40) {
-        if (diff > 6) {
+      // 1. 顶部栏智能显隐：根据滚动距离与方向判定
+      if (scrollTop <= 15) {
+        // 到达顶部强制常驻完全显示
+        isHeaderHidden.value = false;
+      } else {
+        const diff = scrollTop - lastScrollTop;
+        if (diff > 5 && scrollTop > 50) {
+          // 页面向下滚动 (对应用户手指往上推)
           isHeaderHidden.value = true;
-        } else if (diff < -6) {
+        } else if (diff < -5) {
+          // 页面向上滚动 (对应用户手指往下拉)
           isHeaderHidden.value = false;
         }
-      } else {
-        isHeaderHidden.value = false;
       }
-      lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
+      lastScrollTop = Math.max(0, scrollTop);
 
       // 2. 距底部 350px 自动无缝触底加载下一页商品
       if (scrollHeight - scrollTop - clientHeight < 350) {
@@ -679,10 +626,15 @@ const app = createApp({
       if (urlInvite) {
         formInviteCode.value = urlInvite;
       }
+      const urlTab = urlParams.get('tab');
+      if (urlTab && ['home', 'boom', 'user'].includes(urlTab)) {
+        currentTab.value = urlTab;
+      }
 
-      await fetchUserInfo();
-      loadHomeChannels();
+      // 极速加载：立即并发拉取首屏商品流与频道，绝不等待认证请求，实现 0ms 瞬间出图
       loadHomeGoods(true);
+      loadHomeChannels();
+      fetchUserInfo();
 
       // 绑定全局手势与多源滚动监听
       window.addEventListener('scroll', handleGlobalScroll, { passive: true });

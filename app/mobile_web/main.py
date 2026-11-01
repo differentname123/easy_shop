@@ -60,6 +60,16 @@ def index_page():
     return HTMLResponse("<h2>移动端页面正在构建中...</h2>")
 
 
+@app.get("/detail", response_class=HTMLResponse)
+def detail_page():
+    """移动端独立商品详情页（全屏大屏展示全量图文、参数及专属推手生链）"""
+    detail_file = os.path.join(STATIC_DIR, "detail.html")
+    if os.path.exists(detail_file):
+        with open(detail_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    return HTMLResponse("<h2>商品详情页构建中...</h2>")
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "service": "mobile_web_service"}
