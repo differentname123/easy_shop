@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="format-detection" content="telephone=no">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>商品详情 - 优选导购</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script src="/static/js/vue.global.prod.js"></script>
+  <style>
+    /* 专属商品详情大页样式 */
+    .detail-nav-bar {
+      position: fixed;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 540px;
+      height: 48px;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 12px;
+      z-index: 1000;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .detail-nav-btn {
+      background: none;
+      border: none;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+      padding: 6px 8px;
+    }
+    .detail-nav-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .detail-container {
+      padding-top: 48px;
+      padding-bottom: calc(72px + var(--safe-bottom));
+      min-height: 100vh;
+      background-color: var(--bg-page);
+    }
+    .hero-carousel {
+      position: relative;
+      width: 100%;
+      padding-top: 100%;
+      background: #f0f0f0;
+      overflow: hidden;
+    }
+    .hero-carousel-inner {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      scrollbar-width: none;
+    }
+    .hero-carousel-inner::-webkit-scrollbar {
+      display: none;
+    }
+    .hero-slide {
+      flex: 0 0 100%;
+      width: 100%;
+      height: 100%;
+      scroll-snap-align: start;
+      position: relative;
+    }
+    .hero-slide img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    .hero-counter-badge {
+      position: absolute;
+      bottom: 12px;
+      right: 12px;
+      background: rgba(0, 0, 0, 0.6);
+      color: #fff;
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      backdrop-filter: blur(4px);
+    }
+    .detail-card-section {
+      background: #fff;
+      margin: 8px 10px;
+      padding: 14px 14px;
+      border-radius: 10px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+    }
+    .price-strip-main {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .price-strip-main .unit {
+      color: var(--primary-color);
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .price-strip-main .val {
+      color: var(--primary-color);
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1;
+    }
+    .price-strip-main .orig {
+      color: var(--text-muted);
+      font-size: 13px;
+      text-decoration: line-through;
+      margin-left: 4px;
+    }
+    .detail-h1-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-main);
+      line-height: 1.45;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .detail-summary-desc {
+      font-size: 12px;
+      color: var(--text-sub);
+      background: #fbfbfb;
+      padding: 10px 12px;
+      border-radius: 6px;
+      line-height: 1.55;
+      margin-top: 8px;
+      border-left: 3px solid var(--primary-color);
+    }
+    .detail-gallery-flow {
+      margin-top: 12px;
+    }
+    .detail-gallery-header {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-main);
+      padding: 10px 4px 6px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .detail-img-full {
+      width: 100%;
+      display: block;
+      margin-bottom: 4px;
+      border-radius: 6px;
+    }
+    .detail-fixed-footer {
+      position: fixed;
+      bottom: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 100%;
+      max-width: 540px;
+      background: #ffffff;
+      padding: 10px 12px calc(10px + var(--safe-bottom));
+      box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.08);
+      z-index: 1000;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .footer-home-btn {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-sub);
+      font-size: 10px;
+      padding: 0 8px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .footer-home-btn svg {
+      width: 20px;
+      height: 20px;
+      fill: currentColor;
+      margin-bottom: 2px;
+    }
+    .footer-action-wrap {
+      flex: 1;
+      display: flex;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body>
+<div id="app" class="detail-container">
+
+  <!-- ==================== 顶部极简导航栏 ==================== -->
+  <header class="detail-nav-bar">
+    <button class="detail-nav-btn" @click="goBack">
+      <svg style="width:20px;height:20px;fill:currentColor" viewBox="0 0 24 24"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+      <span>返回</span>
+    </button>
+    <span class="detail-nav-title">商品详情</span>
+    <button class="detail-nav-btn" @click="goHome">
+      <svg style="width:18px;height:18px;fill:currentColor" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      <span>首页</span>
+    </button>
+  </header>
+
+  <!-- ==================== 主图/高清多图横向轮播 ==================== -->
+  <div class="hero-carousel">
+    <div class="hero-carousel-inner" ref="carouselRef" @scroll="onCarouselScroll">
+      <div 
+        class="hero-slide" 
+        v-for="(img, idx) in carouselList" 
+        :key="idx"
+      >
+        <img :src="img" :alt="goods?.name || '商品实拍图'" />
+      </div>
+    </div>
+    <span class="hero-counter-badge" v-if="carouselList.length > 1">
+      {{ currentImgIndex + 1 }} / {{ carouselList.length }}
+    </span>
+  </div>
+
+  <!-- ==================== 核心价格与基础信息卡片 ==================== -->
+  <div class="detail-card-section" v-if="goods">
+    <div class="price-strip-main">
+      <span class="unit">¥</span>
+      <span class="val">{{ goods.price }}</span>
+      <span class="orig" v-if="goods.original_price && goods.original_price > goods.price">¥{{ goods.original_price }}</span>
+      <span class="coupon-tag" v-if="goods.coupon_amount > 0" style="margin-left:6px;font-size:11px">券减 ¥{{ goods.coupon_amount }}</span>
+      <span class="plat-badge" :class="goods.platform" style="position:static;margin-left:auto;font-size:10px">
+        {{ goods.platform_name || '拼多多' }}
+      </span>
+    </div>
+
+    <h1 class="detail-h1-title">{{ goods.name }}</h1>
+
+    <div class="detail-meta-row" style="margin-bottom:4px">
+      <span>所属店铺: {{ goods.mall_name || goods.brand || '官方正品优选' }}</span>
+      <span>销量: {{ goods.sales_tip || '热卖中' }}</span>
+    </div>
+
+    <div class="detail-summary-desc" v-if="goods.desc">
+      {{ goods.desc }}
+    </div>
+  </div>
+
+  <!-- ==================== 🎁 推手特权省赚明细计算器 ==================== -->
+  <div class="detail-card-section" v-if="goods">
+    <div class="privilege-box" style="margin-bottom:0">
+      <div class="privilege-header">
+        <span>🎁 专属推手特权省赚明细</span>
+        <span>自购省钱 · 分享赚钱</span>
+      </div>
+      <div class="price-calc-flow">
+        <div class="calc-step">
+          <div class="c-lbl">原标价</div>
+          <div class="c-num" style="text-decoration:line-through;color:var(--text-muted)">
+            ¥{{ goods.original_price || goods.price }}
+          </div>
+        </div>
+        <span class="calc-sep">-</span>
+        <div class="calc-step" v-if="goods.coupon_amount > 0 || goods.saved_price > 0">
+          <div class="c-lbl">券立减</div>
+          <div class="c-num" style="color:#f5222d">
+            ¥{{ goods.coupon_amount || goods.saved_price }}
+          </div>
+        </div>
+        <span class="calc-sep" v-if="goods.coupon_amount > 0 || goods.saved_price > 0">-</span>
+        <div class="calc-step">
+          <div class="c-lbl">推手自购返</div>
+          <div class="c-num" style="color:#fa8c16">
+            ¥{{ goods.commission_amount || 0.0 }}
+          </div>
+        </div>
+        <span class="calc-sep">=</span>
+        <div class="calc-step highlight">
+          <div class="c-lbl" style="color:var(--primary-color);font-weight:700">预估到手仅</div>
+          <div class="c-num">
+            ¥{{ Math.max(0.01, (goods.price - (goods.commission_amount || 0.0))).toFixed(2) }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 未登录引导横幅 -->
+  <div class="detail-card-section" style="padding:10px 14px;" v-if="!isLoggedIn" @click="goToRegister">
+    <div class="login-unlock-banner" style="margin-bottom:0">
+      <span>🎁 登记手机号成为推手，本单立返现金 <b>¥{{ goods?.commission_amount || '0.00' }}</b></span>
+      <span style="font-weight:700">一键解锁返利 ›</span>
+    </div>
+  </div>
+
+  <!-- ==================== 官方服务承诺 ==================== -->
+  <div class="detail-card-section">
+    <div class="specs-table-title" style="margin-bottom:8px">
+      <svg style="width:14px;height:14px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+      <span>官方正品服务承诺</span>
+    </div>
+    <div class="service-guarantees-grid">
+      <span class="guarantee-chip" v-for="(g, idx) in (goods?.service_guarantees || defaultGuarantees)" :key="idx">
+        {{ g }}
+      </span>
+    </div>
+  </div>
+
+  <!-- ==================== 店铺三维服务评分 ==================== -->
+  <div class="detail-card-section" v-if="goods?.shop_ratings">
+    <div class="shop-ratings-strip" style="margin-bottom:0">
+      <span style="color:var(--text-muted)">店铺服务分</span>
+      <span class="shop-rating-col">宝贝描述 <b>{{ goods.shop_ratings.desc_score }}</b></span>
+      <span class="shop-rating-col">卖家服务 <b>{{ goods.shop_ratings.serv_score }}</b></span>
+      <span class="shop-rating-col">物流速度 <b>{{ goods.shop_ratings.lgst_score }}</b></span>
+    </div>
+  </div>
+
+  <!-- ==================== 商品核心规格参数表 ==================== -->
+  <div class="detail-card-section" v-if="goods?.specs && goods.specs.length">
+    <div class="specs-table" style="margin-bottom:0">
+      <div class="specs-table-title">
+        <svg style="width:14px;height:14px;fill:currentColor" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z"/></svg>
+        <span>商品核心参数规格</span>
+      </div>
+      <div class="spec-row" v-for="(spec, sIdx) in goods.specs" :key="sIdx">
+        <span class="spec-label">{{ spec.label }}</span>
+        <span class="spec-value">{{ spec.value }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 实拍大图展示流 ==================== -->
+  <div class="detail-card-section detail-gallery-flow" v-if="carouselList.length > 1">
+    <div class="detail-gallery-header">
+      <svg style="width:14px;height:14px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
+      <span>商品高清实拍与详情图</span>
+    </div>
+    <div v-for="(img, gIdx) in carouselList" :key="'flow_' + gIdx">
+      <img :src="img" class="detail-img-full" loading="lazy" :alt="goods?.name + ' 图' + (gIdx+1)" />
+    </div>
+  </div>
+
+  <!-- ==================== 底部固定操作栏 ==================== -->
+  <footer class="detail-fixed-footer">
+    <div class="footer-home-btn" @click="goHome">
+      <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      <span>首页</span>
+    </div>
+
+    <div class="footer-action-wrap">
+      <!-- 未登录状态 -->
+      <template v-if="!isLoggedIn">
+        <button class="btn-primary-block" style="flex:1" @click="handleJumpToBuy">
+          🛒 领券直接购买 (¥{{ goods?.price }})
+        </button>
+        <button class="btn-lock-auth" style="flex:1" @click="goToRegister">
+          🔒 注册推手返 ¥{{ goods?.commission_amount || 0 }}
+        </button>
+      </template>
+
+      <!-- 已登录状态 -->
+      <template v-else>
+        <button class="btn-primary-block" style="flex:1" @click="handleJumpToBuy">
+          🛒 领券购买 (返 ¥{{ goods?.commission_amount || 0 }})
+        </button>
+        <button class="btn-outline-block" style="flex:1" @click="handleCopyPromoteLink">
+          🔗 复制专属推广链接
+        </button>
+      </template>
+    </div>
+  </footer>
+
+  <!-- 轻量 Toast 提示 -->
+  <div class="toast-box" v-if="toastMessage">{{ toastMessage }}</div>
+
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted } = Vue;
+
+const app = createApp({
+  setup() {
+    const goods = ref(null);
+    const carouselRef = ref(null);
+    const currentImgIndex = ref(0);
+    const toastMessage = ref('');
+    let toastTimer = null;
+
+    const isLoggedIn = ref(false);
+    const uid = ref(localStorage.getItem('easy_shop_uid') || '');
+    const convertedLinkInfo = ref(null);
+
+    const defaultGuarantees = [
+      '🛡️ 正品保障 · 假一赔十',
+      '📦 退货包运费 · 极速退款',
+      '⚡ 48小时内闪电发货',
+      '💰 多多进宝官方活动补贴'
+    ];
+
+    const showToast = (msg, duration = 2000) => {
+      toastMessage.value = msg;
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toastMessage.value = '';
+      }, duration);
+    };
+
+    const copyText = (text, successTip = '已复制到剪贴板') => {
+      if (!text) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(() => {
+          showToast(successTip);
+        }).catch(() => {
+          fallbackCopy(text, successTip);
+        });
+      } else {
+        fallbackCopy(text, successTip);
+      }
+    };
+
+    const fallbackCopy = (text, successTip) => {
+      const input = document.createElement('textarea');
+      input.value = text;
+      document.body.appendChild(input);
+      input.select();
+      try {
+        document.execCommand('copy');
+        showToast(successTip);
+      } catch (e) {
+        showToast('复制失败，请手动长按复制');
+      }
+      document.body.removeChild(input);
+    };
+
+    const carouselList = computed(() => {
+      if (!goods.value) return [];
+      if (goods.value.carousel_images && goods.value.carousel_images.length) {
+        return goods.value.carousel_images;
+      }
+      if (goods.value.image_url) {
+        return [goods.value.image_url];
+      }
+      return ['https://img.pddpic.com/mms-avatar/default_avatar.png'];
+    });
+
+    const onCarouselScroll = (e) => {
+      if (!carouselRef.value) return;
+      const scrollLeft = carouselRef.value.scrollLeft;
+      const width = carouselRef.value.clientWidth || window.innerWidth;
+      currentImgIndex.value = Math.round(scrollLeft / width);
+    };
+
+    const goBack = () => {
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        window.location.href = '/';
+      }
+    };
+
+    const goHome = () => {
+      window.location.href = '/';
+    };
+
+    const goToRegister = () => {
+      window.location.href = '/?tab=user';
+    };
+
+    // 转链并获取购买链接
+    const handleGenerateLink = async () => {
+      if (!goods.value) return;
+      try {
+        const payload = {
+          platform: goods.value.platform || 'pdd',
+          goods_sign: goods.value.goods_sign || '',
+          goods_id: goods.value.goods_id || goods.value.product_id || '',
+          product_url: goods.value.product_url || '',
+          uid: (isLoggedIn.value && uid.value) ? uid.value : null,
+        };
+
+        const res = await fetch('/api/promote/convert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+          convertedLinkInfo.value = data;
+        } else {
+          convertedLinkInfo.value = {
+            final_link: goods.value.product_url || goods.value.promotion_url || '',
+          };
+        }
+      } catch (e) {
+        console.warn('转链异常:', e);
+      }
+    };
+
+    const handleJumpToBuy = async () => {
+      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
+        await handleGenerateLink();
+      }
+      const targetUrl = convertedLinkInfo.value?.final_link || goods.value?.product_url || goods.value?.promotion_url;
+      if (targetUrl) {
+        copyText(targetUrl, '已复制领券链接，正在前往购买...');
+        setTimeout(() => {
+          window.location.href = targetUrl;
+        }, 300);
+      } else {
+        showToast('暂无商品购买链接');
+      }
+    };
+
+    const handleCopyPromoteLink = async () => {
+      if (!isLoggedIn.value || !uid.value) {
+        showToast('请先登录推手账号以绑定专属返利');
+        goToRegister();
+        return;
+      }
+      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
+        showToast('正在生成专属返利链接...');
+        await handleGenerateLink();
+      }
+      const link = convertedLinkInfo.value?.final_link;
+      if (link) {
+        copyText(link, `专属返利推广链接已复制！推手: ${uid.value}，发送好友下单立赚佣金！`);
+      } else {
+        showToast('生成专属推广链接失败');
+      }
+    };
+
+    // 加载商品深度详情
+    const loadDeepDetail = async (goodsId, goodsSign, platform) => {
+      try {
+        const params = new URLSearchParams({
+          platform: platform || 'pdd',
+          goods_sign: goodsSign || '',
+          goods_id: goodsId || '',
+          uid: uid.value || '',
+        });
+        const res = await fetch(`/api/home/detail?${params.toString()}`);
+        const data = await res.json();
+        if (data.status === 'success' && data.data) {
+          const detail = data.data;
+          goods.value = {
+            ...(goods.value || {}),
+            ...detail,
+            carousel_images: (detail.carousel_images && detail.carousel_images.length) ? detail.carousel_images : (goods.value?.carousel_images || []),
+            specs: detail.specs || goods.value?.specs,
+            service_guarantees: detail.service_guarantees || goods.value?.service_guarantees,
+            shop_ratings: detail.shop_ratings || goods.value?.shop_ratings,
+          };
+        }
+      } catch (e) {
+        console.warn('获取商品深度详情失败，保留已有数据:', e);
+      }
+    };
+
+    onMounted(async () => {
+      // 登录状态
+      const savedPhone = localStorage.getItem('easy_shop_phone');
+      if (savedPhone) {
+        isLoggedIn.value = true;
+      }
+
+      // 解析 URL 参数
+      const urlParams = new URLSearchParams(window.location.search);
+      const goodsId = urlParams.get('goods_id') || '';
+      const goodsSign = urlParams.get('goods_sign') || '';
+      const platform = urlParams.get('platform') || 'pdd';
+      const urlUid = urlParams.get('uid') || '';
+      if (urlUid) {
+        uid.value = urlUid;
+      }
+
+      // 0ms 瞬间还原已有简要信息，消除白屏
+      try {
+        const cached = sessionStorage.getItem('current_goods_summary');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && (parsed.goods_id == goodsId || parsed.goods_sign == goodsSign)) {
+            goods.value = parsed;
+          }
+        }
+      } catch (e) {}
+
+      // 异步拉取官方全量图文详情
+      await loadDeepDetail(goodsId, goodsSign, platform);
+
+      // 后台静默预转链
+      handleGenerateLink();
+    });
+
+    return {
+      goods,
+      carouselRef,
+      carouselList,
+      currentImgIndex,
+      onCarouselScroll,
+      isLoggedIn,
+      uid,
+      defaultGuarantees,
+      toastMessage,
+      goBack,
+      goHome,
+      goToRegister,
+      handleJumpToBuy,
+      handleCopyPromoteLink,
+    };
+  }
+});
+
+app.mount('#app');
+</script>
+</body>
+</html>
