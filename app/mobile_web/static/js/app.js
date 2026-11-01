@@ -16,6 +16,49 @@ const app = createApp({
     const isHeaderHidden = ref(false);
     let lastScrollTop = 0;
 
+    // 智能省钱加载器与话术轮播控制器
+    const smartLoading = ref({
+      visible: false,
+      title: '正在搜寻专属优惠与底价...',
+      currentSlogan: '正在向拼多多官方申请大额隐藏券...',
+      fadeClass: 'fade-in'
+    });
+    let sloganTimer = null;
+    let sloganIndex = 0;
+
+    const startSmartLoading = (title, slogans) => {
+      smartLoading.value.visible = true;
+      smartLoading.value.title = title || '正在智能比价与核验福利...';
+      const sloganList = (slogans && slogans.length) ? slogans : [
+        '正在向拼多多官方申请大额隐藏券...',
+        '正在全网比价，锁定最低到手折扣...',
+        '专属活动补贴匹配中，校验优惠有效性...',
+        '正在为您呈现实时优惠与高清实拍...'
+      ];
+      sloganIndex = 0;
+      smartLoading.value.currentSlogan = sloganList[0];
+      smartLoading.value.fadeClass = 'fade-in';
+
+      if (sloganTimer) clearInterval(sloganTimer);
+      sloganTimer = setInterval(() => {
+        smartLoading.value.fadeClass = 'fade-out';
+        setTimeout(() => {
+          sloganIndex = (sloganIndex + 1) % sloganList.length;
+          smartLoading.value.currentSlogan = sloganList[sloganIndex];
+          smartLoading.value.fadeClass = 'fade-in';
+        }, 220);
+      }, 1300);
+    };
+
+    const stopSmartLoading = () => {
+      smartLoading.value.visible = false;
+      if (sloganTimer) {
+        clearInterval(sloganTimer);
+        sloganTimer = null;
+      }
+    };
+
+
     // 用户认证与推手状态
     const isLoggedIn = ref(false);
     const uid = ref(localStorage.getItem('easy_shop_uid') || '');
@@ -421,7 +464,10 @@ const app = createApp({
           goods_sign: currentGoods.value.goods_sign || '',
           goods_id: currentGoods.value.goods_id || currentGoods.value.product_id || '',
           product_url: currentGoods.value.product_url || '',
-          uid: (isLoggedIn.value && uid.value) ? uid.value : null, // 未登录传 null
+          uid: (isLoggedIn.value && uid.value) ? uid.value : null, // 未登录传 null（自动命中/写入站长持久化缓存）
+          title: currentGoods.value.name || '',
+          price: currentGoods.value.price || 0,
+          coupon_amount: currentGoods.value.coupon_amount || currentGoods.value.saved_price || 0,
         };
 
         const res = await fetch('/api/promote/convert', {
@@ -434,19 +480,20 @@ const app = createApp({
           convertedLinkInfo.value = data;
           hasGeneratedLink.value = true;
           if (isLoggedIn.value) {
-            showToast('已激活并生成专属推手返利链接！');
+            showToast('已激活并生成专属返利口令！');
           } else {
-            showToast('已获取官方优惠领券链接！');
+            showToast('已获取官方优惠口令与领券链接！');
           }
         } else {
           convertedLinkInfo.value = {
             final_link: currentGoods.value.product_url || currentGoods.value.promotion_url || '',
+            command_text: `【好物精选】${currentGoods.value.name}\n【券后价】¥${currentGoods.value.price}\n【抢购口令】长按复制本段全部文字，打开【拼多多APP】立即领券下单！\n${currentGoods.value.product_url || ''}`,
             error: data.error_msg || '转链失败'
           };
           hasGeneratedLink.value = true;
         }
       } catch (e) {
-        showToast('生成专属链接异常');
+        showToast('生成专属口令异常');
       } finally {
         isConverting.value = false;
       }
@@ -457,11 +504,21 @@ const app = createApp({
         await handleGenerateLink();
       }
       if (convertedLinkInfo.value && convertedLinkInfo.value.final_link) {
+        const copyTextContent = convertedLinkInfo.value.command_text || convertedLinkInfo.value.final_link;
         const targetUrl = convertedLinkInfo.value.final_link;
-        copyText(targetUrl, '已复制领券链接，正在前往购买...');
+        const schemaUrl = convertedLinkInfo.value.schema_url;
+
+        copyText(copyTextContent, '已复制抢购口令，正在前往购买...');
         setTimeout(() => {
-          window.location.href = targetUrl;
-        }, 300);
+          if (schemaUrl && navigator.userAgent.toLowerCase().includes('mobile')) {
+            window.location.href = schemaUrl;
+            setTimeout(() => {
+              if (targetUrl) window.location.href = targetUrl;
+            }, 800);
+          } else {
+            window.location.href = targetUrl;
+          }
+        }, 350);
       } else if (currentGoods.value && (currentGoods.value.product_url || currentGoods.value.promotion_url)) {
         window.location.href = currentGoods.value.product_url || currentGoods.value.promotion_url;
       } else {
@@ -469,32 +526,32 @@ const app = createApp({
       }
     };
 
-    const handleCopyPromoteLink = () => {
-      // 核心拦截：未登录状态下严禁复制推广链接！
-      if (!isLoggedIn.value || !uid.value) {
-        showToast('您尚未登录推手账号！无法生成专属返利链接，请先登录绑定手机号');
-        goToRegisterFromDetail();
-        return;
-      }
-
+    const handleCopyPromoteLink = async () => {
+      // 允许未登录用户生成口令和推广链接（未登录归属站长官方推广位，站长吃 100% 返利！）
       if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
-        showToast('正在为您生成专属推手链接...');
-        handleGenerateLink().then(() => {
-          if (convertedLinkInfo.value && convertedLinkInfo.value.final_link) {
-            copyText(convertedLinkInfo.value.final_link, `专属返利推广链接已复制！推手: ${uid.value}，发给好友下单即可赚佣金！`);
-          }
-        });
-        return;
+        showToast('正在生成抢购口令...');
+        await handleGenerateLink();
       }
 
-      copyText(convertedLinkInfo.value.final_link, `专属返利推广链接已复制！推手: ${uid.value}，发给好友下单即可赚佣金！`);
+      if (convertedLinkInfo.value) {
+        const copyContent = convertedLinkInfo.value.command_text || convertedLinkInfo.value.final_link;
+        if (copyContent) {
+          if (isLoggedIn.value && uid.value) {
+            copyText(copyContent, `专属返利口令与链接已复制！推手: ${uid.value}，发送好友下单即可赚佣金！`);
+          } else {
+            copyText(copyContent, '抢购口令与领券链接已复制！打开拼多多APP即可自动识别，或通过链接直接下单~');
+          }
+          return;
+        }
+      }
+      showToast('获取口令失败，请稍后重试');
     };
 
     const goToRegisterFromDetail = () => {
       isGoodsModalOpen.value = false;
       currentTab.value = 'user';
       isRegisterMode.value = true;
-      showToast('请在此登记手机号，一键成为推手并锁定返利');
+      showToast('开通返利钱包后可将购物补贴随时提现');
     };
 
     // ==================== 我的返利订单模块 ====================
@@ -731,8 +788,12 @@ const app = createApp({
       // 工具
       copyText,
       showToast,
+      smartLoading,
+      startSmartLoading,
+      stopSmartLoading,
     };
   }
 });
 
 app.mount('#app');
+

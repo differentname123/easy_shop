@@ -255,12 +255,12 @@
     </div>
   </div>
 
-  <!-- ==================== 🎁 推手特权省赚明细计算器 ==================== -->
+  <!-- ==================== 💰 专属优惠与省钱明细 ==================== -->
   <div class="detail-card-section" v-if="goods">
     <div class="privilege-box" style="margin-bottom:0">
       <div class="privilege-header">
-        <span>🎁 专属推手特权省赚明细</span>
-        <span>自购省钱 · 分享赚钱</span>
+        <span>💰 专属优惠与省钱明细</span>
+        <span>领券立减 · 确认收货返利</span>
       </div>
       <div class="price-calc-flow">
         <div class="calc-step">
@@ -271,21 +271,21 @@
         </div>
         <span class="calc-sep">-</span>
         <div class="calc-step" v-if="goods.coupon_amount > 0 || goods.saved_price > 0">
-          <div class="c-lbl">券立减</div>
+          <div class="c-lbl">专属券立减</div>
           <div class="c-num" style="color:#f5222d">
             ¥{{ goods.coupon_amount || goods.saved_price }}
           </div>
         </div>
         <span class="calc-sep" v-if="goods.coupon_amount > 0 || goods.saved_price > 0">-</span>
         <div class="calc-step">
-          <div class="c-lbl">推手自购返</div>
+          <div class="c-lbl">购物补贴返还</div>
           <div class="c-num" style="color:#fa8c16">
             ¥{{ goods.commission_amount || 0.0 }}
           </div>
         </div>
         <span class="calc-sep">=</span>
         <div class="calc-step highlight">
-          <div class="c-lbl" style="color:var(--primary-color);font-weight:700">预估到手仅</div>
+          <div class="c-lbl" style="color:var(--primary-color);font-weight:700">折合到手仅</div>
           <div class="c-num">
             ¥{{ Math.max(0.01, (goods.price - (goods.commission_amount || 0.0))).toFixed(2) }}
           </div>
@@ -294,11 +294,11 @@
     </div>
   </div>
 
-  <!-- 未登录引导横幅 -->
+  <!-- 优惠与返利钱包提示（温和无强迫感） -->
   <div class="detail-card-section" style="padding:10px 14px;" v-if="!isLoggedIn" @click="goToRegister">
     <div class="login-unlock-banner" style="margin-bottom:0">
-      <span>🎁 登记手机号成为推手，本单立返现金 <b>¥{{ goods?.commission_amount || '0.00' }}</b></span>
-      <span style="font-weight:700">一键解锁返利 ›</span>
+      <span>🧧 本商品可立领大额券；登录账号后购物补贴 <b>¥{{ goods?.commission_amount || '0.00' }}</b> 自动存入钱包随时提现</span>
+      <span style="font-weight:700;color:var(--primary-color)">我的钱包 ›</span>
     </div>
   </div>
 
@@ -350,38 +350,55 @@
     </div>
   </div>
 
-  <!-- ==================== 底部固定操作栏 ==================== -->
-  <footer class="detail-fixed-footer">
-    <div class="footer-home-btn" @click="goHome">
-      <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+  <!-- ==================== 底部固定操作栏（无论登录与否均可领券与复制口令） ==================== -->
+  <footer class="detail-bottom-nav">
+    <div class="detail-nav-btn-icon" @click="goHome">
+      <span class="icon">🏠</span>
       <span>首页</span>
     </div>
+    <div class="detail-nav-btn-icon" @click="goToRegister">
+      <span class="icon">👛</span>
+      <span>钱包</span>
+    </div>
 
-    <div class="footer-action-wrap">
-      <!-- 未登录状态 -->
-      <template v-if="!isLoggedIn">
-        <button class="btn-primary-block" style="flex:1" @click="handleJumpToBuy">
-          🛒 领券直接购买 (¥{{ goods?.price }})
-        </button>
-        <button class="btn-lock-auth" style="flex:1" @click="goToRegister">
-          🔒 注册推手返 ¥{{ goods?.commission_amount || 0 }}
-        </button>
-      </template>
+    <div class="detail-nav-actions">
+      <!-- 复制口令与链接 (口令+短链一体，直接打开拼多多APP或网页) -->
+      <button class="btn-copy-command" @click="handleCopyPromoteLink">
+        <span>📋</span>
+        <span>复制口令与链接</span>
+      </button>
 
-      <!-- 已登录状态 -->
-      <template v-else>
-        <button class="btn-primary-block" style="flex:1" @click="handleJumpToBuy">
-          🛒 领券购买 (返 ¥{{ goods?.commission_amount || 0 }})
-        </button>
-        <button class="btn-outline-block" style="flex:1" @click="handleCopyPromoteLink">
-          🔗 复制专属推广链接
-        </button>
-      </template>
+      <!-- 立即领券下单 (按需转链，优先唤起拼多多 APP) -->
+      <button class="btn-buy-now" @click="handleJumpToBuy">
+        <span>⚡</span>
+        <span>立即领券下单</span>
+      </button>
     </div>
   </footer>
 
+  <!-- ==================== 全局高质感智能加载器与省钱话术轮播 ==================== -->
+  <div class="smart-loader-overlay" v-if="smartLoading.visible">
+    <div class="smart-loader-card">
+      <div class="smart-radar-wrapper">
+        <div class="smart-radar-ring"></div>
+        <div class="smart-radar-ring-inner"></div>
+        <div class="smart-radar-icon">🎁</div>
+      </div>
+      <div class="smart-loader-title">{{ smartLoading.title }}</div>
+      <div class="smart-loader-slogan-wrap">
+        <div class="smart-loader-slogan" :class="smartLoading.fadeClass">
+          {{ smartLoading.currentSlogan }}
+        </div>
+      </div>
+      <div class="smart-loader-bar">
+        <div class="smart-loader-bar-inner"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- 轻量 Toast 提示 -->
   <div class="toast-box" v-if="toastMessage">{{ toastMessage }}</div>
+
 
 </div>
 
@@ -468,6 +485,48 @@ const app = createApp({
       }
     };
 
+    // 智能省钱加载器与话术轮播控制器
+    const smartLoading = ref({
+      visible: false,
+      title: '正在搜寻专属优惠与底价...',
+      currentSlogan: '正在向拼多多官方申请大额隐藏券...',
+      fadeClass: 'fade-in'
+    });
+    let sloganTimer = null;
+    let sloganIndex = 0;
+
+    const startSmartLoading = (title, slogans) => {
+      smartLoading.value.visible = true;
+      smartLoading.value.title = title || '正在智能比价与核验福利...';
+      const sloganList = (slogans && slogans.length) ? slogans : [
+        '正在向拼多多官方申请大额隐藏券...',
+        '正在全网比价，锁定最低到手折扣...',
+        '专属活动补贴匹配中，校验优惠有效性...',
+        '正在为您呈现实时优惠与高清实拍...'
+      ];
+      sloganIndex = 0;
+      smartLoading.value.currentSlogan = sloganList[0];
+      smartLoading.value.fadeClass = 'fade-in';
+
+      if (sloganTimer) clearInterval(sloganTimer);
+      sloganTimer = setInterval(() => {
+        smartLoading.value.fadeClass = 'fade-out';
+        setTimeout(() => {
+          sloganIndex = (sloganIndex + 1) % sloganList.length;
+          smartLoading.value.currentSlogan = sloganList[sloganIndex];
+          smartLoading.value.fadeClass = 'fade-in';
+        }, 220);
+      }, 1300);
+    };
+
+    const stopSmartLoading = () => {
+      smartLoading.value.visible = false;
+      if (sloganTimer) {
+        clearInterval(sloganTimer);
+        sloganTimer = null;
+      }
+    };
+
     const goHome = () => {
       window.location.href = '/';
     };
@@ -476,9 +535,24 @@ const app = createApp({
       window.location.href = '/?tab=user';
     };
 
-    // 转链并获取购买链接
-    const handleGenerateLink = async () => {
-      if (!goods.value) return;
+    // 按需转链并获取购买链接与拼多多口令（严格按需触发，绝不静默频繁转链）
+    const handleGenerateLink = async (customLoadingTitle) => {
+      if (!goods.value) return null;
+      // 已经转链成功过，直接秒级复用，彻底避免高频调用外部接口与风控
+      if (convertedLinkInfo.value && convertedLinkInfo.value.final_link) {
+        return convertedLinkInfo.value;
+      }
+
+      startSmartLoading(
+        customLoadingTitle || '正在为您生成专属口令与领券通道...',
+        [
+          '正在向拼多多官方申请专属券码与补贴...',
+          '通道握手成功，正在生成拼多多APP识别口令...',
+          '正在匹配最优短链接与唤起协议...',
+          '福利口令已就绪，即将为您呈现...'
+        ]
+      );
+
       try {
         const payload = {
           platform: goods.value.platform || 'pdd',
@@ -486,6 +560,9 @@ const app = createApp({
           goods_id: goods.value.goods_id || goods.value.product_id || '',
           product_url: goods.value.product_url || '',
           uid: (isLoggedIn.value && uid.value) ? uid.value : null,
+          title: goods.value.name || '',
+          price: goods.value.price || 0,
+          coupon_amount: goods.value.coupon_amount || 0
         };
 
         const res = await fetch('/api/promote/convert', {
@@ -494,48 +571,69 @@ const app = createApp({
           body: JSON.stringify(payload),
         });
         const data = await res.json();
+        stopSmartLoading();
+
         if (data.status === 'success') {
           convertedLinkInfo.value = data;
+          return data;
         } else {
-          convertedLinkInfo.value = {
+          const fallbackData = {
             final_link: goods.value.product_url || goods.value.promotion_url || '',
+            command_text: `【好物精选】${goods.value.name}\n【券后价】¥${goods.value.price}\n【抢购口令】长按复制本段全部文字，打开【拼多多APP】立即领券下单！\n${goods.value.product_url || ''}`
           };
+          convertedLinkInfo.value = fallbackData;
+          return fallbackData;
         }
       } catch (e) {
+        stopSmartLoading();
         console.warn('转链异常:', e);
+        return null;
       }
     };
 
+    // 用户主动点击“立即领券下单”
     const handleJumpToBuy = async () => {
-      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
-        await handleGenerateLink();
-      }
-      const targetUrl = convertedLinkInfo.value?.final_link || goods.value?.product_url || goods.value?.promotion_url;
-      if (targetUrl) {
-        copyText(targetUrl, '已复制领券链接，正在前往购买...');
-        setTimeout(() => {
-          window.location.href = targetUrl;
-        }, 300);
-      } else {
-        showToast('暂无商品购买链接');
-      }
-    };
-
-    const handleCopyPromoteLink = async () => {
-      if (!isLoggedIn.value || !uid.value) {
-        showToast('请先登录推手账号以绑定专属返利');
-        goToRegister();
+      const linkInfo = await handleGenerateLink('正在打通拼多多领券通道...');
+      if (!linkInfo) {
+        showToast('获取购买链接失败，请重试');
         return;
       }
-      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
-        showToast('正在生成专属返利链接...');
-        await handleGenerateLink();
+
+      const copyContent = linkInfo.command_text || linkInfo.final_link;
+      const targetUrl = linkInfo.final_link || goods.value?.product_url || goods.value?.promotion_url;
+      const schemaUrl = linkInfo.schema_url;
+
+      // 复制口令至剪贴板，方便用户在拼多多 APP 内自动识别
+      if (copyContent) {
+        copyText(copyContent, '已复制抢购口令，正在前往拼多多领券...');
       }
-      const link = convertedLinkInfo.value?.final_link;
-      if (link) {
-        copyText(link, `专属返利推广链接已复制！推手: ${uid.value}，发送好友下单立赚佣金！`);
+
+      // 优先尝试通过 schemaUrl 唤起拼多多 APP，若失败则跳转移动网页
+      setTimeout(() => {
+        if (schemaUrl && navigator.userAgent.toLowerCase().includes('mobile')) {
+          window.location.href = schemaUrl;
+          setTimeout(() => {
+            if (targetUrl) window.location.href = targetUrl;
+          }, 800);
+        } else if (targetUrl) {
+          window.location.href = targetUrl;
+        }
+      }, 400);
+    };
+
+    // 用户主动点击“复制口令与链接”（无论是否登录均可复制！）
+    const handleCopyPromoteLink = async () => {
+      const linkInfo = await handleGenerateLink('正在生成拼多多抢购口令...');
+      if (!linkInfo) {
+        showToast('生成口令失败，请稍后重试');
+        return;
+      }
+
+      const copyContent = linkInfo.command_text || linkInfo.final_link;
+      if (copyContent) {
+        copyText(copyContent, '抢购口令与领券链接已复制！打开拼多多APP即可自动识别，或通过链接直接下单~');
       } else {
-        showToast('生成专属推广链接失败');
+        showToast('暂无有效口令');
       }
     };
 
@@ -584,21 +682,34 @@ const app = createApp({
       }
 
       // 0ms 瞬间还原已有简要信息，消除白屏
+      let hasCachedSummary = false;
       try {
         const cached = sessionStorage.getItem('current_goods_summary');
         if (cached) {
           const parsed = JSON.parse(cached);
           if (parsed && (parsed.goods_id == goodsId || parsed.goods_sign == goodsSign)) {
             goods.value = parsed;
+            hasCachedSummary = true;
           }
         }
       } catch (e) {}
 
+      // 若无本地瞬时缓存，展示智能省钱雷达加载动效
+      if (!hasCachedSummary) {
+        startSmartLoading('正在搜寻专属优惠与正品补贴...', [
+          '正在向拼多多官方申请隐藏优惠券...',
+          '正在全网比价，核验到手最低价...',
+          '正品货源与运费险核验中...',
+          '马上为您呈现实时优惠与高清实拍...'
+        ]);
+      }
+
       // 异步拉取官方全量图文详情
       await loadDeepDetail(goodsId, goodsSign, platform);
+      stopSmartLoading();
 
-      // 后台静默预转链
-      handleGenerateLink();
+      // 【核心安全策略】：彻底取消进入页面时的自动预转链！
+      // 绝不静默触发 POST /api/promote/convert，彻底杜绝风控与多余开销
     });
 
     return {
@@ -611,6 +722,7 @@ const app = createApp({
       uid,
       defaultGuarantees,
       toastMessage,
+      smartLoading,
       goBack,
       goHome,
       goToRegister,

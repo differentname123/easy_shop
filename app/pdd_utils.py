@@ -924,9 +924,14 @@ def example_historical_orders(client_id, client_secret):
 
 if __name__ == "__main__":
     # 统一读取主配置账号
-    pdd_client_id = get_config("mama_pdd_client_id")
-    pdd_client_secret = get_config("mama_pdd_client_secret")
-    pdd_pid = get_config("mama_pdd_pid")
+    # pdd_client_id = get_config("mama_pdd_client_id")
+    # pdd_client_secret = get_config("mama_pdd_client_secret")
+    # pdd_pid = get_config("mama_pdd_pid")
+
+
+    pdd_client_id = get_config("myself_pdd_client_id")
+    pdd_client_secret = get_config("myself_pdd_client_secret")
+    pdd_pid = get_config("myself_pdd_pid")
 
     logger.info(">>> 启动拼多多 Open API 业务测试套件 <<<")
 

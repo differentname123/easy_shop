@@ -181,19 +181,19 @@
     <!-- 未登录状态卡片 -->
     <div class="user-profile-header" v-else>
       <div class="user-info-row">
-        <div class="user-avatar" style="display:flex;align-items:center;justify-content:center;background:#fff;color:var(--primary-color);font-size:24px">👤</div>
+        <div class="user-avatar" style="display:flex;align-items:center;justify-content:center;background:#fff;color:var(--primary-color);font-size:24px">👛</div>
         <div class="user-meta">
-          <h3>推手未登记注册</h3>
-          <p style="font-size:12px;opacity:0.9">请在下方简单登记手机号，一键开通返利与订单查询权限</p>
+          <h3>我的返利钱包 (未登录)</h3>
+          <p style="font-size:12px;opacity:0.9">无需登录也可直享全网优惠券；登录后可将返利提现到个人账户</p>
         </div>
       </div>
     </div>
 
     <!-- 手机号快速登记注册/登录卡片 (未登录时展示) -->
     <div class="auth-reg-card" v-if="!isLoggedIn">
-      <div class="reg-title">{{ isRegisterMode ? '推手登记注册 (新用户)' : '已有推手账号登录' }}</div>
+      <div class="reg-title">{{ isRegisterMode ? '开通返利钱包 (新用户注册)' : '已有返利账号登录' }}</div>
       <div class="reg-subtitle">
-        {{ isRegisterMode ? '登记手机号即可生成专属推手 UID 与邀请码，跨设备登录不丢失返利记录' : '输入已登记的手机号和密码即可登录查看您的专属收益' }}
+        {{ isRegisterMode ? '登记手机号即可保存返利订单记录与随时提现，跨设备登录资产不丢失' : '输入已登记的手机号和密码即可登录查看您的钱包余额' }}
       </div>
 
       <div class="form-group">
@@ -218,11 +218,11 @@
       </div>
 
       <div class="form-group" v-if="isRegisterMode">
-        <label class="form-label">推手昵称 (选填)</label>
+        <label class="form-label">用户昵称 (选填)</label>
         <input 
           type="text" 
           class="form-input" 
-          placeholder="例如: 淘金客 (若留空则自动生成)" 
+          placeholder="例如: 省钱小能手 (若留空则自动生成)" 
           v-model="formNickname"
         />
       </div>
@@ -238,11 +238,11 @@
       </div>
 
       <button class="form-btn-submit" @click="handleRegisterOrLogin" :disabled="isSubmittingAuth">
-        {{ isSubmittingAuth ? '提交中...' : (isRegisterMode ? '立即注册并登录' : '立即登录') }}
+        {{ isSubmittingAuth ? '提交中...' : (isRegisterMode ? '立即开通并登录' : '立即登录') }}
       </button>
 
       <div class="form-toggle-link" @click="isRegisterMode = !isRegisterMode">
-        {{ isRegisterMode ? '已有账号？切换密码登录' : '新用户？一键登记注册' }}
+        {{ isRegisterMode ? '已有账号？切换密码登录' : '新用户？一键开通钱包' }}
       </div>
     </div>
 
@@ -459,6 +459,24 @@
         <div v-else class="pop-action-btns">
           <button class="btn-primary-block" @click="isAuthModalOpen = false">我知道了</button>
         </div>
+      </div>
+    </div>
+  <!-- ==================== 全局高质感智能加载器与省钱话术轮播 ==================== -->
+  <div class="smart-loader-overlay" v-if="smartLoading.visible">
+    <div class="smart-loader-card">
+      <div class="smart-radar-wrapper">
+        <div class="smart-radar-ring"></div>
+        <div class="smart-radar-ring-inner"></div>
+        <div class="smart-radar-icon">🔍</div>
+      </div>
+      <div class="smart-loader-title">{{ smartLoading.title }}</div>
+      <div class="smart-loader-slogan-wrap">
+        <div class="smart-loader-slogan" :class="smartLoading.fadeClass">
+          {{ smartLoading.currentSlogan }}
+        </div>
+      </div>
+      <div class="smart-loader-bar">
+        <div class="smart-loader-bar-inner"></div>
       </div>
     </div>
   </div>

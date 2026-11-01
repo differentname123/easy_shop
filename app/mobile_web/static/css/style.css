@@ -1208,3 +1208,263 @@ body {
   cursor: pointer;
   text-align: center;
 }
+
+/* =============================================================================
+   全局高质感智能加载器 (Global Smart Loader)
+   采用毛玻璃蒙层 + 动态双环省钱雷达 + 轮播省钱话术
+   ============================================================================= */
+.smart-loader-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeInOverlay 0.25s ease-out;
+}
+
+@keyframes fadeInOverlay {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.smart-loader-card {
+  width: 86%;
+  max-width: 320px;
+  background: #ffffff;
+  border-radius: 22px;
+  padding: 26px 20px 22px;
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  animation: scaleInCard 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes scaleInCard {
+  from { transform: scale(0.85); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+/* 顶部流光氛围边 */
+.smart-loader-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #ff4d4f, #fa8c16, #faad14, #52c41a, #1890ff, #ff4d4f);
+  background-size: 300% 100%;
+  animation: gradientFlow 2s linear infinite;
+}
+
+@keyframes gradientFlow {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 100% 50%; }
+}
+
+/* 动态双环雷达动效 */
+.smart-radar-wrapper {
+  position: relative;
+  width: 68px;
+  height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+
+.smart-radar-ring {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  border-top-color: #ff4d4f;
+  border-right-color: #fa8c16;
+  animation: smartSpin 1s cubic-bezier(0.55, 0.15, 0.45, 0.85) infinite;
+}
+
+.smart-radar-ring-inner {
+  position: absolute;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: 2px dashed #ff7875;
+  animation: smartSpinReverse 1.5s linear infinite;
+}
+
+.smart-radar-icon {
+  font-size: 26px;
+  line-height: 1;
+  animation: pulseBreath 1.2s ease-in-out infinite;
+  z-index: 2;
+}
+
+@keyframes smartSpin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes smartSpinReverse {
+  to { transform: rotate(-360deg); }
+}
+
+@keyframes pulseBreath {
+  0%, 100% { transform: scale(0.9); }
+  50% { transform: scale(1.15); filter: drop-shadow(0 0 6px rgba(255, 77, 79, 0.4)); }
+}
+
+.smart-loader-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1f2937;
+  margin-bottom: 8px;
+  letter-spacing: 0.3px;
+}
+
+.smart-loader-slogan-wrap {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.smart-loader-slogan {
+  font-size: 13px;
+  color: #fa541c;
+  line-height: 1.4;
+  font-weight: 500;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  padding: 0 8px;
+}
+
+.smart-loader-slogan.fade-out {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.smart-loader-slogan.fade-in {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 进度微指示条 */
+.smart-loader-bar {
+  width: 100%;
+  height: 4px;
+  background: #f5f5f5;
+  border-radius: 2px;
+  overflow: hidden;
+  position: relative;
+}
+
+.smart-loader-bar-inner {
+  width: 45%;
+  height: 100%;
+  background: linear-gradient(90deg, #ff7875, #ff4d4f);
+  border-radius: 2px;
+  animation: indeterminateBar 1.2s ease-in-out infinite;
+}
+
+@keyframes indeterminateBar {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
+/* 详情页底部栏优化 */
+.detail-bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #ffffff;
+  border-top: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  gap: 10px;
+  z-index: 100;
+  box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.05);
+}
+
+.detail-nav-btn-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #595959;
+  min-width: 44px;
+  cursor: pointer;
+  text-decoration: none;
+}
+.detail-nav-btn-icon .icon {
+  font-size: 18px;
+  margin-bottom: 2px;
+}
+
+.detail-nav-actions {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+}
+
+.btn-copy-command {
+  flex: 1;
+  background: #fff7e6;
+  color: #d46b08;
+  border: 1px solid #ffd591;
+  border-radius: 22px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 10px 0;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.2s;
+}
+
+.btn-copy-command:active {
+  background: #ffe7ba;
+  transform: scale(0.98);
+}
+
+.btn-buy-now {
+  flex: 1.2;
+  background: linear-gradient(135deg, #ff4d4f 0%, #cf1322 100%);
+  color: #ffffff;
+  border: none;
+  border-radius: 22px;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px 0;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-shadow: 0 4px 12px rgba(207, 19, 34, 0.35);
+  transition: all 0.2s;
+}
+
+.btn-buy-now:active {
+  transform: scale(0.98);
+  box-shadow: 0 2px 6px rgba(207, 19, 34, 0.4);
+}
+

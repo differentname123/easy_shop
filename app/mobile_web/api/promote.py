@@ -17,17 +17,26 @@ class ConvertRequest(BaseModel):
     goods_id: Optional[str] = None
     product_url: Optional[str] = None
     uid: Optional[str] = None
+    title: Optional[str] = None
+    price: Optional[float] = None
+    coupon_amount: Optional[float] = None
 
 
 @router.post("/convert")
 def convert_link(req: ConvertRequest):
     """
-    点击商品时生成推手专属转链
+    点击商品时生成推手专属转链与拼多多口令（未登录自动使用持久化缓存）
     """
     goods_key = req.goods_sign or req.goods_id or ""
     return promote_service.convert_link(
         platform=req.platform,
         goods_id_or_sign=goods_key,
+        goods_id=req.goods_id,
+        goods_sign=req.goods_sign,
         product_url=req.product_url,
         uid=req.uid,
+        title=req.title,
+        price=req.price,
+        coupon_amount=req.coupon_amount,
     )
+
