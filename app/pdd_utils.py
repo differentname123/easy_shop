@@ -18,9 +18,21 @@ import hashlib
 import traceback
 
 import requests
+from requests.adapters import HTTPAdapter
 from common.common_utils import get_config, setup_logger
 
 logger = setup_logger(app_name="nana_pdd_utils")
+
+# 创建持久化 HTTP 连接池 Session，杜绝 Windows 下单次新建 TCP/TLS 握手的 11 秒延迟
+_PDD_SESSION = requests.Session()
+_PDD_SESSION.trust_env = False  # 禁用环境变量与 Windows 注册表代理检测，杜绝 WPAD 阻塞
+_PDD_ADAPTER = HTTPAdapter(pool_connections=30, pool_maxsize=100, max_retries=1)
+_PDD_SESSION.mount("https://", _PDD_ADAPTER)
+_PDD_SESSION.mount("http://", _PDD_ADAPTER)
+_PDD_SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+})
 
 
 # =============================================================================
@@ -39,6 +51,7 @@ def make_custom_parameters(uid=None, extra_custom=None):
 
     if not custom_dict:
         return None
+
     return json.dumps(custom_dict, ensure_ascii=False, separators=(',', ':'))
 
 
@@ -55,9 +68,9 @@ def extract_short_url(response_dict):
     )
 
 
-def call_pdd_api(client_id, client_secret, api_type, business_params=None, timeout=10):
+def call_pdd_api(client_id, client_secret, api_type, business_params=None, timeout=(2.5, 4.0)):
     """
-    拼多多网关核心请求与 MD5 自动签名引擎
+    拼多多网关核心请求与 MD5 自动签名引擎 (使用连接池加速)
     """
     url = "https://gw-api.pinduoduo.com/api/router"
     business_params = business_params or {}
@@ -90,9 +103,9 @@ def call_pdd_api(client_id, client_secret, api_type, business_params=None, timeo
 
     params["sign"] = hashlib.md5(sign_str.encode("utf-8")).hexdigest().upper()
 
-    # 4. 发起 HTTP POST 请求
+    # 4. 发起 HTTP POST 请求 (连接池复用)
     try:
-        response = requests.post(
+        response = _PDD_SESSION.post(
             url,
             json=params,
             headers={"Content-Type": "application/json;charset=utf-8"},
@@ -418,7 +431,6 @@ def generate_smart_promotion_url(client_id, client_secret, pid, goods_sign, cash
         if hb_url_list:
             return {"status": "success", "link_type": "官方超级红包", "data": hb_url_list[0]}
     except Exception:
-        traceback.print_exc()
         pass  # 降级进入常规普通生链
 
     # 策略 3：标准兜底推广
