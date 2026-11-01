@@ -618,6 +618,18 @@ def get_recommend_goods(client_id, client_secret, pid=None, channel_type=5, limi
     }
 
 
+# -----------------------------------------------------------------------------
+# 兼容旧版函数别名 (提供向前向后双向兼容)
+# -----------------------------------------------------------------------------
+def search_pdd_goods_by_keyword(client_id, client_secret, pid, search_key=None, limit_count=0, uid=None, keyword=None, **kwargs):
+    """旧版函数兼容包装：自动将 search_key 转为 keyword 并代理调用 search_goods"""
+    kw = search_key if search_key is not None else keyword
+    return search_goods(client_id, client_secret, pid, keyword=kw, limit_count=limit_count, uid=uid, **kwargs)
+
+
+get_pdd_recommend_goods = get_recommend_goods
+
+
 def verify_and_convert_goods(client_id, client_secret, pid, original_url, goods_sign=None, goods_id=None, uid=None, **kwargs):
     """
     [复合应用函数] 商品质量探针与拦截式转链：

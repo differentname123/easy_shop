@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
-from app.pdd_utils import search_pdd_goods_by_keyword, get_pdd_recommend_goods
+from app.pdd_utils import search_goods, get_recommend_goods
 from app.taobao_fetch_goods_info import search_taobao_goods_by_keyword
 from common.playwright_utils import launch_persistent_context, search_goods_and_intercept
 from common.common_utils import get_config, read_json, save_json, setup_logger
@@ -514,6 +514,9 @@ def normalize_api_goods(item, default_category, source_api="api_search"):
     ):
         if source in item:
             record[target] = item[source]
+
+    if not record.get("image_url") and item.get("goods_thumbnail_url"):
+        record["image_url"] = item["goods_thumbnail_url"]
 
     # 价格字段映射 (分 -> 元)
     for source, target in (
@@ -1142,11 +1145,11 @@ def api_search_task():
                         item_count = 0  # 记录本次拉取成功的有效商品数
 
                         try:
-                            result = search_pdd_goods_by_keyword(
+                            result = search_goods(
                                 client_id=pdd_client_id,
                                 client_secret=pdd_client_secret,
                                 pid=pdd_pid,
-                                search_key=keyword,
+                                keyword=keyword,
                                 limit_count=500  # 可根据需求调整拉取数量
                             )
 
@@ -1169,9 +1172,10 @@ def api_search_task():
                                 else:
                                     logger.info("[API任务/空数据] 关键词: [%s] | 未解析到有效商品", keyword)
                             else:
+                                err_msg = result.get("error_msg") or result.get("error") if isinstance(result, dict) else result
                                 logger.warning(
                                     "[API任务/失败] 搜索未成功 | 关键词: [%s] | 响应: [%s]",
-                                    keyword, result.get("error") if isinstance(result, dict) else result
+                                    keyword, err_msg
                                 )
 
                         except Exception as exc:
@@ -1694,10 +1698,10 @@ def _run_task(task):
 # 新增：API 推荐全盘横扫任务模块
 # ==========================================
 def api_recommend_task():
-    """后台任务：利用封装好的自动翻页引擎 get_pdd_recommend_goods 横扫推荐榜单。
+    """后台任务：利用封装好的自动翻页引擎 get_recommend_goods 横扫推荐榜单。
     每遍历完一个频道/分类，立刻清洗落库，防止因中途网络异常或封禁导致全局数据丢失。
     """
-    from app.pdd_utils import get_pdd_recommend_goods
+    from app.pdd_utils import get_recommend_goods
 
     pdd_client_id = get_config("myself_pdd_client_id")
     pdd_client_secret = get_config("myself_pdd_client_secret")
@@ -1726,7 +1730,7 @@ def api_recommend_task():
                         category_name = f"推荐榜单_ch{channel}" + (f"_cat{cid}" if cid else "")
                         logger.info("[推荐API任务/拉取] 正在调用底层引擎拉取大类: [%s] ...", category_name)
 
-                        res = get_pdd_recommend_goods(
+                        res = get_recommend_goods(
                             client_id=pdd_client_id,
                             client_secret=pdd_client_secret,
                             pid=pdd_pid,
@@ -1735,8 +1739,9 @@ def api_recommend_task():
                             cat_id=cid
                         )
 
-                        if res.get("error"):
-                            logger.warning("[推荐API任务/容错] 接口返回异常(本分类跳过): %s", res["error"])
+                        if res.get("status") != "success" or res.get("error"):
+                            err_msg = res.get("error_msg") or res.get("error") or "未知错误"
+                            logger.warning("[推荐API任务/容错] 接口返回异常(本分类跳过): %s", err_msg)
                             continue
 
                         raw_items = res.get("data", [])
