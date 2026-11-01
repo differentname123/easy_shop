@@ -3,7 +3,7 @@
 // 适配手机浏览器与微信小程序 web-view
 // ==========================================================================
 
-const { createApp, ref, reactive, onMounted, watch } = Vue;
+const { createApp, ref, reactive, onMounted, onUnmounted, watch } = Vue;
 
 const PHONE_REGEX = /^1[3-9]\d{9}$/;
 
@@ -13,6 +13,8 @@ const app = createApp({
     const currentTab = ref('home'); // 'home' | 'boom' | 'user'
     const toastMessage = ref('');
     const toastTimer = ref(null);
+    const isHeaderHidden = ref(false);
+    let lastScrollTop = 0;
 
     // 用户认证与推手状态
     const isLoggedIn = ref(false);
@@ -56,6 +58,7 @@ const app = createApp({
     const homeGoodsList = ref([]);
     const homeLoading = ref(false);
     const homeOffset = ref(0);
+    const homeSearchPage = ref(1);
 
     // 爆单推广状态 (数据库存量爆品库)
     const boomPlatforms = ref([
@@ -75,7 +78,7 @@ const app = createApp({
     // 商品详情与专属生链状态
     const isGoodsModalOpen = ref(false);
     const currentGoods = ref(null);
-    const activeCarouselIdx = ref(0);
+    const isDetailLoading = ref(false);
     const isConverting = ref(false);
     const hasGeneratedLink = ref(false);
     const convertedLinkInfo = ref(null);
@@ -84,6 +87,18 @@ const app = createApp({
     const isAuthModalOpen = ref(false);
     const currentAuthInfo = ref(null);
     const isCheckingAuth = ref(false);
+
+    // 我的返利订单模块状态
+    const orderDays = ref(7); // 查询时间跨度：7天 / 30天 / 0(全部)
+    const isSyncingOrders = ref(false);
+    const userOrdersData = ref({
+      total_count: 0,
+      total_commission: 0.0,
+      settled_commission: 0.0,
+      refund_commission: 0.0,
+      refund_count: 0,
+      order_list: [],
+    });
 
     // ==================== 工具函数 ====================
     const showToast = (msg, duration = 2000) => {
@@ -170,6 +185,8 @@ const app = createApp({
 
           showToast(isRegisterMode.value ? '注册并登录成功！' : '登录成功！');
           formPassword.value = '';
+          // 登录后拉取一次订单
+          syncAndQueryOrders(false);
         } else {
           showToast(data.detail || data.error_msg || '操作失败');
         }
@@ -180,26 +197,55 @@ const app = createApp({
       }
     };
 
+    // 彻底修复退出登录：清空所有凭证，刷新绝不重登
     const handleLogout = () => {
       isLoggedIn.value = false;
       userPhone.value = '';
+      uid.value = '';
+      userProfile.value = {
+        uid: '',
+        phone: '',
+        nickname: '未登录',
+        avatar: 'https://img.pddpic.com/mms-avatar/default_avatar.png',
+        invite_code: '',
+        balance: 0.0,
+        total_rebate: 0.0,
+        pending_rebate: 0.0,
+        auth_status: { pdd: { is_authorized: false } }
+      };
       localStorage.removeItem('easy_shop_phone');
+      localStorage.removeItem('easy_shop_uid');
+      userOrdersData.value = {
+        total_count: 0,
+        total_commission: 0.0,
+        settled_commission: 0.0,
+        refund_commission: 0.0,
+        refund_count: 0,
+        order_list: [],
+      };
       showToast('已安全退出登录');
     };
 
     const fetchUserInfo = async () => {
-      if (!uid.value && !userPhone.value) return;
+      const savedPhone = localStorage.getItem('easy_shop_phone');
+      // 只有本地真正存有已登录手机号时，才恢复登录状态
+      if (!savedPhone) {
+        isLoggedIn.value = false;
+        return;
+      }
+
       try {
-        const query = userPhone.value ? `phone=${encodeURIComponent(userPhone.value)}` : `uid=${encodeURIComponent(uid.value)}`;
-        const res = await fetch(`/api/user/info?${query}`);
+        const res = await fetch(`/api/user/info?phone=${encodeURIComponent(savedPhone)}`);
         const data = await res.json();
         if (res.ok && data.status === 'success' && data.user) {
           userProfile.value = data.user;
           uid.value = data.user.uid;
-          if (data.user.phone) {
-            isLoggedIn.value = true;
-            userPhone.value = data.user.phone;
-          }
+          userPhone.value = data.user.phone;
+          isLoggedIn.value = true;
+          localStorage.setItem('easy_shop_uid', data.user.uid);
+        } else {
+          // 账号失效，清除本地
+          handleLogout();
         }
       } catch (err) {
         console.error('获取用户信息失败:', err);
@@ -207,7 +253,7 @@ const app = createApp({
     };
 
     const handleCheckAndGetAuth = async (platform = 'pdd') => {
-      if (!uid.value) {
+      if (!isLoggedIn.value || !uid.value) {
         showToast('请先完成手机号登记注册');
         return;
       }
@@ -249,6 +295,7 @@ const app = createApp({
       if (homeLoading.value) return;
       if (isReset) {
         homeOffset.value = 0;
+        homeSearchPage.value = 1;
         homeGoodsList.value = [];
       }
       homeLoading.value = true;
@@ -256,7 +303,7 @@ const app = createApp({
       try {
         let apiUrl = '';
         if (homeSearchKeyword.value.trim()) {
-          apiUrl = `/api/home/search?keyword=${encodeURIComponent(homeSearchKeyword.value.trim())}&page=1&page_size=20&uid=${encodeURIComponent(uid.value || '')}`;
+          apiUrl = `/api/home/search?keyword=${encodeURIComponent(homeSearchKeyword.value.trim())}&page=${homeSearchPage.value}&page_size=20&uid=${encodeURIComponent(uid.value || '')}`;
         } else {
           apiUrl = `/api/home/recommend?channel_type=${currentChannel.value}&offset=${homeOffset.value}&limit=20&uid=${encodeURIComponent(uid.value || '')}`;
         }
@@ -270,6 +317,9 @@ const app = createApp({
             homeGoodsList.value.push(...data.data);
           }
           homeOffset.value += data.data.length;
+          if (homeSearchKeyword.value.trim()) {
+            homeSearchPage.value += 1;
+          }
         } else {
           if (isReset) homeGoodsList.value = [];
         }
@@ -345,13 +395,75 @@ const app = createApp({
       loadBoomGoods(true);
     };
 
-    // ==================== 商品详情与二级专属转链生链 ====================
-    const openGoodsDetail = (item) => {
-      currentGoods.value = item;
-      activeCarouselIdx.value = 0;
+    // ==================== 商品详情深度浏览与二级生链 ====================
+    const openGoodsDetail = async (item) => {
+      // 立即使用已有数据填充，秒显抽屉，消除点击空白感
+      const baseImages = (item.carousel_images && item.carousel_images.length) 
+        ? item.carousel_images 
+        : [item.image_url].filter(Boolean);
+
+      const brandName = item.brand || item.brand_name || '官方甄选';
+      const catName = item.category || item.category_name || '精品好物';
+      const salesTip = item.sales_tip || '热卖中';
+
+      currentGoods.value = {
+        ...item,
+        carousel_images: baseImages.length ? baseImages : ['https://img.pddpic.com/mms-avatar/default_avatar.png'],
+        service_guarantees: item.service_guarantees || [
+          '🛡️ 正品保障 · 假一赔十',
+          '📦 退货包运费 · 极速退款',
+          '⚡ 48小时极速出库',
+          '💰 平台百亿补贴官方特惠'
+        ],
+        shop_ratings: item.shop_ratings || {
+          desc_score: '4.8 (高)',
+          serv_score: '4.9 (高)',
+          lgst_score: '4.8 (高)'
+        },
+        specs: item.specs || [
+          { label: '商品品牌', value: brandName },
+          { label: '所属品类', value: catName },
+          { label: '累计销量', value: `已拼 ${salesTip} 件` },
+          { label: '发货保障', value: '48小时闪电极速发出 (赠送运费险)' },
+          { label: '售后承诺', value: '支持7天无理由退换货 · 假一赔十' }
+        ],
+        coupon_info: item.coupon_info || {
+          valid_tip: '领券后今日内有效，限时限量抢购'
+        }
+      };
+
       hasGeneratedLink.value = false;
       convertedLinkInfo.value = null;
       isGoodsModalOpen.value = true;
+      isDetailLoading.value = true;
+
+      // 异步获取官方/数据库全量深度详情（多图、实拍轮播、满减券起止与规格参数）
+      try {
+        const params = new URLSearchParams({
+          platform: item.platform || 'pdd',
+          goods_sign: item.goods_sign || '',
+          goods_id: item.goods_id || item.product_id || '',
+          uid: uid.value || '',
+        });
+        const res = await fetch(`/api/home/detail?${params.toString()}`);
+        const data = await res.json();
+        if (data.status === 'success' && data.data) {
+          const detail = data.data;
+          currentGoods.value = {
+            ...currentGoods.value,
+            ...detail,
+            carousel_images: (detail.carousel_images && detail.carousel_images.length) ? detail.carousel_images : currentGoods.value.carousel_images,
+            service_guarantees: detail.service_guarantees || currentGoods.value.service_guarantees,
+            shop_ratings: detail.shop_ratings || currentGoods.value.shop_ratings,
+            specs: detail.specs || currentGoods.value.specs,
+            coupon_info: detail.coupon_info || currentGoods.value.coupon_info,
+          };
+        }
+      } catch (e) {
+        console.warn('获取商品深度详情失败，保留已有数据:', e);
+      } finally {
+        isDetailLoading.value = false;
+      }
     };
 
     const handleGenerateLink = async () => {
@@ -364,7 +476,7 @@ const app = createApp({
           goods_sign: currentGoods.value.goods_sign || '',
           goods_id: currentGoods.value.goods_id || currentGoods.value.product_id || '',
           product_url: currentGoods.value.product_url || '',
-          uid: uid.value || null,
+          uid: (isLoggedIn.value && uid.value) ? uid.value : null, // 未登录传 null
         };
 
         const res = await fetch('/api/promote/convert', {
@@ -376,7 +488,11 @@ const app = createApp({
         if (data.status === 'success') {
           convertedLinkInfo.value = data;
           hasGeneratedLink.value = true;
-          showToast('已生成您的专属推广返利链接！');
+          if (isLoggedIn.value) {
+            showToast('已激活并生成专属推手返利链接！');
+          } else {
+            showToast('已获取官方优惠领券链接！');
+          }
         } else {
           convertedLinkInfo.value = {
             final_link: currentGoods.value.product_url || currentGoods.value.promotion_url || '',
@@ -391,25 +507,164 @@ const app = createApp({
       }
     };
 
-    const handleJumpToBuy = () => {
+    const handleJumpToBuy = async () => {
       if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
-        showToast('推广链接未就绪');
-        return;
+        await handleGenerateLink();
       }
-      const targetUrl = convertedLinkInfo.value.final_link;
-      // 统一复制与跳转同一链接
-      copyText(targetUrl, '已复制领券链接，正在前往...');
-      setTimeout(() => {
-        window.location.href = targetUrl;
-      }, 300);
+      if (convertedLinkInfo.value && convertedLinkInfo.value.final_link) {
+        const targetUrl = convertedLinkInfo.value.final_link;
+        copyText(targetUrl, '已复制领券链接，正在前往购买...');
+        setTimeout(() => {
+          window.location.href = targetUrl;
+        }, 300);
+      } else if (currentGoods.value && (currentGoods.value.product_url || currentGoods.value.promotion_url)) {
+        window.location.href = currentGoods.value.product_url || currentGoods.value.promotion_url;
+      } else {
+        showToast('未获取到商品购买链接');
+      }
     };
 
     const handleCopyPromoteLink = () => {
-      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
-        showToast('请先点击生成专属链接');
+      // 核心拦截：未登录状态下严禁复制推广链接！
+      if (!isLoggedIn.value || !uid.value) {
+        showToast('您尚未登录推手账号！无法生成专属返利链接，请先登录绑定手机号');
+        goToRegisterFromDetail();
         return;
       }
-      copyText(convertedLinkInfo.value.final_link, '专属返利推广链接已复制，可分享赚佣！');
+
+      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
+        showToast('正在为您生成专属推手链接...');
+        handleGenerateLink().then(() => {
+          if (convertedLinkInfo.value && convertedLinkInfo.value.final_link) {
+            copyText(convertedLinkInfo.value.final_link, `专属返利推广链接已复制！推手: ${uid.value}，发给好友下单即可赚佣金！`);
+          }
+        });
+        return;
+      }
+
+      copyText(convertedLinkInfo.value.final_link, `专属返利推广链接已复制！推手: ${uid.value}，发给好友下单即可赚佣金！`);
+    };
+
+    const goToRegisterFromDetail = () => {
+      isGoodsModalOpen.value = false;
+      currentTab.value = 'user';
+      isRegisterMode.value = true;
+      showToast('请在此登记手机号，一键成为推手并锁定返利');
+    };
+
+    // ==================== 我的返利订单模块 ====================
+    const syncAndQueryOrders = async (force = false) => {
+      if (!isLoggedIn.value || !uid.value) {
+        return;
+      }
+      isSyncingOrders.value = true;
+      try {
+        const query = new URLSearchParams({
+          uid: uid.value,
+          platform: 'pdd',
+          days: orderDays.value,
+          force: force ? 'true' : 'false',
+        });
+        const res = await fetch(`/api/order/sync_and_query?${query.toString()}`, {
+          method: 'POST',
+        });
+        const data = await res.json();
+        if (data.status === 'success' && data.data) {
+          userOrdersData.value = data.data;
+          if (force) {
+            showToast('已同步最近23小时官方订单！');
+          }
+        }
+      } catch (e) {
+        showToast('订单同步异常');
+      } finally {
+        isSyncingOrders.value = false;
+      }
+    };
+
+    const switchOrderDays = (d) => {
+      orderDays.value = d;
+      syncAndQueryOrders(false);
+    };
+
+    // ==================== 手势与滚动监听 (智能显隐顶部栏 & 触底自动加载) ====================
+    let touchStartY = 0;
+    let touchLastY = 0;
+
+    const onTouchStart = (e) => {
+      if (e.touches && e.touches[0]) {
+        touchStartY = e.touches[0].clientY;
+        touchLastY = touchStartY;
+      }
+    };
+
+    const onTouchMove = (e) => {
+      if (e.touches && e.touches[0]) {
+        const currentY = e.touches[0].clientY;
+        const deltaY = currentY - touchLastY;
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+
+        // 手指往上滑 (deltaY < -6 且离开顶部) -> 立即隐藏顶部栏
+        if (deltaY < -6 && scrollTop > 30) {
+          isHeaderHidden.value = true;
+        } else if (deltaY > 6) {
+          // 手指往下滑 -> 立即滑出顶部栏
+          isHeaderHidden.value = false;
+        }
+        touchLastY = currentY;
+      }
+    };
+
+    const handleGlobalScroll = () => {
+      const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || (document.scrollingElement ? document.scrollingElement.scrollTop : 0);
+      const scrollHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, document.scrollingElement ? document.scrollingElement.scrollHeight : 0);
+      const clientHeight = window.innerHeight || document.documentElement.clientHeight || document.body.clientHeight;
+
+      // 1. 顶部栏智能显隐：根据滚动方向判定
+      const diff = scrollTop - lastScrollTop;
+      if (scrollTop > 40) {
+        if (diff > 6) {
+          isHeaderHidden.value = true;
+        } else if (diff < -6) {
+          isHeaderHidden.value = false;
+        }
+      } else {
+        isHeaderHidden.value = false;
+      }
+      lastScrollTop = scrollTop <= 0 ? 0 : scrollTop;
+
+      // 2. 距底部 350px 自动无缝触底加载下一页商品
+      if (scrollHeight - scrollTop - clientHeight < 350) {
+        if (currentTab.value === 'home' && !homeLoading.value) {
+          loadHomeGoods(false);
+        } else if (currentTab.value === 'boom' && !boomLoading.value && boomHasMore.value) {
+          loadBoomGoods(false);
+        }
+      }
+    };
+
+    let bottomObserver = null;
+    const setupBottomObserver = () => {
+      if (typeof IntersectionObserver === 'undefined') return;
+      if (bottomObserver) bottomObserver.disconnect();
+      bottomObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            if (currentTab.value === 'home' && !homeLoading.value) {
+              loadHomeGoods(false);
+            } else if (currentTab.value === 'boom' && !boomLoading.value && boomHasMore.value) {
+              loadBoomGoods(false);
+            }
+          }
+        });
+      }, { rootMargin: '300px' });
+
+      setTimeout(() => {
+        const homeSen = document.getElementById('homeBottomSentinel');
+        const boomSen = document.getElementById('boomBottomSentinel');
+        if (homeSen) bottomObserver.observe(homeSen);
+        if (boomSen) bottomObserver.observe(boomSen);
+      }, 300);
     };
 
     // 页面初始化
@@ -419,7 +674,6 @@ const app = createApp({
       const urlUid = urlParams.get('uid');
       if (urlUid) {
         uid.value = urlUid;
-        localStorage.setItem('easy_shop_uid', urlUid);
       }
       const urlInvite = urlParams.get('invite_code');
       if (urlInvite) {
@@ -429,20 +683,41 @@ const app = createApp({
       await fetchUserInfo();
       loadHomeChannels();
       loadHomeGoods(true);
+
+      // 绑定全局手势与多源滚动监听
+      window.addEventListener('scroll', handleGlobalScroll, { passive: true });
+      document.addEventListener('scroll', handleGlobalScroll, { passive: true });
+      window.addEventListener('touchstart', onTouchStart, { passive: true });
+      window.addEventListener('touchmove', onTouchMove, { passive: true });
+      setupBottomObserver();
+    });
+
+    onUnmounted(() => {
+      window.removeEventListener('scroll', handleGlobalScroll);
+      document.removeEventListener('scroll', handleGlobalScroll);
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('touchmove', onTouchMove);
+      if (bottomObserver) bottomObserver.disconnect();
     });
 
     // 监听 Tab 切换
     watch(currentTab, (newTab) => {
+      // 切换 Tab 时重置顶部栏显隐
+      isHeaderHidden.value = false;
       if (newTab === 'boom' && boomGoodsList.value.length === 0) {
         loadBoomGoods(true);
       } else if (newTab === 'user') {
         fetchUserInfo();
+        if (isLoggedIn.value) {
+          syncAndQueryOrders(false);
+        }
       }
     });
 
     return {
       currentTab,
       toastMessage,
+      isHeaderHidden,
       uid,
       userPhone,
       isLoggedIn,
@@ -481,7 +756,7 @@ const app = createApp({
       // 商品详情与生链
       isGoodsModalOpen,
       currentGoods,
-      activeCarouselIdx,
+      isDetailLoading,
       isConverting,
       hasGeneratedLink,
       convertedLinkInfo,
@@ -489,11 +764,18 @@ const app = createApp({
       handleGenerateLink,
       handleJumpToBuy,
       handleCopyPromoteLink,
+      goToRegisterFromDetail,
       // 授权
       isAuthModalOpen,
       currentAuthInfo,
       isCheckingAuth,
       handleCheckAndGetAuth,
+      // 订单模块
+      orderDays,
+      isSyncingOrders,
+      userOrdersData,
+      syncAndQueryOrders,
+      switchOrderDays,
       // 工具
       copyText,
       showToast,

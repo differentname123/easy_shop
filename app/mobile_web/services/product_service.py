@@ -75,6 +75,27 @@ class ProductService:
             uid=uid
         )
 
+    def get_goods_detail(
+        self,
+        platform: str = "pdd",
+        goods_id_or_sign: str = "",
+        uid: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        获取官方商品完整详情 (支持官方API直连与本地爆品库深度反查双兜底)
+        """
+        adapter = get_adapter(platform)
+        res = adapter.get_goods_detail(goods_id_or_sign=goods_id_or_sign, uid=uid)
+        if res.get("status") == "success" and res.get("data"):
+            return res
+
+        # 兜底：从本地数据库反查商品详情
+        db_item = self.repo.get_product_detail(goods_id_or_sign)
+        if db_item:
+            return {"status": "success", "data": db_item, "source": "database"}
+
+        return res
+
     def get_boom_products(
         self,
         platform: str = "all",

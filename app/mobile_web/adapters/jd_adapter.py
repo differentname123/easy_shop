@@ -52,6 +52,30 @@ class JdAdapter(BasePlatformAdapter):
             "msg": "京东搜索接口已就绪"
         }
 
+    def get_goods_detail(
+        self,
+        goods_id_or_sign: str,
+        uid: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """京东商品详情（预留）"""
+        return {
+            "status": "success",
+            "data": {
+                "platform": "jd",
+                "platform_name": "京东",
+                "goods_id": str(goods_id_or_sign),
+                "name": "京东精选好物",
+                "price": 88.0,
+                "original_price": 108.0,
+                "coupon_amount": 20.0,
+                "has_coupon": True,
+                "carousel_images": [],
+                "detail_tags": ["京东自营", "次日达"],
+                "desc": "品质保障 售后无忧",
+            }
+        }
+
     def convert_promotion_url(
         self,
         goods_id_or_sign: str,

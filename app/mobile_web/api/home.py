@@ -66,3 +66,21 @@ def search_goods(
         uid=uid,
         platform=platform
     )
+
+
+@router.get("/detail")
+def get_goods_detail(
+    goods_sign: Optional[str] = Query(None, description="商品Sign"),
+    goods_id: Optional[str] = Query(None, description="商品ID"),
+    uid: Optional[str] = Query(None, description="推手用户UID"),
+    platform: str = Query("pdd", description="平台标识"),
+):
+    """
+    获取官方商品完整规范化详情 (含多张高清实拍轮播图、满减优惠、店铺与服务保障)
+    """
+    key = goods_sign or goods_id or ""
+    return product_service.get_goods_detail(
+        platform=platform,
+        goods_id_or_sign=key,
+        uid=uid
+    )

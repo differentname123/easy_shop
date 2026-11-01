@@ -16,6 +16,7 @@ from app.mobile_web.api.home import router as home_router
 from app.mobile_web.api.goods import router as goods_router
 from app.mobile_web.api.user import router as user_router
 from app.mobile_web.api.promote import router as promote_router
+from app.mobile_web.api.order import router as order_router
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -42,6 +43,7 @@ app.include_router(home_router)
 app.include_router(goods_router)
 app.include_router(user_router)
 app.include_router(promote_router)
+app.include_router(order_router)
 
 # 挂载静态资源
 if os.path.exists(STATIC_DIR):

@@ -53,6 +53,21 @@ class BasePlatformAdapter(ABC):
         pass
 
     @abstractmethod
+    def get_goods_detail(
+        self,
+        goods_id_or_sign: str,
+        uid: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        获取官方商品完整规范化详情 (含全量实拍轮播图、满减优惠、店铺与服务保障)
+        :param goods_id_or_sign: 商品ID或Sign
+        :param uid: 用户UID
+        :return: {"status": "success", "data": Dict}
+        """
+        pass
+
+    @abstractmethod
     def convert_promotion_url(
         self,
         goods_id_or_sign: str,

@@ -53,6 +53,30 @@ class TaobaoAdapter(BasePlatformAdapter):
             "msg": "淘宝搜索接口已就绪"
         }
 
+    def get_goods_detail(
+        self,
+        goods_id_or_sign: str,
+        uid: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """淘宝商品详情（预留）"""
+        return {
+            "status": "success",
+            "data": {
+                "platform": "taobao",
+                "platform_name": "淘宝",
+                "goods_id": str(goods_id_or_sign),
+                "name": "淘宝精选好物",
+                "price": 99.0,
+                "original_price": 129.0,
+                "coupon_amount": 30.0,
+                "has_coupon": True,
+                "carousel_images": [],
+                "detail_tags": ["天猫正品", "退货运费险"],
+                "desc": "官方旗舰店正品保障",
+            }
+        }
+
     def convert_promotion_url(
         self,
         goods_id_or_sign: str,

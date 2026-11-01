@@ -36,5 +36,5 @@ MONGO_PASSWORD = get_config("local_mongo_password") or ""
 MONGO_DB_NAME = get_config("local_mongo_db_name") or "crawler_data"
 
 # Web 服务配置
-WEB_HOST = "0.0.0.0"
-WEB_PORT = 8088
+WEB_HOST = "127.0.0.1"
+WEB_PORT = 8000
