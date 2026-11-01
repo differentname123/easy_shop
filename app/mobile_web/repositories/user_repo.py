@@ -1,13 +1,24 @@
 # -*- coding: utf-8 -*-
 """
 用户数据仓储模块 (MongoDB: users 集合)
-管理推手/返利用户的 UID、授权状态及基本信息。
+管理推手/返利用户的 手机号认证、密码哈希、专属 UID、邀请码及渠道授权状态。
 """
 import uuid
+import hashlib
+import random
+import string
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from common.mongo_db.mongo_base import gen_db_object
-from app.mobile_web.config import logger
+from common.common_utils import setup_logger
+
+logger = setup_logger(app_name="mobile_web")
+
+
+def hash_password(password: str, salt: str = "easy_shop_salt_2026") -> str:
+    """使用加盐 SHA-256 生成密码哈希"""
+    salted = f"{salt}_{password}_{salt}"
+    return hashlib.sha256(salted.encode("utf-8")).hexdigest()
 
 
 class UserRepository:
@@ -16,10 +27,13 @@ class UserRepository:
     def __init__(self, db_instance=None):
         self._db = db_instance or gen_db_object()
         try:
-            self._db.create_index(self.COLLECTION_NAME, [("uid", 1)], unique=True)
-            self._db.create_index(self.COLLECTION_NAME, [("created_at", -1)])
+            raw_col = self.col
+            raw_col.create_index([("uid", 1)], unique=True)
+            raw_col.create_index([("phone", 1)], unique=True, sparse=True)
+            raw_col.create_index([("invite_code", 1)], unique=True, sparse=True)
+            raw_col.create_index([("created_at", -1)])
         except Exception as e:
-            logger.warning(f"用户集合索引创建异常 (非阻塞): {e}")
+            logger.warning(f"用户集合索引创建提示: {e}")
 
     @property
     def col(self):
@@ -31,6 +45,16 @@ class UserRepository:
         token = uuid.uuid4().hex[:8]
         return f"u_{token}"
 
+    def generate_unique_invite_code(self) -> str:
+        """生成唯一的 6 位大写字母/数字邀请码"""
+        chars = string.ascii_uppercase + "23456789"  # 去除易混淆的 0, 1, I, O
+        for _ in range(10):
+            code = "INV_" + "".join(random.choices(chars, k=6))
+            if not self.col.find_one({"invite_code": code}):
+                return code
+        # 兜底
+        return f"INV_{uuid.uuid4().hex[:6].upper()}"
+
     def get_user_by_uid(self, uid: str) -> Optional[Dict[str, Any]]:
         """按 uid 查询用户"""
         if not uid:
@@ -40,21 +64,127 @@ class UserRepository:
             doc["_id"] = str(doc["_id"])
         return doc
 
+    def get_user_by_phone(self, phone: str) -> Optional[Dict[str, Any]]:
+        """按手机号查询用户"""
+        if not phone:
+            return None
+        doc = self.col.find_one({"phone": str(phone).strip()})
+        if doc and "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def get_user_by_invite_code(self, invite_code: str) -> Optional[Dict[str, Any]]:
+        """按邀请码查询用户"""
+        if not invite_code:
+            return None
+        doc = self.col.find_one({"invite_code": str(invite_code).strip().upper()})
+        if doc and "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def register_or_login(
+        self,
+        phone: str,
+        password: str,
+        nickname: Optional[str] = None,
+        invite_code: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        手机号注册登录一体化：
+        - 若手机号已存在：校验密码，成功则登录；
+        - 若手机号未存在：自动注册新账号，绑定邀请码，直接登录。
+        """
+        phone = str(phone).strip()
+        pwd_hash = hash_password(password)
+        now = datetime.now(timezone.utc)
+
+        existing = self.get_user_by_phone(phone)
+        if existing:
+            # 已注册用户：校验密码
+            if existing.get("password_hash") and existing.get("password_hash") != pwd_hash:
+                raise ValueError("手机号已注册，输入的密码不正确")
+            
+            # 兼容历史无密码记录的老账号补充密码
+            if not existing.get("password_hash"):
+                self.col.update_one({"phone": phone}, {"$set": {"password_hash": pwd_hash}})
+                existing["password_hash"] = pwd_hash
+
+            # 如果老账号没有邀请码，自动为其补齐
+            if not existing.get("invite_code"):
+                my_code = self.generate_unique_invite_code()
+                self.col.update_one({"phone": phone}, {"$set": {"invite_code": my_code}})
+                existing["invite_code"] = my_code
+
+            # 更新最后活跃与登录时间
+            self.col.update_one(
+                {"phone": phone},
+                {"$set": {"last_login_at": now, "last_active_at": now}}
+            )
+            existing["last_login_at"] = now
+            existing["last_active_at"] = now
+            existing.pop("password_hash", None)
+            return existing
+
+        # 新用户：注册
+        new_uid = self.generate_uid()
+        my_invite_code = self.generate_unique_invite_code()
+        final_nickname = nickname.strip() if (nickname and nickname.strip()) else f"推手_{phone[-4:]}"
+
+        # 检查上级邀请人
+        invited_by = None
+        if invite_code and invite_code.strip():
+            inviter = self.get_user_by_invite_code(invite_code.strip())
+            if inviter:
+                invited_by = inviter.get("uid")
+
+        user_doc = {
+            "uid": new_uid,
+            "phone": phone,
+            "password_hash": pwd_hash,
+            "nickname": final_nickname,
+            "avatar": "https://img.pddpic.com/mms-avatar/default_avatar.png",
+            "invite_code": my_invite_code,
+            "invited_by": invited_by,
+            "created_at": now,
+            "last_login_at": now,
+            "last_active_at": now,
+            "balance": 0.0,
+            "total_rebate": 0.0,
+            "pending_rebate": 0.0,
+            "auth_status": {
+                "pdd": {"is_authorized": False, "bind": 0, "updated_at": None},
+                "taobao": {"is_authorized": False, "bind": 0, "updated_at": None},
+                "jd": {"is_authorized": False, "bind": 0, "updated_at": None},
+            },
+            "meta": {}
+        }
+
+        self.col.insert_one(user_doc)
+        user_doc.pop("_id", None)
+        user_doc.pop("password_hash", None)
+        logger.info(f"新用户注册成功: phone={phone}, uid={new_uid}, invite_code={my_invite_code}, invited_by={invited_by}")
+        return user_doc
+
     def create_user(self, uid: Optional[str] = None, nickname: Optional[str] = None) -> Dict[str, Any]:
-        """创建新用户并持久化"""
+        """匿名/访客用户初始化"""
         now = datetime.now(timezone.utc)
         final_uid = str(uid).strip() if uid else self.generate_uid()
         final_nickname = nickname or f"推手_{final_uid[-4:]}"
+        my_invite_code = self.generate_unique_invite_code()
 
         user_doc = {
             "uid": final_uid,
+            "phone": None,
+            "password_hash": None,
             "nickname": final_nickname,
             "avatar": "https://img.pddpic.com/mms-avatar/default_avatar.png",
+            "invite_code": my_invite_code,
+            "invited_by": None,
             "created_at": now,
             "last_active_at": now,
-            "balance": 0.0,           # 可提现返利余额
-            "total_rebate": 0.0,      # 累计返利收益
-            "pending_rebate": 0.0,    # 待结算返利
+            "balance": 0.0,
+            "total_rebate": 0.0,
+            "pending_rebate": 0.0,
             "auth_status": {
                 "pdd": {"is_authorized": False, "bind": 0, "updated_at": None},
                 "taobao": {"is_authorized": False, "bind": 0, "updated_at": None},
@@ -67,11 +197,10 @@ class UserRepository:
             self.col.insert_one(user_doc)
             user_doc.pop("_id", None)
             return user_doc
-        except Exception as e:
-            # 兼容并发创建已存在的情形
-            logger.warning(f"创建用户插入冲突，回退查询: {e}")
+        except Exception:
             existing = self.get_user_by_uid(final_uid)
             if existing:
+                existing.pop("password_hash", None)
                 return existing
             raise
 
@@ -80,6 +209,7 @@ class UserRepository:
         if uid:
             user = self.get_user_by_uid(uid)
             if user:
+                user.pop("password_hash", None)
                 return user
         return self.create_user(uid=uid)
 
@@ -111,13 +241,3 @@ class UserRepository:
             {"$set": update_fields}
         )
         return res.modified_count > 0 or res.matched_count > 0
-
-    def touch_user_activity(self, uid: str) -> None:
-        """更新最后活跃时间"""
-        if not uid:
-            return
-        now = datetime.now(timezone.utc)
-        self.col.update_one(
-            {"uid": str(uid).strip()},
-            {"$set": {"last_active_at": now}}
-        )

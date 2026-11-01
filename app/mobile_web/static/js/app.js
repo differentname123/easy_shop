@@ -1,9 +1,11 @@
 // ==========================================================================
-// 移动端电商导购与返利应用前端核心逻辑 (Vue 3)
+// 移动端电商导购与返利应用前端核心逻辑 (Vue 3 本地化版)
 // 适配手机浏览器与微信小程序 web-view
 // ==========================================================================
 
 const { createApp, ref, reactive, onMounted, watch } = Vue;
+
+const PHONE_REGEX = /^1[3-9]\d{9}$/;
 
 const app = createApp({
   setup() {
@@ -12,12 +14,17 @@ const app = createApp({
     const toastMessage = ref('');
     const toastTimer = ref(null);
 
-    // 用户推手状态
+    // 用户认证与推手状态
+    const isLoggedIn = ref(false);
     const uid = ref(localStorage.getItem('easy_shop_uid') || '');
+    const userPhone = ref(localStorage.getItem('easy_shop_phone') || '');
     const userProfile = ref({
       uid: '',
-      nickname: '加载中...',
+      phone: '',
+      nickname: '未登录',
       avatar: 'https://img.pddpic.com/mms-avatar/default_avatar.png',
+      invite_code: '',
+      invited_by: null,
       balance: 0.0,
       total_rebate: 0.0,
       pending_rebate: 0.0,
@@ -28,7 +35,15 @@ const app = createApp({
       }
     });
 
-    // 首页状态 (拼多多多多进宝推荐)
+    // 登录/注册表单
+    const isRegisterMode = ref(true);
+    const formPhone = ref('');
+    const formPassword = ref('');
+    const formNickname = ref('');
+    const formInviteCode = ref('');
+    const isSubmittingAuth = ref(false);
+
+    // 首页状态 (拼多多进宝官方推荐)
     const homeChannels = ref([
       { channel_type: 5, name: '实时热销' },
       { channel_type: 1, name: '今日爆款' },
@@ -50,21 +65,22 @@ const app = createApp({
       { code: 'jd', name: '京东' },
     ]);
     const boomPlatform = ref('all');
-    const boomCategories = ref(['全部']);
-    const boomCategory = ref('全部');
+    const boomSearchKeyword = ref('');
     const boomSortBy = ref('latest');
     const boomGoodsList = ref([]);
     const boomPage = ref(1);
     const boomLoading = ref(false);
     const boomHasMore = ref(true);
 
-    // 商品领券/购买弹窗状态
+    // 商品详情与专属生链状态
     const isGoodsModalOpen = ref(false);
     const currentGoods = ref(null);
+    const activeCarouselIdx = ref(0);
     const isConverting = ref(false);
+    const hasGeneratedLink = ref(false);
     const convertedLinkInfo = ref(null);
 
-    // 授权引导弹窗状态
+    // 渠道授权弹窗状态
     const isAuthModalOpen = ref(false);
     const currentAuthInfo = ref(null);
     const isCheckingAuth = ref(false);
@@ -100,45 +116,90 @@ const app = createApp({
         document.execCommand('copy');
         showToast(successTip);
       } catch (e) {
-        showToast('复制失败，请手动长按复制');
+        showToast('复制失败，请长按手动复制');
       }
       document.body.removeChild(input);
     };
 
-    // ==================== 用户模块 ====================
-    const initUser = async () => {
-      // 1. 优先提取 URL 中附带的 uid 参数（便于微信小程序跳转直接透传）
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlUid = urlParams.get('uid');
-      if (urlUid) {
-        uid.value = urlUid;
-        localStorage.setItem('easy_shop_uid', urlUid);
+    const formatPhone = (p) => {
+      if (!p || p.length !== 11) return p || '';
+      return p.substring(0, 3) + '****' + p.substring(7);
+    };
+
+    // ==================== 用户认证与登录 ====================
+    const handleRegisterOrLogin = async () => {
+      const phone = formPhone.value.trim();
+      const pwd = formPassword.value.trim();
+
+      if (!phone) {
+        showToast('请输入手机号');
+        return;
+      }
+      if (!PHONE_REGEX.test(phone)) {
+        showToast('请输入有效的11位中国大陆手机号');
+        return;
+      }
+      if (!pwd || pwd.length < 6) {
+        showToast('密码长度不能少于6位');
+        return;
       }
 
+      isSubmittingAuth.value = true;
       try {
-        const res = await fetch('/api/user/init', {
+        const payload = {
+          phone: phone,
+          password: pwd,
+          nickname: formNickname.value.trim() || null,
+          invite_code: formInviteCode.value.trim() || null,
+        };
+
+        const res = await fetch('/api/user/register_or_login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ uid: uid.value || null }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json();
-        if (data.status === 'success' && data.user) {
+        if (res.ok && data.status === 'success' && data.user) {
+          isLoggedIn.value = true;
           uid.value = data.user.uid;
-          localStorage.setItem('easy_shop_uid', data.user.uid);
+          userPhone.value = data.user.phone;
           userProfile.value = data.user;
+
+          localStorage.setItem('easy_shop_uid', data.user.uid);
+          localStorage.setItem('easy_shop_phone', data.user.phone);
+
+          showToast(isRegisterMode.value ? '注册并登录成功！' : '登录成功！');
+          formPassword.value = '';
+        } else {
+          showToast(data.detail || data.error_msg || '操作失败');
         }
       } catch (err) {
-        console.error('初始化用户异常:', err);
+        showToast('网络连接异常');
+      } finally {
+        isSubmittingAuth.value = false;
       }
     };
 
+    const handleLogout = () => {
+      isLoggedIn.value = false;
+      userPhone.value = '';
+      localStorage.removeItem('easy_shop_phone');
+      showToast('已安全退出登录');
+    };
+
     const fetchUserInfo = async () => {
-      if (!uid.value) return;
+      if (!uid.value && !userPhone.value) return;
       try {
-        const res = await fetch(`/api/user/info?uid=${encodeURIComponent(uid.value)}`);
+        const query = userPhone.value ? `phone=${encodeURIComponent(userPhone.value)}` : `uid=${encodeURIComponent(uid.value)}`;
+        const res = await fetch(`/api/user/info?${query}`);
         const data = await res.json();
-        if (data.status === 'success' && data.user) {
+        if (res.ok && data.status === 'success' && data.user) {
           userProfile.value = data.user;
+          uid.value = data.user.uid;
+          if (data.user.phone) {
+            isLoggedIn.value = true;
+            userPhone.value = data.user.phone;
+          }
         }
       } catch (err) {
         console.error('获取用户信息失败:', err);
@@ -147,7 +208,7 @@ const app = createApp({
 
     const handleCheckAndGetAuth = async (platform = 'pdd') => {
       if (!uid.value) {
-        showToast('用户状态异常，请刷新页面');
+        showToast('请先完成手机号登记注册');
         return;
       }
       isCheckingAuth.value = true;
@@ -157,10 +218,9 @@ const app = createApp({
         if (data.status === 'success') {
           currentAuthInfo.value = data;
           isAuthModalOpen.value = true;
-          // 重新更新用户授权状态
           fetchUserInfo();
           if (data.is_authorized) {
-            showToast(`${data.platform_name} 已成功授权！`);
+            showToast(`${data.platform_name} 已成功备案！`);
           }
         } else {
           showToast(data.error_msg || '获取授权状态失败');
@@ -196,7 +256,7 @@ const app = createApp({
       try {
         let apiUrl = '';
         if (homeSearchKeyword.value.trim()) {
-          apiUrl = `/api/home/search?keyword=${encodeURIComponent(homeSearchKeyword.value.trim())}&page=1&page_size=30&uid=${encodeURIComponent(uid.value || '')}`;
+          apiUrl = `/api/home/search?keyword=${encodeURIComponent(homeSearchKeyword.value.trim())}&page=1&page_size=20&uid=${encodeURIComponent(uid.value || '')}`;
         } else {
           apiUrl = `/api/home/recommend?channel_type=${currentChannel.value}&offset=${homeOffset.value}&limit=20&uid=${encodeURIComponent(uid.value || '')}`;
         }
@@ -212,10 +272,9 @@ const app = createApp({
           homeOffset.value += data.data.length;
         } else {
           if (isReset) homeGoodsList.value = [];
-          if (data.error_msg) showToast(data.error_msg);
         }
       } catch (err) {
-        showToast('加载商品失败，请检查网络');
+        showToast('商品加载中断，请重试');
       } finally {
         homeLoading.value = false;
       }
@@ -232,18 +291,6 @@ const app = createApp({
     };
 
     // ==================== 爆单推广模块 (数据库商品) ====================
-    const loadBoomCategories = async () => {
-      try {
-        const res = await fetch(`/api/goods/categories?platform=${boomPlatform.value}`);
-        const data = await res.json();
-        if (data.status === 'success' && data.data) {
-          boomCategories.value = ['全部', ...data.data];
-        }
-      } catch (e) {
-        boomCategories.value = ['全部'];
-      }
-    };
-
     const loadBoomGoods = async (isReset = false) => {
       if (boomLoading.value) return;
       if (isReset) {
@@ -257,7 +304,7 @@ const app = createApp({
       try {
         const queryParams = new URLSearchParams({
           platform: boomPlatform.value,
-          category: boomCategory.value === '全部' ? '' : boomCategory.value,
+          keyword: boomSearchKeyword.value.trim(),
           sort_by: boomSortBy.value,
           page: boomPage.value,
           page_size: 20,
@@ -284,15 +331,12 @@ const app = createApp({
       }
     };
 
-    const switchBoomPlatform = (code) => {
-      boomPlatform.value = code;
-      boomCategory.value = '全部';
-      loadBoomCategories();
+    const onSearchBoom = () => {
       loadBoomGoods(true);
     };
 
-    const switchBoomCategory = (cat) => {
-      boomCategory.value = cat;
+    const switchBoomPlatform = (code) => {
+      boomPlatform.value = code;
       loadBoomGoods(true);
     };
 
@@ -301,20 +345,26 @@ const app = createApp({
       loadBoomGoods(true);
     };
 
-    // ==================== 商品详情 & 专属转链生链 ====================
-    const openGoodsDetail = async (item) => {
+    // ==================== 商品详情与二级专属转链生链 ====================
+    const openGoodsDetail = (item) => {
       currentGoods.value = item;
+      activeCarouselIdx.value = 0;
+      hasGeneratedLink.value = false;
       convertedLinkInfo.value = null;
       isGoodsModalOpen.value = true;
+    };
+
+    const handleGenerateLink = async () => {
+      if (!currentGoods.value) return;
       isConverting.value = true;
 
       try {
         const payload = {
-          platform: item.platform || 'pdd',
-          goods_sign: item.goods_sign || '',
-          goods_id: item.goods_id || item.product_id || '',
-          product_url: item.product_url || '',
-          uid: uid.value, // 自动注入当前用户专属 UID 进行佣金归因
+          platform: currentGoods.value.platform || 'pdd',
+          goods_sign: currentGoods.value.goods_sign || '',
+          goods_id: currentGoods.value.goods_id || currentGoods.value.product_id || '',
+          product_url: currentGoods.value.product_url || '',
+          uid: uid.value || null,
         };
 
         const res = await fetch('/api/promote/convert', {
@@ -325,44 +375,58 @@ const app = createApp({
         const data = await res.json();
         if (data.status === 'success') {
           convertedLinkInfo.value = data;
+          hasGeneratedLink.value = true;
+          showToast('已生成您的专属推广返利链接！');
         } else {
           convertedLinkInfo.value = {
-            error: data.error_msg || '转链失败',
-            short_url: item.product_url || item.promotion_url || ''
+            final_link: currentGoods.value.product_url || currentGoods.value.promotion_url || '',
+            error: data.error_msg || '转链失败'
           };
+          hasGeneratedLink.value = true;
         }
       } catch (e) {
-        convertedLinkInfo.value = {
-          error: '网络异常，转链失败',
-          short_url: item.product_url || ''
-        };
+        showToast('生成专属链接异常');
       } finally {
         isConverting.value = false;
       }
     };
 
     const handleJumpToBuy = () => {
-      if (!convertedLinkInfo.value) return;
-      const targetUrl = convertedLinkInfo.value.mobile_short_url
-        || convertedLinkInfo.value.short_url
-        || convertedLinkInfo.value.mobile_url
-        || convertedLinkInfo.value.url;
-
-      if (!targetUrl) {
+      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
         showToast('推广链接未就绪');
         return;
       }
-
-      // 自动复制该链接以便在微信粘贴，同时尝试跳转
+      const targetUrl = convertedLinkInfo.value.final_link;
+      // 统一复制与跳转同一链接
       copyText(targetUrl, '已复制领券链接，正在前往...');
       setTimeout(() => {
         window.location.href = targetUrl;
       }, 300);
     };
 
-    // 页面挂载初始化
+    const handleCopyPromoteLink = () => {
+      if (!convertedLinkInfo.value || !convertedLinkInfo.value.final_link) {
+        showToast('请先点击生成专属链接');
+        return;
+      }
+      copyText(convertedLinkInfo.value.final_link, '专属返利推广链接已复制，可分享赚佣！');
+    };
+
+    // 页面初始化
     onMounted(async () => {
-      await initUser();
+      // 提取小程序透传的 URL 参数
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlUid = urlParams.get('uid');
+      if (urlUid) {
+        uid.value = urlUid;
+        localStorage.setItem('easy_shop_uid', urlUid);
+      }
+      const urlInvite = urlParams.get('invite_code');
+      if (urlInvite) {
+        formInviteCode.value = urlInvite;
+      }
+
+      await fetchUserInfo();
       loadHomeChannels();
       loadHomeGoods(true);
     });
@@ -370,7 +434,6 @@ const app = createApp({
     // 监听 Tab 切换
     watch(currentTab, (newTab) => {
       if (newTab === 'boom' && boomGoodsList.value.length === 0) {
-        loadBoomCategories();
         loadBoomGoods(true);
       } else if (newTab === 'user') {
         fetchUserInfo();
@@ -381,7 +444,19 @@ const app = createApp({
       currentTab,
       toastMessage,
       uid,
+      userPhone,
+      isLoggedIn,
       userProfile,
+      formatPhone,
+      // 注册与登录
+      isRegisterMode,
+      formPhone,
+      formPassword,
+      formNickname,
+      formInviteCode,
+      isSubmittingAuth,
+      handleRegisterOrLogin,
+      handleLogout,
       // 首页
       homeChannels,
       currentChannel,
@@ -394,29 +469,32 @@ const app = createApp({
       // 爆单
       boomPlatforms,
       boomPlatform,
-      boomCategories,
-      boomCategory,
+      boomSearchKeyword,
       boomSortBy,
       boomGoodsList,
       boomLoading,
       boomHasMore,
       switchBoomPlatform,
-      switchBoomCategory,
       switchBoomSort,
+      onSearchBoom,
       loadBoomGoods,
-      // 弹窗与交互
+      // 商品详情与生链
       isGoodsModalOpen,
       currentGoods,
+      activeCarouselIdx,
       isConverting,
+      hasGeneratedLink,
       convertedLinkInfo,
       openGoodsDetail,
+      handleGenerateLink,
       handleJumpToBuy,
+      handleCopyPromoteLink,
       // 授权
       isAuthModalOpen,
       currentAuthInfo,
       isCheckingAuth,
       handleCheckAndGetAuth,
-      // 通用
+      // 工具
       copyText,
       showToast,
     };

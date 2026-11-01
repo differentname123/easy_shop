@@ -2,11 +2,15 @@
 """
 推广转链与佣金归因服务
 确保用户在点击商品跳转购买时，自动带上当前推手的专属 uid，以便后续佣金准确归因。
+统一输出 final_link 字段，确保跳转与复制链接 100% 绝对一致。
 """
 from typing import Dict, Any, Optional
 from app.mobile_web.adapters import get_adapter
-from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID, logger
+from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID
+from common.common_utils import setup_logger
 from app.pdd_utils import convert_pdd_url
+
+logger = setup_logger(app_name="mobile_web")
 
 
 class PromoteService:
@@ -32,6 +36,9 @@ class PromoteService:
         if goods_id_or_sign:
             res = adapter.convert_promotion_url(goods_id_or_sign, uid=uid, **kwargs)
             if res.get("status") == "success":
+                # 确保有权威的 final_link
+                if not res.get("final_link"):
+                    res["final_link"] = res.get("mobile_short_url") or res.get("short_url") or res.get("url", "")
                 return res
 
         # 2. 如果是拼多多且通过原始链接/商品ID转链
@@ -49,7 +56,9 @@ class PromoteService:
                     jump_url = zs_res.get("jump_url")
                     return {
                         "status": "success",
+                        "need_auth": False,
                         "link_type": "单品外部转链",
+                        "final_link": jump_url,
                         "url": jump_url,
                         "short_url": jump_url,
                         "mobile_url": jump_url,
