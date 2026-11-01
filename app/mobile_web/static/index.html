@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="format-detection" content="telephone=no">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>优选导购 - 极速省赚</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <!-- 引入轻量级 Vue 3 (单文件纯运行时，微信内加载秒开) -->
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <!-- ==================== TAB 1: 首页 (拼多多进宝官方推荐) ==================== -->
+  <div v-show="currentTab === 'home'" class="tab-page">
+    <header class="top-header">
+      <div class="search-box">
+        <div class="search-input-wrap">
+          <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <input 
+            type="text" 
+            class="search-input" 
+            placeholder="搜索拼多多全网优惠爆品..." 
+            v-model="homeSearchKeyword"
+            @keyup.enter="onSearchHome"
+          />
+        </div>
+        <button class="search-btn" @click="onSearchHome">搜索</button>
+      </div>
+
+      <!-- 推荐频道滑动栏 -->
+      <nav class="channel-scroller" v-if="!homeSearchKeyword">
+        <div 
+          v-for="ch in homeChannels" 
+          :key="ch.channel_type"
+          class="channel-item"
+          :class="{ active: currentChannel === ch.channel_type }"
+          @click="switchChannel(ch.channel_type)"
+        >
+          {{ ch.name }}
+        </div>
+      </nav>
+    </header>
+
+    <!-- 首页商品双列网格 -->
+    <main class="goods-grid">
+      <div 
+        v-for="item in homeGoodsList" 
+        :key="item.goods_id || item.goods_sign"
+        class="goods-card"
+        @click="openGoodsDetail(item)"
+      >
+        <div class="goods-thumb-wrap">
+          <img :src="item.image_url" :alt="item.name" class="goods-thumb" loading="lazy" />
+          <span class="plat-badge pdd">拼多多</span>
+        </div>
+        <div class="goods-body">
+          <h4 class="goods-title">{{ item.name }}</h4>
+          <div class="goods-tags">
+            <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">券减 ¥{{ item.coupon_amount }}</span>
+            <span v-if="item.commission_amount > 0" class="rebate-tag">返利 ¥{{ item.commission_amount }}</span>
+          </div>
+          <div class="price-row">
+            <span class="price-unit">¥</span>
+            <span class="price-value">{{ item.price }}</span>
+            <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
+          </div>
+          <div class="sales-row">
+            <span>{{ item.sales_tip }}</span>
+            <span>{{ item.mall_name }}</span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div v-if="homeLoading" class="loading-wrap">正在加载更多好物...</div>
+    <div v-if="!homeLoading && homeGoodsList.length === 0" class="empty-wrap">暂无符合条件的商品</div>
+  </div>
+
+  <!-- ==================== TAB 2: 爆单推广 (数据库爆品) ==================== -->
+  <div v-show="currentTab === 'boom'" class="tab-page">
+    <header class="top-header">
+      <!-- 平台筛选芯片 -->
+      <div class="platform-bar">
+        <div 
+          v-for="p in boomPlatforms" 
+          :key="p.code"
+          class="plat-chip"
+          :class="{ active: boomPlatform === p.code }"
+          @click="switchBoomPlatform(p.code)"
+        >
+          {{ p.name }}
+        </div>
+      </div>
+
+      <!-- 分类滑动栏 -->
+      <nav class="channel-scroller" v-if="boomCategories.length > 1">
+        <div 
+          v-for="cat in boomCategories" 
+          :key="cat"
+          class="channel-item"
+          :class="{ active: boomCategory === cat }"
+          @click="switchBoomCategory(cat)"
+        >
+          {{ cat }}
+        </div>
+      </nav>
+
+      <!-- 排序栏 -->
+      <div class="sort-bar">
+        <span class="sort-item" :class="{ active: boomSortBy === 'latest' }" @click="switchBoomSort('latest')">最新上架</span>
+        <span class="sort-item" :class="{ active: boomSortBy === 'save_desc' }" @click="switchBoomSort('save_desc')">立省最多</span>
+        <span class="sort-item" :class="{ active: boomSortBy === 'price_asc' }" @click="switchBoomSort('price_asc')">价格最低</span>
+      </div>
+    </header>
+
+    <!-- 爆单商品列表 -->
+    <main class="goods-grid">
+      <div 
+        v-for="item in boomGoodsList" 
+        :key="item.platform + '_' + item.product_id"
+        class="goods-card"
+        @click="openGoodsDetail(item)"
+      >
+        <div class="goods-thumb-wrap">
+          <img :src="item.image_url" :alt="item.name" class="goods-thumb" loading="lazy" />
+          <span class="plat-badge" :class="item.platform">{{ item.platform_name }}</span>
+        </div>
+        <div class="goods-body">
+          <h4 class="goods-title">{{ item.name }}</h4>
+          <div class="goods-tags">
+            <span v-if="item.saved_price > 0" class="coupon-tag">立省 ¥{{ item.saved_price }}</span>
+            <span class="rebate-tag">{{ item.category }}</span>
+          </div>
+          <div class="price-row">
+            <span class="price-unit">¥</span>
+            <span class="price-value">{{ item.price }}</span>
+            <span v-if="item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
+          </div>
+          <div class="sales-row">
+            <span>{{ item.brand || '精选推荐' }}</span>
+            <span>{{ item.updated_at.split(' ')[0] }}</span>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <div v-if="boomLoading" class="loading-wrap">正在加载爆单商品...</div>
+    <div v-if="!boomLoading && boomGoodsList.length === 0" class="empty-wrap">爆单库暂无该分类商品</div>
+    <div v-if="!boomLoading && !boomHasMore && boomGoodsList.length > 0" class="loading-wrap">已到底部，无更多商品</div>
+  </div>
+
+  <!-- ==================== TAB 3: 我的 (推手中心与授权返利) ==================== -->
+  <div v-show="currentTab === 'user'" class="tab-page">
+    <div class="user-profile-header">
+      <div class="user-info-row">
+        <img :src="userProfile.avatar" class="user-avatar" alt="用户头像" />
+        <div class="user-meta">
+          <h3>{{ userProfile.nickname }}</h3>
+          <div class="uid-badge" @click="copyText(userProfile.uid, '推手专属 UID 已复制')">
+            UID: {{ userProfile.uid }} <span>[点击复制]</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 收益统计面板 -->
+    <div class="stats-card">
+      <div class="stats-grid">
+        <div class="stat-item">
+          <div class="num">¥{{ (userProfile.balance || 0).toFixed(2) }}</div>
+          <div class="label">可提现余额</div>
+        </div>
+        <div class="stat-item">
+          <div class="num">¥{{ (userProfile.pending_rebate || 0).toFixed(2) }}</div>
+          <div class="label">待结算返利</div>
+        </div>
+        <div class="stat-item">
+          <div class="num">¥{{ (userProfile.total_rebate || 0).toFixed(2) }}</div>
+          <div class="label">累计赚取收益</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 渠道授权备案管理中心 -->
+    <div class="section-title">
+      <svg style="width:16px;height:16px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
+      多平台推手渠道授权中心
+    </div>
+
+    <!-- 拼多多授权卡片 -->
+    <div class="auth-card">
+      <div class="auth-header">
+        <div class="auth-plat-info">
+          <img src="https://funimg.pddpic.com/common/jinbao/c5231b6b-172b-456a-a6e1-7de567e6bc9b.png.slim.png" class="auth-icon" alt="PDD" />
+          <span>拼多多官方推手备案</span>
+        </div>
+        <span 
+          class="auth-status-badge"
+          :class="userProfile.auth_status?.pdd?.is_authorized ? 'authed' : 'unauthed'"
+        >
+          {{ userProfile.auth_status?.pdd?.is_authorized ? '已授权备案 ✅' : '未授权 ⚠️' }}
+        </span>
+      </div>
+      <p class="auth-desc">
+        {{ userProfile.auth_status?.pdd?.is_authorized 
+           ? '您已完成拼多多官方渠道推广位备案。后续您点击或分享的任意商品，均自动注入专属 UID 计入您的返利收益！' 
+           : '拼多多官方要求返利推手需完成一次推广位备案绑定。授权后即可正常享受拼多多商品佣金返利。' 
+        }}
+      </p>
+      <div class="auth-actions">
+        <button 
+          class="btn-auth" 
+          @click="handleCheckAndGetAuth('pdd')"
+          :disabled="isCheckingAuth"
+        >
+          {{ isCheckingAuth ? '检测中...' : (userProfile.auth_status?.pdd?.is_authorized ? '重新校验授权' : '一键开通拼多多授权') }}
+        </button>
+      </div>
+    </div>
+
+    <!-- 淘宝联盟预留卡片 -->
+    <div class="auth-card" style="opacity: 0.85;">
+      <div class="auth-header">
+        <div class="auth-plat-info">
+          <span style="display:inline-block;width:24px;height:24px;background:#ff5000;color:#fff;text-align:center;line-height:24px;border-radius:4px;font-size:12px;font-weight:700">淘</span>
+          <span>淘宝客渠道关系备案</span>
+        </div>
+        <span class="auth-status-badge unauthed">标准接口已就绪</span>
+      </div>
+      <p class="auth-desc">
+        支持淘宝联盟渠道关系管理 (relation_id)，后续接入淘宝 App 授权即可享受淘宝天猫返利。
+      </p>
+      <div class="auth-actions">
+        <button class="btn-secondary" style="width:100%" @click="showToast('淘宝联盟适配器已就绪，等待接入正式物料')">了解接入规范</button>
+      </div>
+    </div>
+
+    <!-- 京东联盟预留卡片 -->
+    <div class="auth-card" style="opacity: 0.85;">
+      <div class="auth-header">
+        <div class="auth-plat-info">
+          <span style="display:inline-block;width:24px;height:24px;background:#e1251b;color:#fff;text-align:center;line-height:24px;border-radius:4px;font-size:12px;font-weight:700">京</span>
+          <span>京东推客渠道授权</span>
+        </div>
+        <span class="auth-status-badge unauthed">标准接口已就绪</span>
+      </div>
+      <p class="auth-desc">
+        支持京东联盟子联盟分销 (subUnionId)，后续接入京东开放平台后即可无缝对接。
+      </p>
+      <div class="auth-actions">
+        <button class="btn-secondary" style="width:100%" @click="showToast('京东联盟适配器已就绪，等待接入正式联盟')">了解接入规范</button>
+      </div>
+    </div>
+
+    <!-- 菜单说明列表 -->
+    <div class="menu-list">
+      <div class="menu-item" @click="showToast('返利结算周期为确认收货次月20日')">
+        <span>返利收益规则说明</span>
+        <span style="color:var(--text-muted)">›</span>
+      </div>
+      <div class="menu-item" @click="showToast('在微信小程序中，直接通过 web-view 组件嵌入本网页即可使用')">
+        <span>微信小程序接入指南</span>
+        <span style="color:var(--text-muted)">›</span>
+      </div>
+      <div class="menu-item" @click="copyText(userProfile.uid, 'UID 已复制')">
+        <span>当前推手唯一标识 (UID)</span>
+        <span style="color:var(--text-sub);font-size:11px">{{ userProfile.uid }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 底部固定导航栏 (TabBar) ==================== -->
+  <footer class="bottom-tab-bar">
+    <div class="tab-item" :class="{ active: currentTab === 'home' }" @click="currentTab = 'home'">
+      <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+      <span>首页</span>
+    </div>
+    <div class="tab-item" :class="{ active: currentTab === 'boom' }" @click="currentTab = 'boom'">
+      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z"/></svg>
+      <span>爆单推广</span>
+    </div>
+    <div class="tab-item" :class="{ active: currentTab === 'user' }" @click="currentTab = 'user'">
+      <svg viewBox="0 0 24 24"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+      <span>我的</span>
+    </div>
+  </footer>
+
+  <!-- ==================== 商品详情与带UID转链弹窗 ==================== -->
+  <div class="modal-backdrop" v-if="isGoodsModalOpen" @click.self="isGoodsModalOpen = false">
+    <div class="sheet-dialog">
+      <div class="sheet-header">
+        <span>专属返利领券</span>
+        <button class="sheet-close" @click="isGoodsModalOpen = false">×</button>
+      </div>
+
+      <div class="goods-pop-detail" v-if="currentGoods">
+        <img :src="currentGoods.image_url" class="goods-pop-thumb" alt="商品缩略图" />
+        <div class="goods-pop-info">
+          <h4 class="goods-pop-title">{{ currentGoods.name }}</h4>
+          <div class="price-row">
+            <span class="price-unit">¥</span>
+            <span class="price-value">{{ currentGoods.price }}</span>
+            <span v-if="currentGoods.coupon_amount > 0" class="coupon-tag" style="margin-left:6px">立减 ¥{{ currentGoods.coupon_amount }}</span>
+          </div>
+          <p style="font-size:11px;color:var(--text-sub);margin-top:4px">
+            推手归属: <b>{{ uid }}</b> (已自动绑定佣金返利)
+          </p>
+        </div>
+      </div>
+
+      <div v-if="isConverting" class="loading-wrap">
+        正在使用您的专属 UID 生成官方佣金链接...
+      </div>
+
+      <div class="pop-action-btns" v-else>
+        <!-- 未授权时的友好提醒与开通授权快捷入口 -->
+        <div v-if="convertedLinkInfo?.need_auth" style="background:#fff7e6;border:1px solid #ffd591;padding:8px 10px;border-radius:6px;font-size:12px;color:#d46b08;line-height:1.4;text-align:left;">
+          ⚠️ <b>返利提醒</b>：当前 UID 尚未在拼多多完成备案绑定，本次点击暂未绑定返利。<br/>
+          <a :href="convertedLinkInfo.auth_url" target="_blank" style="color:#1890ff;font-weight:600;text-decoration:underline;display:inline-block;margin-top:4px" @click="copyText(convertedLinkInfo.auth_url, '授权链接已复制')">👉 点击立即开通拼多多返利授权</a>
+        </div>
+
+        <button class="btn-primary-block" @click="handleJumpToBuy">
+          前往领券并购买
+        </button>
+        <button 
+          class="btn-outline-block"
+          @click="copyText(convertedLinkInfo?.short_url || convertedLinkInfo?.mobile_short_url || convertedLinkInfo?.url, '专属返利推广链接已复制！')"
+        >
+          复制推广链接 (分享赚佣)
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== 渠道授权引导弹窗 ==================== -->
+  <div class="modal-backdrop" v-if="isAuthModalOpen" @click.self="isAuthModalOpen = false">
+    <div class="sheet-dialog">
+      <div class="sheet-header">
+        <span>{{ currentAuthInfo?.platform_name || '官方' }}推手备案授权</span>
+        <button class="sheet-close" @click="isAuthModalOpen = false">×</button>
+      </div>
+
+      <div style="padding: 10px 0 20px;">
+        <div style="text-align:center;margin-bottom:16px;">
+          <div style="font-size:36px;margin-bottom:8px">
+            {{ currentAuthInfo?.is_authorized ? '🎉' : '🔐' }}
+          </div>
+          <h3 style="font-size:16px;color:var(--text-main)">
+            {{ currentAuthInfo?.is_authorized ? '您已成功备案！' : '开通返利授权权限' }}
+          </h3>
+          <p style="font-size:12px;color:var(--text-sub);margin-top:6px;line-height:1.5">
+            {{ currentAuthInfo?.msg }}
+          </p>
+        </div>
+
+        <div v-if="!currentAuthInfo?.is_authorized" class="pop-action-btns">
+          <a 
+            :href="currentAuthInfo?.auth_url || currentAuthInfo?.short_url" 
+            target="_blank" 
+            class="btn-primary-block"
+            @click="copyText(currentAuthInfo?.auth_url, '授权链接已复制')"
+          >
+            立即前往授权绑定
+          </a>
+          <button 
+            class="btn-outline-block"
+            @click="copyText(currentAuthInfo?.auth_url || currentAuthInfo?.short_url, '授权链接已复制，可粘贴至微信或浏览器中打开')"
+          >
+            复制授权链接
+          </button>
+        </div>
+
+        <div v-else class="pop-action-btns">
+          <button class="btn-primary-block" @click="isAuthModalOpen = false">我知道了</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 轻量 Toast 提示 -->
+  <div class="toast-box" v-if="toastMessage">{{ toastMessage }}</div>
+
+</div>
+
+<!-- 引入前端核心驱动脚本 -->
+<script src="/static/js/app.js"></script>
+</body>
+</html>
