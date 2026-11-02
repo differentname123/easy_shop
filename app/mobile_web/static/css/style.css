@@ -364,6 +364,106 @@ body {
   margin-top: 4px;
 }
 
+/* ================== 加载指示器与骨架屏 ================== */
+.loading-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 0 24px;
+  font-size: 13px;
+  color: var(--text-sub);
+  gap: 6px;
+}
+
+.empty-wrap {
+  text-align: center;
+  padding: 40px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #e0e0e0;
+  border-top-color: var(--primary-color);
+  border-radius: 50%;
+  animation: spinner-rotate 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 8px;
+}
+
+.skeleton-card {
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+}
+
+.skeleton-thumb {
+  width: 100%;
+  padding-top: 100%;
+  background: #f0f1f3;
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-body {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-line {
+  height: 12px;
+  border-radius: 4px;
+  background: #f0f1f3;
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-line.line-title {
+  width: 88%;
+  height: 13px;
+}
+
+.skeleton-line.line-tags {
+  width: 58%;
+  height: 12px;
+}
+
+.skeleton-line.line-price {
+  width: 42%;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.skeleton-thumb::after,
+.skeleton-line::after {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.7) 50%, rgba(255,255,255,0) 100%);
+  animation: shimmer-pulse 1.4s infinite;
+}
+
+@keyframes shimmer-pulse {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
 /* ================== “我的” 返利推手中心 ================== */
 .user-profile-header {
   background: var(--accent-gradient);

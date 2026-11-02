@@ -20,6 +20,16 @@ CACHE_TTL = 300
 _DETAIL_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 DETAIL_CACHE_TTL = 600
 
+# 搜索结果内存缓存：key -> (cache_timestamp, data_dict)
+# 默认缓存 180 秒 (3分钟)，极大减轻对外部平台搜索 API 的压力，并提升用户搜索秒开体验
+_SEARCH_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+SEARCH_CACHE_TTL = 180
+
+# 爆单库类目内存缓存：platform -> (cache_timestamp, cats_list)
+# 默认缓存 600 秒 (10分钟)，避免高频对 MongoDB 集合执行全表 distinct
+_CATEGORY_CACHE: Dict[str, Tuple[float, List[str]]] = {}
+CATEGORY_CACHE_TTL = 600
+
 
 class ProductService:
     def __init__(self, product_repo: Optional[ProductRepository] = None):
@@ -74,8 +84,18 @@ class ProductService:
         platform: str = "pdd",
     ) -> Dict[str, Any]:
         """
-        首页搜索联盟商品，并自动入库
+        首页搜索联盟商品（带内存级缓存机制），并自动入库
         """
+        norm_kw = (keyword or "").strip().lower()
+        cache_key = f"{platform}_{norm_kw}_{page}_{page_size}_{uid or ''}"
+        now = time.time()
+
+        if cache_key in _SEARCH_CACHE:
+            ts, cached_res = _SEARCH_CACHE[cache_key]
+            if (now - ts) < SEARCH_CACHE_TTL:
+                logger.debug(f"[缓存命中] 首页搜索商品: {cache_key}")
+                return cached_res
+
         adapter = get_adapter(platform)
         res = adapter.search_goods(
             keyword=keyword,
@@ -84,6 +104,7 @@ class ProductService:
             uid=uid
         )
         if res.get("status") == "success" and res.get("data"):
+            _SEARCH_CACHE[cache_key] = (now, res)
             try:
                 self.repo.upsert_home_products(res["data"])
             except Exception as e:
@@ -165,6 +186,16 @@ class ProductService:
 
     def get_boom_categories(self, platform: str = "all") -> List[str]:
         """
-        获取爆单库分类列表
+        获取爆单库分类列表（带 10 分钟内存缓存，避免高频对 MongoDB 集合执行全表 distinct）
         """
-        return self.repo.get_categories(platform=platform)
+        plat = (platform or "all").lower()
+        now = time.time()
+        if plat in _CATEGORY_CACHE:
+            ts, cats = _CATEGORY_CACHE[plat]
+            if (now - ts) < CATEGORY_CACHE_TTL:
+                return cats
+
+        cats = self.repo.get_categories(platform=platform)
+        if cats:
+            _CATEGORY_CACHE[plat] = (now, cats)
+        return cats

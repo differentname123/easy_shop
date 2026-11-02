@@ -322,12 +322,23 @@ const app = createApp({
     };
 
     // ==================== 首页模块 (拼多多推荐) ====================
+    // 频道数据快速缓存：channel_type -> { list: [], offset: number }，实现秒切 0ms 瞬间响应
+    const channelCache = {};
+
     const loadHomeChannels = async () => {
       try {
+        const cached = sessionStorage.getItem('easy_shop_home_channels');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            homeChannels.value = parsed;
+          }
+        }
         const res = await fetch('/api/home/channels');
         const data = await res.json();
         if (data.status === 'success' && data.data) {
           homeChannels.value = data.data;
+          sessionStorage.setItem('easy_shop_home_channels', JSON.stringify(data.data));
         }
       } catch (e) {
         console.warn('加载频道失败:', e);
@@ -388,6 +399,12 @@ const app = createApp({
                 scrollTop: window.pageYOffset || document.documentElement.scrollTop || 0
               }));
             } catch (e) {}
+          } else {
+            // 同步记录当前频道已加载内容到缓存
+            channelCache[currentChannel.value] = {
+              list: [...homeGoodsList.value],
+              offset: homeOffset.value,
+            };
           }
         } else {
           if (isReset) homeGoodsList.value = [];
@@ -412,9 +429,25 @@ const app = createApp({
     };
 
     const switchChannel = (type) => {
+      // 记录离开前频道的已有数据
+      if (!homeSearchKeyword.value.trim() && homeGoodsList.value.length > 0) {
+        channelCache[currentChannel.value] = {
+          list: [...homeGoodsList.value],
+          offset: homeOffset.value,
+        };
+      }
+
       currentChannel.value = type;
       homeSearchKeyword.value = '';
       syncHomeSearchToUrl('');
+
+      // 若目标频道已有数据缓存，直接 0ms 瞬间还原，无需白屏重拉
+      if (channelCache[type] && channelCache[type].list && channelCache[type].list.length > 0) {
+        homeGoodsList.value = [...channelCache[type].list];
+        homeOffset.value = channelCache[type].offset;
+        return;
+      }
+
       loadHomeGoods(true);
     };
 
@@ -684,8 +717,8 @@ const app = createApp({
       }
       lastScrollTop = Math.max(0, scrollTop);
 
-      // 2. 距底部 350px 自动无缝触底加载下一页商品
-      if (scrollHeight - scrollTop - clientHeight < 350) {
+      // 2. 距底部 800px 提前自动无缝触底加载下一页商品（大幅提前，保证极速丝滑无限流）
+      if (scrollHeight - scrollTop - clientHeight < 800) {
         if (currentTab.value === 'home' && !homeLoading.value) {
           loadHomeGoods(false);
         } else if (currentTab.value === 'boom' && !boomLoading.value && boomHasMore.value) {
@@ -708,7 +741,7 @@ const app = createApp({
             }
           }
         });
-      }, { rootMargin: '300px' });
+      }, { rootMargin: '800px' });
 
       setTimeout(() => {
         const homeSen = document.getElementById('homeBottomSentinel');

@@ -46,7 +46,7 @@
     </header>
 
     <!-- 首页商品双列网格 -->
-    <main class="goods-grid">
+    <main class="goods-grid" v-if="homeGoodsList.length > 0">
       <div 
         v-for="item in homeGoodsList" 
         :key="item.goods_id || item.goods_sign"
@@ -76,7 +76,30 @@
       </div>
     </main>
 
-    <div v-if="homeLoading" class="loading-wrap">正在加载更多好物...</div>
+    <!-- 首页首屏与搜索骨架屏 -->
+    <div v-if="homeLoading && homeGoodsList.length === 0" class="goods-grid skeleton-grid">
+      <div v-for="n in 6" :key="n" class="goods-card skeleton-card">
+        <div class="skeleton-thumb"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-line line-title"></div>
+          <div class="skeleton-line line-tags"></div>
+          <div class="skeleton-line line-price"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 加载中指示器 (底部分页加载) -->
+    <div v-if="homeLoading && homeGoodsList.length > 0" class="loading-wrap">
+      <span class="loading-spinner"></span>
+      <span>正在为您加载更多好物...</span>
+    </div>
+
+    <!-- 首屏或搜索加载中提示 -->
+    <div v-if="homeLoading && homeGoodsList.length === 0" class="loading-wrap" style="padding-top: 4px;">
+      <span class="loading-spinner"></span>
+      <span>{{ homeSearchKeyword ? '正在全网智能比价与检索好物...' : '正在为您获取最新爆款推荐...' }}</span>
+    </div>
+
     <div v-if="!homeLoading && homeGoodsList.length === 0" class="empty-wrap">暂无符合条件的商品</div>
     <div id="homeBottomSentinel" style="height: 10px;"></div>
   </div>
@@ -120,8 +143,8 @@
       </div>
     </header>
 
-    <!-- 爆单商品列表 -->
-    <main class="goods-grid">
+    <!-- 爆单商品列表 (格式与首页保持100%完全一致) -->
+    <main class="goods-grid" v-if="boomGoodsList.length > 0">
       <div 
         v-for="item in boomGoodsList" 
         :key="item.platform + '_' + item.product_id"
@@ -135,25 +158,46 @@
         <div class="goods-body">
           <h4 class="goods-title">{{ item.name }}</h4>
           <div class="goods-tags">
-            <span v-if="item.saved_price > 0" class="coupon-tag">立省 ¥{{ item.saved_price }}</span>
-            <span class="rebate-tag">{{ item.category }}</span>
+            <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">券减 ¥{{ item.coupon_amount }}</span>
+            <span v-if="item.commission_amount > 0" class="rebate-tag">返利 ¥{{ item.commission_amount }}</span>
           </div>
           <div class="price-row">
             <span class="price-unit">¥</span>
             <span class="price-value">{{ item.price }}</span>
-            <span v-if="item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
+            <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
           </div>
           <div class="sales-row">
-            <span>{{ item.brand || '精选推荐' }}</span>
-            <span>{{ item.updated_at.split(' ')[0] }}</span>
+            <span>{{ item.sales_tip || '热卖中' }}</span>
+            <span>{{ item.brand || item.mall_name || '精选推荐' }}</span>
           </div>
         </div>
       </div>
     </main>
 
-    <div v-if="boomLoading" class="loading-wrap">正在加载爆单商品...</div>
+    <!-- 爆单首屏骨架屏 -->
+    <div v-if="boomLoading && boomGoodsList.length === 0" class="goods-grid skeleton-grid">
+      <div v-for="n in 6" :key="n" class="goods-card skeleton-card">
+        <div class="skeleton-thumb"></div>
+        <div class="skeleton-body">
+          <div class="skeleton-line line-title"></div>
+          <div class="skeleton-line line-tags"></div>
+          <div class="skeleton-line line-price"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 爆单加载状态提示 -->
+    <div v-if="boomLoading && boomGoodsList.length === 0" class="loading-wrap" style="padding-top: 4px;">
+      <span class="loading-spinner"></span>
+      <span>正在从精选库检索爆款好物...</span>
+    </div>
+
+    <div v-if="boomLoading && boomGoodsList.length > 0" class="loading-wrap">
+      <span class="loading-spinner"></span>
+      <span>正在加载更多爆款好物...</span>
+    </div>
     <div v-if="!boomLoading && boomGoodsList.length === 0" class="empty-wrap">未检索到符合条件的爆款商品</div>
-    <div v-if="!boomLoading && !boomHasMore && boomGoodsList.length > 0" class="loading-wrap">已到底部，无更多商品</div>
+    <div v-if="!boomLoading && !boomHasMore && boomGoodsList.length > 0" class="loading-wrap" style="color:var(--text-muted)">已到底部，无更多商品</div>
     <div id="boomBottomSentinel" style="height: 10px;"></div>
   </div>
 
