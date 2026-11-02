@@ -1,170 +1,139 @@
 # -*- coding: utf-8 -*-
-"""
-商品调度业务服务
-统一管理首页推荐流（含内存级高性能秒级缓存）与爆单推广商品库的数据聚合。
-"""
+"""商品应用服务：平台调度、缓存与本地商品库编排，不解释平台原始字段。"""
 import time
-from typing import Dict, Any, List, Optional, Tuple
-from app.mobile_web.adapters import get_adapter
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional
+from app.mobile_web.adapters import get_adapter, normalize_platform
+from app.mobile_web.models.product import ProductRef
 from app.mobile_web.repositories.product_repo import ProductRepository
-from common.common_utils import setup_logger
+from app.mobile_web.cache import RECOMMEND_CACHE, DETAIL_CACHE, SEARCH_CACHE, CATEGORY_CACHE
+from app.mobile_web.config import PRODUCT_DETAIL_TTL, logger
 
-logger = setup_logger(app_name="mobile_web")
-
-# 首页官方推荐商品内存缓存：key -> (cache_timestamp, data_dict)
-# 默认缓存 300 秒 (5分钟)，大幅提升首页打开速度，解决 10s 延迟痛点
-_RECOMMEND_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-CACHE_TTL = 300
-
-# 商品详情内存缓存：goods_key -> (cache_timestamp, data_dict)
-_DETAIL_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-DETAIL_CACHE_TTL = 600
+# 兼容统一缓存分域别名，供测试及向后兼容使用
+_RECOMMEND_CACHE = RECOMMEND_CACHE
+_DETAIL_CACHE = DETAIL_CACHE
+_SEARCH_CACHE = SEARCH_CACHE
+_CATEGORY_CACHE = CATEGORY_CACHE
 
 
 class ProductService:
     def __init__(self, product_repo: Optional[ProductRepository] = None):
-        self.repo = product_repo or ProductRepository()
+        self.repo = product_repo if product_repo is not None else ProductRepository()
 
-    def get_home_recommendations(
-        self,
-        channel_type: int = 5,
-        offset: int = 0,
-        limit: int = 20,
-        uid: Optional[str] = None,
-        platform: str = "pdd",
-        force_refresh: bool = False,
-    ) -> Dict[str, Any]:
-        """
-        获取首页官方推荐榜单（带内存级毫秒缓存机制），并自动将商品入库/更新
-        """
-        cache_key = f"{platform}_{channel_type}_{offset}_{limit}"
-        now = time.time()
+    def get_home_recommendations(self, channel_type=5, offset=0, limit=20, uid=None,
+                                 platform="pdd", force_refresh=False) -> Dict[str, Any]:
+        plat = normalize_platform(platform)
+        adapter = get_adapter(plat)
+        cache_key = (plat, uid or "", channel_type, offset, limit)
+        if not force_refresh:
+            cached = RECOMMEND_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+        result = adapter.get_recommend_goods(channel_type=channel_type, offset=offset, limit=limit, uid=uid)
+        if result.get("status") == "success":
+            items = result.get("data") or []
+            result.setdefault("has_more", len(items) >= limit)
+            RECOMMEND_CACHE.set(cache_key, result)
+            if items:
+                try:
+                    self.repo.upsert_home_products(items, channel_type=channel_type)
+                except Exception as exc:
+                    logger.warning(f"推荐商品入库失败，不影响在线结果: {exc}")
+        return result
 
-        # 检查并命中缓存（只有非强制刷新时）
-        if not force_refresh and cache_key in _RECOMMEND_CACHE:
-            ts, cached_res = _RECOMMEND_CACHE[cache_key]
-            if (now - ts) < CACHE_TTL:
-                logger.debug(f"[缓存命中] 首页推荐商品: {cache_key}")
-                return cached_res
+    def search_home_goods(self, keyword, page=1, page_size=20, uid=None, platform="pdd") -> Dict[str, Any]:
+        plat = normalize_platform(platform)
+        adapter = get_adapter(plat)
+        keyword = (keyword or "").strip()[:30]
+        cache_key = (plat, uid or "", keyword, page, page_size)
+        cached = SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        result = adapter.search_goods(keyword=keyword, page=page, page_size=page_size, uid=uid)
+        if result.get("status") == "success":
+            SEARCH_CACHE.set(cache_key, result)
+        return result
 
-        adapter = get_adapter(platform)
-        res = adapter.get_recommend_goods(
-            channel_type=channel_type,
-            offset=offset,
-            limit=limit,
-            uid=uid
-        )
-
-        if res.get("status") == "success" and res.get("data"):
-            _RECOMMEND_CACHE[cache_key] = (now, res)
-            # 【核心功能】：首页商品自动批量入库沉淀，保证价格优惠数据最新
+    @staticmethod
+    def _detail_is_fresh(item: dict) -> bool:
+        # 摘要 updated_at 会被推荐流不断更新，不能作为完整详情的新鲜度。
+        updated = item.get("detail_updated_at")
+        if isinstance(updated, datetime):
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            timestamp = updated.timestamp()
+        elif isinstance(updated, (int, float)):
+            timestamp = float(updated)
+        elif isinstance(updated, str):
             try:
-                self.repo.upsert_home_products(res["data"], channel_type=channel_type)
-            except Exception as e:
-                logger.warning(f"首页商品自动入库忽略异常: {e}")
+                parsed = datetime.fromisoformat(updated)
+                timestamp = (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).timestamp()
+            except ValueError:
+                return False
+        else:
+            return False
+        return 0 <= time.time() - timestamp < PRODUCT_DETAIL_TTL
 
-        return res
+    @staticmethod
+    def _cache_detail(platform: str, result: dict, uid=None):
+        """只缓存来源确认的 ID/Sign；绝不盲信请求提供的另一别名。"""
+        item = result.get("data") or {}
+        ref = ProductRef(platform, item.get("goods_id") or item.get("product_id"), item.get("goods_sign"))
+        for key in ref.cache_keys(uid):
+            DETAIL_CACHE.set(key, result)
 
-    def search_home_goods(
-        self,
-        keyword: str,
-        page: int = 1,
-        page_size: int = 20,
-        uid: Optional[str] = None,
-        platform: str = "pdd",
-    ) -> Dict[str, Any]:
-        """
-        首页搜索联盟商品，并自动入库
-        """
-        adapter = get_adapter(platform)
-        res = adapter.search_goods(
-            keyword=keyword,
-            page=page,
-            page_size=page_size,
-            uid=uid
-        )
-        if res.get("status") == "success" and res.get("data"):
+    def get_goods_detail(self, platform="pdd", goods_id_or_sign="", goods_id=None,
+                         goods_sign=None, uid=None, **kwargs) -> Dict[str, Any]:
+        plat = normalize_platform(platform)
+        adapter = get_adapter(plat)
+        if adapter.active is False:
+            return adapter.get_goods_detail(goods_id_or_sign=goods_id_or_sign)
+        ref = adapter.resolve_product_ref(goods_id_or_sign, goods_id, goods_sign)
+        if not ref.key:
+            return {"status": "error", "error_msg": "请提供商品 ID 或 Sign", "error_code": "missing_product_identity"}
+
+        # 同时提供不一致的 Sign/ID 时只按主标识查，不在另一个键中命中错误商品。
+        lookup_ref = ProductRef(plat, "" if ref.goods_sign else ref.goods_id, ref.goods_sign)
+        for key in lookup_ref.cache_keys(uid):
+            cached = DETAIL_CACHE.get(key)
+            if cached is not None:
+                return cached
+
+        item = self.repo.get_product_detail(ref.key, platform=plat, key_type="sign" if ref.goods_sign else "id")
+        if item and self._detail_is_fresh(item):
+            result = {"status": "success", "data": item, "source": "database"}
+            self._cache_detail(plat, result, uid)
+            return result
+
+        result = adapter.get_goods_detail(goods_id_or_sign=ref.key, goods_id=ref.goods_id or None,
+                                          goods_sign=ref.goods_sign or None, uid=uid, **kwargs)
+        if result.get("status") == "success" and result.get("data"):
+            data = result["data"]
+            if normalize_platform(data.get("platform") or plat) != plat:
+                return {"status": "error", "error_msg": "商品返回平台不匹配", "error_code": "product_identity_mismatch"}
+            data.setdefault("platform", plat)
             try:
-                self.repo.upsert_home_products(res["data"])
-            except Exception as e:
-                logger.warning(f"搜索商品自动入库忽略异常: {e}")
-        return res
+                self.repo.upsert_product_detail(data)
+            except Exception as exc:
+                logger.warning(f"商品详情入库失败，不影响在线结果: {exc}")
+            self._cache_detail(plat, result, uid)
+            return result
+        if item:
+            # 上游故障仅作本次降级，不缓存整段 TTL，以便恢复后立即重试最新价格。
+            return {"status": "success", "data": item, "source": "database_fallback"}
+        return result
 
-    def get_goods_detail(
-        self,
-        platform: str = "pdd",
-        goods_id_or_sign: str = "",
-        uid: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        获取官方商品完整详情：
-        1. 优先查内存缓存 (10分钟内 0ms 瞬间返回)
-        2. 查本地数据库 (如果已入库过且包含轮播图 specs 等深度详情)
-        3. 调官方平台 API 拉取最新详情
-        4. 获取成功后自动沉淀入库并更新内存缓存
-        """
-        goods_key = str(goods_id_or_sign).strip()
-        now = time.time()
+    def get_boom_products(self, platform="all", category=None, keyword=None, sort_by="latest",
+                          page=1, page_size=20) -> Dict[str, Any]:
+        return self.repo.query_boom_products(platform=normalize_platform(platform, "all"), category=category,
+                                              keyword=keyword, sort_by=sort_by, page=page, page_size=page_size)
 
-        # 1. 内存高速缓存 (仅当缓存内包含多张全量轮播图才直接返回)
-        if goods_key in _DETAIL_CACHE:
-            ts, cached_res = _DETAIL_CACHE[goods_key]
-            if (now - ts) < DETAIL_CACHE_TTL:
-                c_imgs = cached_res.get("data", {}).get("carousel_images", [])
-                if len(c_imgs) > 1:
-                    logger.debug(f"[内存缓存命中] 商品详情: {goods_key}")
-                    return cached_res
-
-        # 2. 本地数据库检索：若本地已有全量高清实拍轮播图（> 1 张），直接 0ms 瞬间返回
-        db_item = self.repo.get_product_detail(goods_key)
-        if db_item and db_item.get("carousel_images") and len(db_item.get("carousel_images", [])) > 1:
-            ret = {"status": "success", "data": db_item, "source": "database"}
-            _DETAIL_CACHE[goods_key] = (now, ret)
-            return ret
-
-        # 3. 调官方 API 拉取
-        adapter = get_adapter(platform)
-        res = adapter.get_goods_detail(goods_id_or_sign=goods_id_or_sign, uid=uid)
-        if res.get("status") == "success" and res.get("data"):
-            # 自动沉淀入库
-            try:
-                self.repo.upsert_product_detail(res["data"])
-            except Exception as e:
-                logger.warning(f"商品详情入库忽略异常: {e}")
-            _DETAIL_CACHE[goods_key] = (now, res)
-            return res
-
-        # 4. 兜底：若官方 API 失败或限流，返回数据库已有基础数据
-        if db_item:
-            ret = {"status": "success", "data": db_item, "source": "database_fallback"}
-            _DETAIL_CACHE[goods_key] = (now, ret)
-            return ret
-
-        return res
-
-    def get_boom_products(
-        self,
-        platform: str = "all",
-        category: Optional[str] = None,
-        keyword: Optional[str] = None,
-        sort_by: str = "latest",
-        page: int = 1,
-        page_size: int = 20,
-    ) -> Dict[str, Any]:
-        """
-        查询爆单推广库（数据库存量商品）
-        """
-        return self.repo.query_boom_products(
-            platform=platform,
-            category=category,
-            keyword=keyword,
-            sort_by=sort_by,
-            page=page,
-            page_size=page_size,
-        )
-
-    def get_boom_categories(self, platform: str = "all") -> List[str]:
-        """
-        获取爆单库分类列表
-        """
-        return self.repo.get_categories(platform=platform)
+    def get_boom_categories(self, platform="all") -> List[str]:
+        plat = normalize_platform(platform, "all")
+        cached = CATEGORY_CACHE.get(plat)
+        if cached is not None:
+            return cached
+        categories = self.repo.get_categories(platform=plat)
+        if categories:
+            CATEGORY_CACHE.set(plat, categories)
+        return categories

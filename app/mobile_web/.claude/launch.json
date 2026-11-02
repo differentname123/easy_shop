@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mobile-web-offline-smoke",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-B", "-m", "uvicorn", "app.mobile_web.tests.preview_app:app",
+        "--app-dir", "../..", "--host", "127.0.0.1", "--port", "8000", "--no-access-log"
+      ],
+      "port": 8000
+    }
+  ]
+}

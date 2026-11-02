@@ -1,92 +1,136 @@
 # -*- coding: utf-8 -*-
-"""
-订单业务服务
-实现两步走订单同步：
-1. 增量拉取官方23小时内订单并幂等入库；
-2. 按照指定推手UID和时间跨度汇总计算返利佣金与退款异常并输出。
-"""
+"""订单查询只读本地；有界后台同步明确区分尝试、成功与部分完成。"""
 import time
+import threading
 from typing import Dict, Any, Optional
+from app.mobile_web.adapters import get_adapter, require_adapter
+from app.mobile_web.models.product import normalize_platform
 from app.mobile_web.repositories.order_repo import OrderRepository
-from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET
-from common.common_utils import setup_logger
-from app.pdd_utils import query_increment_orders
+from app.mobile_web.config import ORDER_SYNC_INTERVAL, ORDER_SYNC_MAX_PAGES, logger
 
-logger = setup_logger(app_name="mobile_web")
-
-# 上次官方订单同步时间记录，避免 60 秒内无节制轰炸官方网关
+# 兼容名称现在只记录确认完整处理的窗口终点，不再把启动尝试当成功。
 _LAST_SYNC_TIMESTAMP: Dict[str, float] = {}
-SYNC_INTERVAL = 60
+_LAST_SYNC_ATTEMPT: Dict[str, float] = {}
+_SYNC_STATE: Dict[str, dict] = {}
+_SYNC_LOCK = threading.Lock()
 
 
 class OrderService:
     def __init__(self, order_repo: Optional[OrderRepository] = None):
         self.repo = order_repo or OrderRepository()
 
+    def _sync_platform_orders_bg(self, platform: str, end_time: int) -> None:
+        """保留最近 23 小时/页数预算的 best-effort 行为，不宣称历史全量补齐。"""
+        processed = 0
+        complete = False
+        error = ""
+        try:
+            adapter = get_adapter(platform)
+            start_time = end_time - 23 * 3600
+            for page in range(1, ORDER_SYNC_MAX_PAGES + 1):
+                response = adapter.fetch_increment_orders(
+                    start_time=start_time, end_time=end_time, page=page, page_size=50
+                )
+                if not isinstance(response, dict) or response.get("status") != "success":
+                    error = response.get("error_msg", "平台订单查询失败") if isinstance(response, dict) else "平台订单响应无效"
+                    break
+                orders = response.get("order_list")
+                if not isinstance(orders, list):
+                    error = "平台订单列表响应无效"
+                    break
+                if not orders:
+                    if response.get("has_more") is True:
+                        error = "平台返回空页但仍有后续订单"
+                    else:
+                        complete = True
+                    break
+                normalized = [adapter.normalize_order(order) for order in orders]
+                written = self.repo.upsert_orders(normalized, platform=platform)
+                if written != len(normalized):
+                    error = "订单未完整入库"
+                    break
+                processed += len(normalized)
+                has_more = response.get("has_more")
+                if has_more is False or (has_more is None and len(orders) < 50):
+                    complete = True
+                    break
+            if complete:
+                _LAST_SYNC_TIMESTAMP[platform] = end_time
+                state = {"status": "success", "error": "", "synced_count": processed}
+                logger.info(f"[{platform}] 当前23小时窗口同步完成，处理 {processed} 笔订单")
+            else:
+                state = {
+                    "status": "partial" if processed or not error else "error",
+                    "error": error or "达到单次分页预算，窗口尚未完整同步",
+                    "synced_count": processed,
+                }
+                logger.warning(f"[{platform}] 同步{state['status']}: {state['error']}，已处理 {processed} 笔")
+            _SYNC_STATE[platform] = state
+        except Exception as exc:
+            _SYNC_STATE[platform] = {
+                "status": "partial" if processed else "error",
+                "error": "同步订单异常，请稍后重试", "synced_count": processed,
+            }
+            logger.error(f"[{platform}] 同步增量订单异常: {exc}")
+        finally:
+            _SYNC_LOCK.release()
+
+    def _try_start_sync(self, platform: str, now: float) -> None:
+        if now - _LAST_SYNC_ATTEMPT.get(platform, 0.0) < ORDER_SYNC_INTERVAL:
+            return
+        if not _SYNC_LOCK.acquire(blocking=False):
+            return
+        try:
+            # 冷却检查必须在取得锁后再做一次，防止相邻请求先后启动任务。
+            if now - _LAST_SYNC_ATTEMPT.get(platform, 0.0) < ORDER_SYNC_INTERVAL:
+                _SYNC_LOCK.release()
+                return
+            _LAST_SYNC_ATTEMPT[platform] = now
+            _SYNC_STATE[platform] = {"status": "running", "error": "", "synced_count": 0}
+            threading.Thread(
+                target=self._sync_platform_orders_bg, args=(platform, int(now)),
+                name=f"bg-order-sync-{platform}", daemon=True,
+            ).start()
+        except Exception as exc:
+            # start() / 线程构造失败时后台 finally 不会执行，调用方负责释放。
+            _SYNC_STATE[platform] = {"status": "error", "error": "无法启动订单同步，请稍后重试", "synced_count": 0}
+            _SYNC_LOCK.release()
+            logger.error(f"[{platform}] 启动同步线程失败: {exc}")
+
     def sync_and_query_orders(
         self,
         platform: str = "pdd",
         uid: str = "",
         days: int = 7,
-        force_sync: bool = False
+        force_sync: bool = False,
     ) -> Dict[str, Any]:
-        """
-        两步执行：
-        第1步：拉取最近23小时内全量增量订单并入库更新；
-        第2步：按指定时间跨度查询属于该推手UID的订单明细并汇总统计。
-        """
-        plat = (platform or "pdd").lower()
+        """兼容 force 参数，但任何调用都不能穿透冷却或互斥锁。"""
+        plat = normalize_platform(platform)
+        clean_uid = str(uid or "").strip()
+        if not clean_uid:
+            return {"status": "error", "error_msg": "uid 不能为空"}
+        if not isinstance(days, int) or not 0 <= days <= 90:
+            return {"status": "error", "error_msg": "查询天数必须在0到90之间"}
+        # 仅本地装配/启用检查，不调用 SDK。查询旧文档的解释规则也由适配器提供。
+        adapter = require_adapter(plat)
         now = time.time()
-        last_sync = _LAST_SYNC_TIMESTAMP.get(plat, 0.0)
-
-        # ---------------- 步骤1：增量同步全量23小时订单入库 ----------------
-        should_sync = force_sync or (now - last_sync >= SYNC_INTERVAL)
-        if should_sync and plat == "pdd":
-            try:
-                # 拼多多单次查询最大跨度为24小时，此处严格取23小时保证在安全范围内
-                end_time = int(now)
-                start_time = end_time - 23 * 3600
-                logger.info(f"开始拉取拼多多最近23小时增量订单: [{start_time} -> {end_time}]")
-
-                page = 1
-                total_synced = 0
-                while True:
-                    res = query_increment_orders(
-                        client_id=PDD_CLIENT_ID,
-                        client_secret=PDD_CLIENT_SECRET,
-                        start_time=start_time,
-                        end_time=end_time,
-                        page=page,
-                        page_size=50
-                    )
-                    orders = res.get("order_list", [])
-                    if not orders:
-                        break
-
-                    self.repo.upsert_orders(orders, platform="pdd")
-                    total_synced += len(orders)
-                    if len(orders) < 50 or page >= 10:  # 保护上限
-                        break
-                    page += 1
-
-                _LAST_SYNC_TIMESTAMP[plat] = now
-                logger.info(f"完成23小时增量订单同步，共拉取处理 {total_synced} 笔订单")
-            except Exception as e:
-                logger.error(f"同步官方增量订单失败: {e}")
-
-        # ---------------- 步骤2：按用户UID和时间跨度查询订单 ----------------
-        start_ts = None
-        if days and days > 0:
-            start_ts = int(now - days * 86400)
-
-        result = self.repo.query_user_orders(
-            platform=plat,
-            promoter_uid=uid,
-            start_timestamp=start_ts,
-            limit=100
-        )
-        result["platform"] = plat
-        result["uid"] = uid
-        result["query_days"] = days
-        result["last_sync_time"] = int(_LAST_SYNC_TIMESTAMP.get(plat, now))
+        self._try_start_sync(plat, now)
+        start_ts = int(now - days * 86400) if days else None
+        try:
+            result = self.repo.query_user_orders(
+                platform=plat, promoter_uid=clean_uid, start_timestamp=start_ts,
+                limit=100, legacy_order_statuses=adapter.legacy_order_statuses,
+            )
+        except Exception as exc:
+            logger.error(f"[{plat}] 查询订单仓储失败: {exc}")
+            return {"status": "error", "error_msg": "查询订单与收益失败，请稍后重试"}
+        state = _SYNC_STATE.get(plat, {})
+        result.update({
+            "platform": plat, "uid": clean_uid, "query_days": days,
+            "last_sync_time": int(_LAST_SYNC_TIMESTAMP.get(plat, 0)),
+            "last_sync_attempt_time": int(_LAST_SYNC_ATTEMPT.get(plat, 0)),
+            "sync_status": state.get("status", "idle"),
+            "sync_error": state.get("error", ""),
+            "synced_count": state.get("synced_count", 0),
+        })
         return {"status": "success", "data": result}
