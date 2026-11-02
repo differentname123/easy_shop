@@ -233,7 +233,7 @@ test('logout prevents old profile and order responses from restoring private sta
   assert.equal(h.context.localStorage.getItem('easy_shop_token'), null);
 });
 
-test('the latest wallet date filter wins when responses arrive backwards', async () => {
+test('the latest account order date filter wins when responses arrive backwards', async () => {
   const h = harness({ saved: { easy_shop_token: 'token-A' } }), account = h.makeAccount();
   account.isLoggedIn.value = true; account.uid.value = 'A';
   account.switchOrderDays(1); account.switchOrderDays(30);
@@ -257,7 +257,7 @@ test('a newer login prevents an old restore from replacing the account', async (
   await h.finish(2, { status: 'success', data: { order_list: [] } });
 });
 
-test('opening the wallet with a saved session queries orders after authentication settles', async () => {
+test('opening the account with a saved session queries orders after authentication settles', async () => {
   const h = harness({ url: 'https://shop.test/?tab=user', saved: { easy_shop_token: 'token-A' } });
   h.load('app'); h.mounted[0](); await flush();
   assert.equal(h.requests.filter(request => request.url === '/api/user/info').length, 1);
@@ -310,9 +310,14 @@ test('detail uses verified UID, converts only on demand and deduplicates concurr
   assert.equal(JSON.parse(conversions[0].options.body).goods_sign, 'sign-A');
   await h.finish(h.requests.indexOf(conversions[0]), { status: 'success', final_link: 'https://buy.test/A', command_text: 'command-A' });
   await Promise.all([first, second]);
-  await h.page.handleCopyPromoteLink();
-  assert.equal(h.requests.filter(request => request.url === '/api/promote/convert').length, 1);
+  const repeat = h.page.handleCopyPromoteLink(); await flush();
+  const refreshed = h.requests.filter(request => request.url === '/api/promote/convert');
+  assert.equal(refreshed.length, 2, 'a completed conversion is not cached');
+  assert.equal(refreshed[1].options.body, conversions[0].options.body);
+  await h.finish(h.requests.indexOf(refreshed[1]), { status: 'success', final_link: 'https://buy.test/fresh-A', command_text: 'fresh-command-A' });
+  await repeat;
   assert.equal(h.copied[0], 'command-A');
+  assert.equal(h.copied.at(-1), 'fresh-command-A');
 });
 
 test('detail fallback links are usable but not cached as a successful activation', async () => {
@@ -443,7 +448,7 @@ test('platform metadata can add a test platform without changing the list contro
   await query;
 });
 
-test('manual wallet refresh does not claim an unfinished background sync succeeded', async () => {
+test('manual order refresh does not claim an unfinished background sync succeeded', async () => {
   const h = harness(), account = h.makeAccount();
   h.session.saveUser(user());
   account.isLoggedIn.value = true;
@@ -576,7 +581,7 @@ test('formatSales produces universal sales text across multi-platform formats', 
   assert.equal(shop.formatSales(null), '热销爆款');
 });
 
-test('goods card layout eliminates bottom-right void and highlights coupon/rebate tags', () => {
+test('goods card layout eliminates bottom-right void and highlights coupon/estimated promotion commission tags', () => {
   const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
   const detailHtml = fs.readFileSync(path.join(root, 'static', 'detail.html'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'static', 'css', 'style.css'), 'utf8');
@@ -601,8 +606,221 @@ test('goods card layout eliminates bottom-right void and highlights coupon/rebat
   assert.ok(css.includes('.goods-action-btn'), 'CSS defines goods-action-btn');
   assert.ok(css.includes('.goods-footer'), 'CSS defines goods-footer layout');
   assert.ok(css.includes('.coupon-tag .tag-badge'), 'CSS defines dual-tone coupon badge');
-  assert.ok(css.includes('.rebate-tag .tag-badge'), 'CSS defines dual-tone rebate badge');
+  assert.ok(css.includes('.rebate-tag .tag-badge'), 'CSS defines dual-tone commission badge');
+  assert.equal((indexHtml.match(/<span class="tag-badge">预估推广佣金<\/span>/g) || []).length, 2,
+    'both existing goods grids label the amount as estimated promotion commission');
 });
 
+for (const [field, changed, payloadField] of [
+  ['price', 12, 'price'],
+  ['name', 'updated title', 'title'],
+  ['coupon_amount', 3, 'coupon_amount'],
+  ['product_url', 'https://goods.test/updated-A', 'product_url'],
+]) {
+  test(`detail does not merge an in-flight conversion after ${field} changes`, async () => {
+    const h = harness({ url: 'https://shop.test/detail?goods_id=A' });
+    h.load('detail'); const init = h.mounted[0]();
+    await h.finish(0, { status: 'success', data: {
+      goods_id: 'A', goods_sign: 'sign-A', platform: 'pdd', name: 'A', price: 10,
+      coupon_amount: 0, saved_price: 5, product_url: 'https://goods.test/A',
+    } }); await init;
+    const first = h.page.handleCopyPromoteLink(); await flush();
+    assert.equal(JSON.parse(h.requests[1].options.body).coupon_amount, 0, 'a known zero coupon is preserved');
+    h.page.goods.value = { ...h.page.goods.value, [field]: changed };
+    const second = h.page.handleCopyPromoteLink(); await flush();
+    assert.equal(h.requests.length, 3, 'a different complete payload starts another request');
+    assert.equal(JSON.parse(h.requests[2].options.body)[payloadField], changed);
+    const samePayload = h.page.handleCopyPromoteLink(); await flush();
+    assert.equal(h.requests.length, 3, 'the new identical pending payload still merges');
+    await h.finish(1, { status: 'success', final_link: 'https://buy.test/stale', command_text: 'stale-command' });
+    await first;
+    assert.equal(h.copied.length, 0, 'the superseded payload cannot copy stale command text');
+    assert.equal(h.page.smartLoading.value.visible, true, 'a stale completion cannot stop current loading');
+    await h.finish(2, { status: 'success', final_link: 'https://buy.test/latest', command_text: 'latest-command' });
+    await Promise.all([second, samePayload]);
+    assert.deepEqual(h.copied, ['latest-command', 'latest-command']);
+    assert.equal(h.page.smartLoading.value.visible, false);
+  });
+}
 
+test('guest purchase and copy ignore share-page UID and stored identity without a verified session', async () => {
+  const h = harness({
+    url: 'https://shop.test/detail?goods_id=A&uid=SHARER&shareUid=SHARER',
+    saved: { easy_shop_uid: 'OLD-ACCOUNT', easy_shop_phone: '13800000000' },
+  });
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(0, { status: 'success', data: { goods_id: 'A', platform: 'pdd', name: 'A', price: 10 } }); await init;
+  assert.equal(h.page.isLoggedIn.value, false);
+  assert.equal(h.page.uid.value, '');
+  assert.equal(h.requests.length, 1, 'viewing a shared page does not trigger conversion');
+  const buy = h.page.handleJumpToBuy(), copy = h.page.handleCopyPromoteLink(); await flush();
+  assert.equal(h.requests.length, 2, 'purchase and copy merge the same pending guest payload');
+  assert.equal(JSON.parse(h.requests[1].options.body).uid, null, 'the backend selects the default station promotion position');
+  assert.equal(h.requests[1].options.headers.Authorization, undefined);
+  await h.finish(1, { status: 'success', final_link: 'https://buy.test/default', command_text: 'guest-command' });
+  await Promise.all([buy, copy]);
+  assert.deepEqual(h.copied, ['guest-command', 'guest-command']);
+  const navigation = [...h.timers.values()].find(timer => timer.delay === 400);
+  assert.ok(navigation, 'guest purchase schedules navigation just like a signed-in purchase');
+  navigation.callback();
+  assert.equal(h.context.location.href, 'https://buy.test/default');
+});
 
+test('switching the saved token verifies the new account and isolates pending conversion responses', async () => {
+  const h = harness({ url: 'https://shop.test/detail?goods_id=A&uid=SHARER', saved: { easy_shop_token: 'token-A' } });
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(0, { status: 'success', user: user() });
+  await h.finish(1, { status: 'success', data: { goods_id: 'A', platform: 'pdd', name: 'A' } }); await init;
+  const oldAccount = h.page.handleCopyPromoteLink(); await flush();
+  assert.equal(JSON.parse(h.requests[2].options.body).uid, 'A');
+  h.context.localStorage.setItem('easy_shop_token', 'token-B');
+  const newAccount = h.page.handleCopyPromoteLink(); await flush();
+  assert.equal(h.requests[3].url, '/api/user/info');
+  assert.equal(h.requests[3].options.headers.Authorization, 'Bearer token-B');
+  assert.equal(h.requests.filter(request => request.url === '/api/promote/convert').length, 1,
+    'the new token cannot convert as the old UID while verification is pending');
+  await h.finish(3, { status: 'success', user: user('B', 'token-B') });
+  assert.equal(JSON.parse(h.requests[4].options.body).uid, 'B');
+  await h.finish(2, { status: 'success', final_link: 'https://buy.test/private-A', command_text: 'private-A' }); await oldAccount;
+  assert.equal(h.copied.length, 0);
+  assert.equal(h.page.smartLoading.value.visible, true);
+  await h.finish(4, { status: 'success', final_link: 'https://buy.test/private-B', command_text: 'private-B' }); await newAccount;
+  assert.equal(h.page.uid.value, 'B');
+  assert.deepEqual(h.copied, ['private-B']);
+});
+
+test('changing only the session token does not merge otherwise identical pending payloads', async () => {
+  const h = harness({ url: 'https://shop.test/detail?goods_id=A', saved: { easy_shop_token: 'token-A' } });
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(0, { status: 'success', user: user() });
+  await h.finish(1, { status: 'success', data: { goods_id: 'A', platform: 'pdd', name: 'A' } }); await init;
+  const oldToken = h.page.handleCopyPromoteLink(); await flush();
+  h.context.localStorage.setItem('easy_shop_token', 'renewed-token-A');
+  const renewedToken = h.page.handleCopyPromoteLink(); await flush();
+  await h.finish(3, { status: 'success', user: user('A', 'renewed-token-A') });
+  assert.equal(h.requests[4].options.body, h.requests[2].options.body, 'the payload and UID are unchanged');
+  assert.equal(h.requests.filter(request => request.url === '/api/promote/convert').length, 2,
+    'pending requests are scoped to the verified session, not only the payload');
+  await h.finish(4, { status: 'success', final_link: 'https://buy.test/renewed', command_text: 'renewed' }); await renewedToken;
+  await h.finish(2, { status: 'success', final_link: 'https://buy.test/old', command_text: 'old' }); await oldToken;
+  assert.deepEqual(h.copied, ['renewed']);
+});
+
+test('conversion business failures retain the original-link fallback and allow the next action to retry', async () => {
+  const h = harness({ url: 'https://shop.test/detail?goods_id=A' });
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(0, { status: 'success', data: { goods_id: 'A', name: 'A', price: 0, product_url: 'https://goods.test/A' } }); await init;
+  const failed = h.page.handleCopyPromoteLink(); await flush();
+  await h.finish(1, { status: 'error' }, { status: 503 }); await failed;
+  assert.ok(h.copied[0].includes('https://goods.test/A'));
+  assert.ok(h.copied[0].includes('¥0'));
+  assert.equal(h.page.toastMessage.value.includes('复制'), true);
+  assert.equal(h.page.smartLoading.value.visible, false);
+  const retry = h.page.handleCopyPromoteLink(); await flush();
+  assert.equal(h.requests.length, 3);
+  await h.finish(2, { status: 'success', final_link: 'https://buy.test/retry', command_text: 'retry' }); await retry;
+  assert.equal(h.copied.at(-1), 'retry');
+});
+
+test('network conversion errors do not copy an invalid command and do not block retries', async () => {
+  const h = harness({ url: 'https://shop.test/detail?goods_id=A' });
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(0, { status: 'success', data: { goods_id: 'A', name: 'A' } }); await init;
+  const failed = h.page.handleCopyPromoteLink(); await flush();
+  h.requests[1].reject(new Error('offline')); await failed;
+  assert.equal(h.copied.length, 0);
+  assert.equal(h.page.toastMessage.value, '生成口令失败，请稍后重试');
+  assert.equal(h.page.smartLoading.value.visible, false);
+  const retry = h.page.handleCopyPromoteLink(); await flush();
+  assert.equal(h.requests.length, 3);
+  await h.finish(2, { status: 'success', final_link: 'https://buy.test/retry' }); await retry;
+  assert.deepEqual(h.copied, ['https://buy.test/retry']);
+});
+
+test('disposing detail invalidates a pending purchase before copy or navigation', async () => {
+  const h = harness({ url: 'https://shop.test/detail?goods_id=A' });
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(0, { status: 'success', data: { goods_id: 'A', name: 'A' } }); await init;
+  const buy = h.page.handleJumpToBuy(); await flush();
+  h.page.dispose();
+  await h.finish(1, { status: 'success', final_link: 'https://buy.test/late', command_text: 'late' }); await buy;
+  assert.equal(h.copied.length, 0);
+  assert.equal(h.context.location.href, 'https://shop.test/detail?goods_id=A');
+});
+
+test('disposing detail while identity restoration is pending prevents conversion, copy and navigation', async () => {
+  const h = harness({ url: 'https://shop.test/detail?goods_id=A', saved: { easy_shop_token: 'token-A' } });
+  h.context.sessionStorage.setItem('current_goods_summary', JSON.stringify({ goods_id: 'A', platform: 'pdd', name: 'A' }));
+  h.load('detail'); const init = h.mounted[0]();
+  await h.finish(1, { status: 'success', data: { goods_id: 'A', platform: 'pdd', name: 'A' } });
+  const buy = h.page.handleJumpToBuy(), copy = h.page.handleCopyPromoteLink(); await flush();
+  assert.equal(h.requests.length, 2, 'both user actions wait for the same pending identity request');
+  assert.equal(h.requests[0].url, '/api/user/info');
+  h.page.dispose();
+  await h.finish(0, { status: 'success', user: user() });
+  assert.equal(h.requests.length, 2, 'a late identity result cannot start conversion after disposal');
+  await Promise.all([init, buy, copy]);
+  await Promise.all([h.page.handleJumpToBuy(), h.page.handleCopyPromoteLink()]);
+  assert.equal(h.requests.length, 2, 'actions invoked after disposal also remain inert');
+  assert.equal(h.copied.length, 0);
+  assert.equal([...h.timers.values()].some(timer => timer.delay === 400), false, 'no navigation is scheduled');
+  assert.equal(h.context.location.href, 'https://shop.test/detail?goods_id=A');
+  assert.equal(h.page.smartLoading.value.visible, false);
+  assert.equal(h.page.toastMessage.value, '', 'disposed actions do not show failure toasts');
+});
+
+test('account order statistics preserve zero and never fall back to profile placeholder balances', () => {
+  const source = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const formatMoney = harness().context.EasyShop.formatMoney;
+  assert.ok(source.includes('<div class="label">订单佣金</div>'));
+  assert.ok(source.includes('<div class="label">平台已结算佣金</div>'));
+  assert.equal(/userProfile\.(?:balance|total_rebate)/.test(source), false);
+  for (const field of ['total_commission', 'settled_commission']) {
+    const expression = source.match(new RegExp(`{{\\s*(formatMoney\\(userOrdersData\\.${field}[^}]+)\\s*}}`))?.[1];
+    assert.ok(expression, `${field} is displayed directly from order statistics`);
+    for (const [value, expected] of [[0, '0.00'], [null, '0.00'], [undefined, '0.00'], [12.34, '12.34']]) {
+      assert.equal(vm.runInNewContext(expression, {
+        formatMoney, userOrdersData: { [field]: value }, userProfile: { balance: 999, total_rebate: 888 },
+      }), expected);
+    }
+  }
+});
+
+test('detail separates coupon and estimated commission from payment and preserves known zero prices', () => {
+  const source = fs.readFileSync(path.join(root, 'static', 'detail.html'), 'utf8');
+  const formatMoney = harness().context.EasyShop.formatMoney;
+  const payment = source.match(/<div class="calc-step highlight">([\s\S]*?)<\/div>\s*<\/div>/)?.[1];
+  assert.ok(payment.includes('付款参考价'));
+  const expression = payment.match(/{{\s*(formatMoney\([^}]+)\s*}}/)?.[1];
+  assert.ok(expression);
+  assert.equal(vm.runInNewContext(expression, { formatMoney, goods: { price: 10, commission_amount: 30 } }), '10.00');
+  assert.equal(vm.runInNewContext(expression, { formatMoney, goods: { price: 0, commission_amount: 30 } }), '0.00');
+  assert.ok(source.includes('预估推广佣金'));
+  assert.ok(source.includes('佣金为预估，不抵扣付款；最终以平台结算为准'));
+  assert.ok(source.includes('formatMoney(goods.original_price ?? goods.price)'));
+  assert.ok(source.includes('formatMoney(goods.coupon_amount ?? goods.saved_price)'));
+  assert.ok(source.includes('v-if="(goods.coupon_amount ?? goods.saved_price ?? 0) > 0"'));
+  assert.equal(vm.runInNewContext('formatMoney(goods.original_price ?? goods.price)', {
+    formatMoney, goods: { original_price: 0, price: 10 },
+  }), '0.00');
+  assert.equal(vm.runInNewContext('formatMoney(goods.coupon_amount ?? goods.saved_price)', {
+    formatMoney, goods: { coupon_amount: 0, saved_price: 10 },
+  }), '0.00');
+  assert.equal(/goods\.price\s*-|折合到手|购物补贴/.test(source), false);
+});
+
+test('account and detail copy describe current attribution and unavailable capabilities without cash promises', () => {
+  const index = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const detail = fs.readFileSync(path.join(root, 'static', 'detail.html'), 'utf8');
+  const controller = fs.readFileSync(path.join(scripts, 'detail.js'), 'utf8');
+  for (const source of [index, detail, controller]) {
+    assert.equal(/自动存入钱包|随时提现|次月20日|购物补贴|确认收货返利|适配器已就绪|relation_id|subUnionId|全网比价|运费险核验/.test(source), false);
+  }
+  assert.ok(index.includes('平台已结算佣金不代表可提现余额，本页面不提供提现或资金账本'));
+  assert.ok(index.includes('游客使用站长默认推广位，不按分享页 UID 归因'));
+  assert.ok(detail.includes('游客转链使用站长默认推广位'));
+  assert.ok(index.includes("showToast('淘宝联盟暂未接入')"));
+  assert.ok(index.includes("showToast('京东联盟暂未接入')"));
+  assert.equal((index.match(/<span class="auth-status-badge unauthed">暂未接入<\/span>/g) || []).length, 2);
+  assert.ok(controller.includes('正在加载商品详情...'));
+});

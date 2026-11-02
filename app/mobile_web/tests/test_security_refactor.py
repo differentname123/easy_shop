@@ -229,7 +229,7 @@ class TestProductRepoSecurity(unittest.TestCase):
 
         # 检查 find 参数中的正则表达式是否经过 re.escape
         call_args = self.mock_col.find.call_args[0][0]
-        escaped_pattern = call_args["name"]["$regex"]
+        escaped_pattern = call_args["$and"][0]["name"]["$regex"]
         self.assertEqual(escaped_pattern, re.escape(nasty_input.strip()[:30]))
 
     def test_query_boom_products_cursor_probe_pagination(self):

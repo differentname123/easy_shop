@@ -3,6 +3,7 @@
 自动化测试：验证历史数据库兼容代码已彻底取消，且规范化输出正确
 """
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 from app.mobile_web.repositories.product_repo import ProductRepository
 from app.mobile_web.repositories.user_repo import UserRepository, hash_password
@@ -70,9 +71,11 @@ class TestProductRepoAdjustments(unittest.TestCase):
         self.mock_col.find_one.return_value = {
             "product_id": "88888",
             "default_promotion": {
+                "status": "success",
                 "final_link": "https://p.pinduoduo.com/valid_link",
                 "command_text": "口令文本"
-            }
+            },
+            "default_promotion_expires_at": datetime.now(timezone.utc) + timedelta(hours=1),
         }
         cache = self.repo.get_promotion_link_cache(platform="pdd", goods_id="88888")
         self.assertIsNotNone(cache)
@@ -84,7 +87,8 @@ class TestProductRepoAdjustments(unittest.TestCase):
         self.mock_col.find_one.return_value = None
         self.repo.get_product_detail("12345")
         call_args = self.mock_col.find_one.call_args[0][0]
-        self.assertEqual(call_args, {"platform": "pdd", "$or": [{"product_id": "12345"}, {"goods_sign": "12345"}]})
+        self.assertEqual(call_args["$and"][0], {"platform": "pdd", "$or": [{"product_id": "12345"}, {"goods_sign": "12345"}]})
+        self.assertEqual(call_args["$and"][1], self.repo._displayable_content_filter())
 
 
 class TestUserRepoAdjustments(unittest.TestCase):

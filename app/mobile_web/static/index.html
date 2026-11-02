@@ -65,14 +65,14 @@
               <span class="tag-val">减¥{{ formatMoney(item.coupon_amount) }}</span>
             </span>
             <span v-if="item.commission_amount > 0" class="rebate-tag">
-              <span class="tag-badge">补贴</span>
+              <span class="tag-badge">预估推广佣金</span>
               <span class="tag-val">¥{{ formatMoney(item.commission_amount) }}</span>
             </span>
           </div>
           <div class="goods-footer">
             <div class="goods-price-box">
               <div class="price-row">
-                <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
+                <span class="price-label">{{ item.has_coupon ? '券后' : '参考' }}</span>
                 <span class="price-unit">¥</span>
                 <span class="price-value">{{ formatMoney(item.price) }}</span>
               </div>
@@ -124,7 +124,7 @@
     <!-- 首屏或搜索加载中提示 -->
     <div v-if="homeLoading && homeGoodsList.length === 0" class="loading-wrap" style="padding-top: 4px;">
       <span class="loading-spinner"></span>
-      <span>{{ homeSearchKeyword ? '正在全网智能比价与检索好物...' : '正在为您获取最新爆款推荐...' }}</span>
+      <span>{{ homeSearchKeyword ? '正在搜索商品与优惠信息...' : '正在为您获取商品推荐...' }}</span>
     </div>
 
     <div v-if="!homeLoading && homeGoodsList.length === 0" class="empty-wrap">暂无符合条件的商品</div>
@@ -193,14 +193,14 @@
               <span class="tag-val">减¥{{ formatMoney(item.coupon_amount) }}</span>
             </span>
             <span v-if="item.commission_amount > 0" class="rebate-tag">
-              <span class="tag-badge">补贴</span>
+              <span class="tag-badge">预估推广佣金</span>
               <span class="tag-val">¥{{ formatMoney(item.commission_amount) }}</span>
             </span>
           </div>
           <div class="goods-footer">
             <div class="goods-price-box">
               <div class="price-row">
-                <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
+                <span class="price-label">{{ item.has_coupon ? '券后' : '参考' }}</span>
                 <span class="price-unit">¥</span>
                 <span class="price-value">{{ formatMoney(item.price) }}</span>
               </div>
@@ -275,17 +275,17 @@
       <div class="user-info-row">
         <div class="user-avatar" style="display:flex;align-items:center;justify-content:center;background:#fff;color:var(--primary-color);font-size:24px">👛</div>
         <div class="user-meta">
-          <h3>我的返利钱包 (未登录)</h3>
-          <p style="font-size:12px;opacity:0.9">无需登录也可直享全网优惠券；登录后可将返利提现到个人账户</p>
+          <h3>我的账户 (未登录)</h3>
+          <p style="font-size:12px;opacity:0.9">无需登录也可领券；登录后可查看本人推广订单与佣金记录</p>
         </div>
       </div>
     </div>
 
     <!-- 手机号快速登记注册/登录卡片 (未登录时展示) -->
     <div class="auth-reg-card" v-if="!isLoggedIn">
-      <div class="reg-title">{{ isRegisterMode ? '开通返利钱包 (新用户注册)' : '已有返利账号登录' }}</div>
+      <div class="reg-title">{{ isRegisterMode ? '注册推广账户 (新用户注册)' : '已有账户登录' }}</div>
       <div class="reg-subtitle">
-        {{ isRegisterMode ? '登记手机号即可保存返利订单记录与随时提现，跨设备登录资产不丢失' : '输入已登记的手机号和密码即可登录查看您的钱包余额' }}
+        {{ isRegisterMode ? '注册并登录后，可查看本人推广订单与佣金记录' : '输入已登记的手机号和密码，查看本人推广订单与佣金记录' }}
       </div>
 
       <div class="form-group">
@@ -334,7 +334,7 @@
       </button>
 
       <div class="form-toggle-link" @click="isRegisterMode = !isRegisterMode">
-        {{ isRegisterMode ? '已有账号？切换密码登录' : '新用户？一键开通钱包' }}
+        {{ isRegisterMode ? '已有账号？切换密码登录' : '新用户？注册推广账户' }}
       </div>
     </div>
 
@@ -342,12 +342,12 @@
     <div class="stats-card" v-if="isLoggedIn">
       <div class="stats-grid">
         <div class="stat-item">
-          <div class="num">¥{{ formatMoney(userOrdersData.total_commission ?? userProfile.total_rebate ?? 0) }}</div>
-          <div class="label">预估总佣金</div>
+          <div class="num">¥{{ formatMoney(userOrdersData.total_commission ?? 0) }}</div>
+          <div class="label">订单佣金</div>
         </div>
         <div class="stat-item">
-          <div class="num">¥{{ formatMoney(userOrdersData.settled_commission ?? userProfile.balance ?? 0) }}</div>
-          <div class="label">已结算返利</div>
+          <div class="num">¥{{ formatMoney(userOrdersData.settled_commission ?? 0) }}</div>
+          <div class="label">平台已结算佣金</div>
         </div>
         <div class="stat-item">
           <div class="num">¥{{ formatMoney(userOrdersData.refund_commission || 0) }}</div>
@@ -356,19 +356,19 @@
       </div>
     </div>
 
-    <!-- 我的返利订单板块 (核心新功能: 仅已登录推手展示) -->
+    <!-- 本人推广订单板块 (仅已登录推手展示) -->
     <div class="order-section-card" v-if="isLoggedIn">
       <div class="order-sec-header">
         <div class="order-sec-title">
           <svg style="width:16px;height:16px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
-          我的返利订单
+          我的推广订单
         </div>
         <button 
           class="btn-sync-orders" 
           @click="syncAndQueryOrders(true)"
           :disabled="isSyncingOrders"
         >
-          {{ isSyncingOrders ? '同步23h数据中...' : '同步并刷新订单' }}
+          {{ isSyncingOrders ? '正在刷新订单...' : '同步并刷新订单' }}
         </button>
       </div>
 
@@ -389,7 +389,7 @@
             <div class="order-item-bottom">
               <div>
                 <span style="color:var(--text-muted)">实付: ¥{{ formatMoney(ord.order_amount_yuan) }}</span>
-                <span style="color:var(--primary-color);font-weight:700;margin-left:6px">返 ¥{{ formatMoney(ord.promotion_amount_yuan) }}</span>
+                <span style="color:var(--primary-color);font-weight:700;margin-left:6px">订单佣金 ¥{{ formatMoney(ord.promotion_amount_yuan) }}</span>
               </div>
               <span 
                 class="order-status-tag"
@@ -409,7 +409,7 @@
     <!-- 渠道授权备案管理中心 -->
     <div class="section-title">
       <svg style="width:16px;height:16px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-2 16l-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9l-8 8z"/></svg>
-      多平台推手渠道授权中心
+      推广渠道授权
     </div>
 
     <!-- 拼多多官方推手备案卡片 -->
@@ -428,8 +428,8 @@
       </div>
       <p class="auth-desc">
         {{ userProfile.auth_status?.pdd?.is_authorized 
-           ? '您已完成拼多多官方渠道备案。点击或分享任意商品均自动绑定专属 UID 计入您的返利收益！' 
-           : '拼多多官方要求返利推手需完成一次推广位备案绑定。授权后即可正常享受拼多多商品佣金返利。' 
+           ? '您已完成拼多多渠道备案。登录并验证身份后，购买或复制链接使用本人 UID；游客使用站长默认推广位，不按分享页 UID 归因。佣金以平台结算为准。'
+           : '推广账户可在登录后申请拼多多推广位备案。游客仍可领券，转链使用站长默认推广位；备案不代表已获得佣金或可提现余额。'
         }}
       </p>
       <div class="auth-actions">
@@ -453,10 +453,10 @@
         <span class="auth-status-badge unauthed">暂未接入</span>
       </div>
       <p class="auth-desc">
-        支持淘宝联盟渠道关系管理 (relation_id)，后续接入淘宝 App 授权即可享受淘宝天猫返利。
+        淘宝联盟暂未接入，当前不提供淘宝商品推广与渠道授权。
       </p>
       <div class="auth-actions">
-        <button class="btn-secondary" style="width:100%" @click="showToast('淘宝联盟适配器已就绪，等待接入正式物料')">了解接入规范</button>
+        <button class="btn-secondary" style="width:100%" @click="showToast('淘宝联盟暂未接入')">暂未接入</button>
       </div>
     </div>
 
@@ -470,17 +470,17 @@
         <span class="auth-status-badge unauthed">暂未接入</span>
       </div>
       <p class="auth-desc">
-        支持京东联盟子联盟分销 (subUnionId)，后续接入京东开放平台后即可无缝对接。
+        京东联盟暂未接入，当前不提供京东商品推广与渠道授权。
       </p>
       <div class="auth-actions">
-        <button class="btn-secondary" style="width:100%" @click="showToast('京东联盟适配器已就绪，等待接入正式联盟')">了解接入规范</button>
+        <button class="btn-secondary" style="width:100%" @click="showToast('京东联盟暂未接入')">暂未接入</button>
       </div>
     </div>
 
     <!-- 菜单说明列表 -->
     <div class="menu-list">
-      <div class="menu-item" @click="showToast('返利结算周期为确认收货次月20日')">
-        <span>返利收益结算规则说明</span>
+      <div class="menu-item" @click="showToast('商品佣金为预估，订单佣金与最终金额以平台结算为准；平台已结算佣金不代表可提现余额，本页面不提供提现或资金账本。')">
+        <span>订单佣金与平台结算说明</span>
         <span style="color:var(--text-muted)">›</span>
       </div>
       <div class="menu-item" v-if="userProfile.invite_code" @click="copyText(userProfile.invite_code, '我的专属邀请码已复制')">
@@ -524,7 +524,7 @@
             {{ currentAuthInfo?.is_authorized ? '🎉' : '🔐' }}
           </div>
           <h3 style="font-size:16px;color:var(--text-main)">
-            {{ currentAuthInfo?.is_authorized ? '您已成功备案！' : '开通返利授权权限' }}
+            {{ currentAuthInfo?.is_authorized ? '您已成功备案！' : '开通推广授权权限' }}
           </h3>
           <p style="font-size:12px;color:var(--text-sub);margin-top:6px;line-height:1.5">
             {{ currentAuthInfo?.msg }}

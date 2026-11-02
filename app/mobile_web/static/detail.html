@@ -106,9 +106,23 @@
     }
     .price-strip-main {
       display: flex;
+      flex-wrap: wrap;
       align-items: baseline;
       gap: 6px;
       margin-bottom: 8px;
+    }
+    .price-strip-main > span {
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .privilege-header {
+      flex-direction: column;
+      gap: 4px;
+    }
+    .privilege-header > span:last-child {
+      font-size: 11px;
+      font-weight: 400;
+      line-height: 1.5;
     }
     .price-strip-main .unit {
       color: var(--primary-color);
@@ -312,19 +326,19 @@
     <!-- 高清实拍图加载提示 -->
     <div class="carousel-loading-badge" v-if="carouselList.length <= 1 && isDeepLoading">
       <span class="loading-spinner-sm"></span>
-      <span>高清实拍多图同步中...</span>
+      <span>商品图片加载中...</span>
     </div>
   </div>
 
   <!-- ==================== 核心价格与基础信息卡片 ==================== -->
   <div class="detail-card-section" v-if="goods">
     <div class="price-strip-main">
-      <span class="price-tag-badge">{{ goods.has_coupon ? '券后价' : '到手价' }}</span>
+      <span class="price-tag-badge">{{ goods.has_coupon ? '券后参考价' : '参考价' }}</span>
       <span class="unit">¥</span>
       <span class="val">{{ formatMoney(goods.price) }}</span>
       <span class="orig" v-if="goods.original_price && goods.original_price > goods.price">¥{{ formatMoney(goods.original_price) }}</span>
       <span class="coupon-pill-detail" v-if="goods.coupon_amount > 0">立减 ¥{{ formatMoney(goods.coupon_amount) }}<template v-if="goods.coupon_info?.coupon_remain_quantity"> · 剩{{ goods.coupon_info.coupon_remain_quantity }}张</template></span>
-      <span class="rebate-pill-detail" v-if="goods.commission_amount > 0">补贴 ¥{{ formatMoney(goods.commission_amount) }}</span>
+      <span class="rebate-pill-detail" v-if="goods.commission_amount > 0">预估推广佣金 ¥{{ formatMoney(goods.commission_amount) }}</span>
       <span class="plat-badge" :class="goods.platform" style="position:static;margin-left:auto;font-size:10px">
         {{ goods.platform_name || '拼多多' }}
       </span>
@@ -358,23 +372,23 @@
   <div class="detail-card-section deep-loading-card" v-if="isDeepLoading">
     <div class="deep-loading-content">
       <span class="loading-spinner"></span>
-      <span class="deep-loading-text">正在向官方同步高清实拍大图与最新优惠券...</span>
+      <span class="deep-loading-text">正在加载商品图片、规格与优惠信息...</span>
     </div>
   </div>
 
   <div class="detail-card-section retry-card" v-if="detailError && (!goods?.carousel_images || goods.carousel_images.length <= 1)">
     <div class="retry-card-content">
-      <span class="retry-msg">官方完整图文详情同步超时，已为您展示基础信息</span>
+      <span class="retry-msg">商品详情暂未完整获取，可重试加载</span>
       <button class="retry-btn-inline" @click="retryLoadDeepDetail">点击重新获取 ↻</button>
     </div>
   </div>
 
-  <!-- ==================== 💰 专属优惠与省钱明细 ==================== -->
+  <!-- ==================== 商品价格、优惠券与预估推广佣金 ==================== -->
   <div class="detail-card-section" v-if="goods">
     <div class="privilege-box" style="margin-bottom:0">
       <div class="privilege-header">
-        <span>💰 专属省钱明细</span>
-        <span>{{ (goods.coupon_info && goods.coupon_info.coupon_remain_quantity) ? ('券仅剩 ' + goods.coupon_info.coupon_remain_quantity + ' 张 · 确认收货返利') : '领券立减 · 确认收货返利' }}</span>
+        <span>价格与推广信息</span>
+        <span>佣金为预估，不抵扣付款；最终以平台结算为准</span>
       </div>
       <div class="price-calc-flow">
         <div class="calc-step">
@@ -383,36 +397,36 @@
             ¥{{ formatMoney(goods.original_price ?? goods.price) }}
           </div>
         </div>
-        <span class="calc-sep">-</span>
-        <div class="calc-step" v-if="goods.coupon_amount > 0 || goods.saved_price > 0">
-          <div class="c-lbl">专属券立减</div>
+        <span class="calc-sep">·</span>
+        <div class="calc-step" v-if="(goods.coupon_amount ?? goods.saved_price ?? 0) > 0">
+          <div class="c-lbl">优惠券金额</div>
           <div class="c-num" style="color:#f5222d">
             ¥{{ formatMoney(goods.coupon_amount ?? goods.saved_price) }}
           </div>
         </div>
-        <span class="calc-sep" v-if="goods.coupon_amount > 0 || goods.saved_price > 0">-</span>
+        <span class="calc-sep" v-if="(goods.coupon_amount ?? goods.saved_price ?? 0) > 0">·</span>
         <div class="calc-step">
-          <div class="c-lbl">购物补贴返还</div>
+          <div class="c-lbl">预估推广佣金</div>
           <div class="c-num" style="color:#fa8c16">
             ¥{{ formatMoney(goods.commission_amount) }}
           </div>
         </div>
-        <span class="calc-sep">=</span>
+        <span class="calc-sep">·</span>
         <div class="calc-step highlight">
-          <div class="c-lbl" style="color:var(--primary-color);font-weight:700">折合到手仅</div>
+          <div class="c-lbl" style="color:var(--primary-color);font-weight:700">付款参考价</div>
           <div class="c-num">
-            ¥{{ formatMoney(Math.max(0, goods.price - (goods.commission_amount ?? 0))) }}
+            ¥{{ formatMoney(goods.price) }}
           </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- 优惠与返利钱包提示（温和无强迫感） -->
+  <!-- 游客推广归因与账户入口 -->
   <div class="detail-card-section" style="padding:10px 14px;" v-if="!isLoggedIn" @click="goToRegister">
     <div class="login-unlock-banner" style="margin-bottom:0">
-      <span>🧧 本商品可立领大额券；登录账号后购物补贴 <b>¥{{ formatMoney(goods?.commission_amount) }}</b> 自动存入钱包随时提现</span>
-      <span style="font-weight:700;color:var(--primary-color)">我的钱包 ›</span>
+      <span>无需登录也可领券；游客转链使用站长默认推广位。登录后可查看本人推广订单与佣金记录。</span>
+      <span style="font-weight:700;color:var(--primary-color)">我的账户 ›</span>
     </div>
   </div>
 
@@ -456,7 +470,7 @@
     </div>
     <div class="detail-nav-btn-icon" @click="goToRegister">
       <span class="icon">👛</span>
-      <span>钱包</span>
+      <span>账户</span>
     </div>
 
     <div class="detail-nav-actions">

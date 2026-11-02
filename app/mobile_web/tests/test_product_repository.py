@@ -1,11 +1,50 @@
 # -*- coding: utf-8 -*-
 """商品仓储确定性回归测试：无外部 API、无真实 MongoDB。"""
 import datetime
+import re
 import unittest
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from bson.decimal128 import Decimal128
+
+from app.mobile_web.config import PROMOTION_LINK_TTL
 from app.mobile_web.repositories.product_repo import ProductRepository
+
+
+class MemoryCursor:
+    """仅实现仓储实际使用的排序、分页和超时链式接口。"""
+
+    def __init__(self, docs, calls):
+        self.docs = docs
+        self.calls = calls
+        self.offset = 0
+        self.size = None
+
+    def sort(self, spec):
+        self.calls.append(("sort", spec))
+        for key, direction in reversed(spec):
+            self.docs.sort(key=lambda doc: (doc.get(key) is not None, doc.get(key)), reverse=direction < 0)
+        return self
+
+    def skip(self, count):
+        self.calls.append(("skip", count))
+        self.offset = count
+        return self
+
+    def limit(self, count):
+        self.calls.append(("limit", count))
+        self.size = count
+        return self
+
+    def max_time_ms(self, milliseconds):
+        self.calls.append(("max_time_ms", milliseconds))
+        return self
+
+    def __iter__(self):
+        end = None if self.size is None else self.offset + self.size
+        return iter(self.docs[self.offset:end])
 
 
 class MemoryCollection:
@@ -15,21 +54,103 @@ class MemoryCollection:
         self.docs = []
         self.indexes = []
         self.queries = []
+        self.projections = []
+        self.cursor_calls = []
 
     def create_index(self, keys, **kwargs):
         self.indexes.append((keys, kwargs))
 
     @staticmethod
-    def matches(doc, query):
-        return all(
-            any(MemoryCollection.matches(doc, branch) for branch in value)
-            if key == "$or" else doc.get(key) == value
-            for key, value in query.items()
-        )
+    def expression(doc, value, variables=None):
+        """仅支持可展示价格条件使用的表达式；未知操作立即失败。"""
+        variables = variables or {}
+        if isinstance(value, str) and value.startswith("$$"):
+            return variables[value[2:]]
+        if isinstance(value, str) and value.startswith("$"):
+            return doc.get(value[1:])
+        if not isinstance(value, dict):
+            return value
+        op, args = next(iter(value.items()))
+        evaluate = lambda item: MemoryCollection.expression(doc, item, variables)
+        if op == "$let":
+            bindings = {key: evaluate(item) for key, item in args["vars"].items()}
+            return MemoryCollection.expression(doc, args["in"], {**variables, **bindings})
+        if op == "$ifNull":
+            first = evaluate(args[0])
+            return first if first is not None else evaluate(args[1])
+        if op == "$convert":
+            assert args["to"] == "double"
+            number = evaluate(args["input"])
+            if number is None:
+                return args["onNull"]
+            try:
+                return float(number.to_decimal() if isinstance(number, Decimal128) else number)
+            except (TypeError, ValueError, OverflowError):
+                return args["onError"]
+        if op == "$type":
+            number = evaluate(args)
+            for python_type, mongo_type in ((bool, "bool"), (str, "string"), (int, "int"),
+                                            (float, "double"), (Decimal128, "decimal")):
+                if isinstance(number, python_type):
+                    return mongo_type
+            return "null" if number is None else "unsupported"
+        if op == "$and":
+            return all(evaluate(item) for item in args)
+        left, right = (evaluate(item) for item in args)
+        if op == "$eq":
+            return left == right
+        if op == "$in":
+            return left in right
+        if op == "$gte":
+            return left is not None and left >= right
+        if op == "$lt":
+            return left is not None and left < right
+        raise AssertionError(f"unsupported expression: {op}")
 
-    def find_one(self, query):
+    @staticmethod
+    def matches(doc, query):
+        for key, value in query.items():
+            if key == "$and":
+                matched = all(MemoryCollection.matches(doc, branch) for branch in value)
+            elif key == "$or":
+                matched = any(MemoryCollection.matches(doc, branch) for branch in value)
+            elif key == "$expr":
+                matched = MemoryCollection.expression(doc, value)
+            elif isinstance(value, dict):
+                matched = True
+                for op, operand in value.items():
+                    if op == "$regex":
+                        flags = re.I if value.get("$options") == "i" else 0
+                        values = doc.get(key) if isinstance(doc.get(key), list) else [doc.get(key)]
+                        matched = matched and any(isinstance(item, str) and re.search(operand, item, flags) for item in values)
+                    elif op != "$options":
+                        raise AssertionError(f"unsupported field operator: {op}")
+            else:
+                matched = doc.get(key) == value
+            if not matched:
+                return False
+        return True
+
+    @staticmethod
+    def project(doc, projection):
+        if projection is None:
+            return deepcopy(doc)
+        return {key: deepcopy(value) for key, value in doc.items() if projection.get(key)}
+
+    def find_one(self, query, projection=None):
         self.queries.append(deepcopy(query))
-        return next((deepcopy(doc) for doc in self.docs if self.matches(doc, query)), None)
+        self.projections.append(deepcopy(projection))
+        return next((self.project(doc, projection) for doc in self.docs if self.matches(doc, query)), None)
+
+    def find(self, query, projection=None):
+        self.queries.append(deepcopy(query))
+        self.projections.append(deepcopy(projection))
+        docs = [self.project(doc, projection) for doc in self.docs if self.matches(doc, query)]
+        return MemoryCursor(docs, self.cursor_calls)
+
+    def distinct(self, field, query):
+        self.queries.append(deepcopy(query))
+        return list(dict.fromkeys(doc.get(field) for doc in self.docs if self.matches(doc, query)))
 
     def update_one(self, query, update, upsert=False):
         if set(update.get("$set", {})) & set(update.get("$setOnInsert", {})):
@@ -201,7 +322,7 @@ class TestProductRepository(unittest.TestCase):
         self.assertEqual(self.col.docs[0]["original_price"], 100)
 
     def test_only_details_refresh_detail_updated_at(self):
-        self.repo.upsert_home_products([{"goods_id": "100", "price": 10}])
+        self.repo.upsert_home_products([{"goods_id": "100", "name": "商品", "price": 10}])
         self.assertNotIn("detail_updated_at", self.col.docs[0])
         self.repo.upsert_product_detail({"goods_id": "100", "desc": "来源"})
         old = datetime.datetime(2020, 1, 1)
@@ -244,17 +365,18 @@ class TestProductRepository(unittest.TestCase):
 
     def test_detail_lookup_is_always_platform_scoped(self):
         for platform in ("pdd", "jd", "taobao"):
-            self.repo.upsert_product_detail({"platform": platform, "goods_id": "123", "goods_sign": "SAME_SIGN", "name": platform})
+            self.repo.upsert_product_detail({"platform": platform, "goods_id": "123", "goods_sign": "SAME_SIGN", "name": platform, "price": 10})
         self.assertEqual(self.repo.get_product_detail("123")["name"], "pdd")
         self.assertEqual(self.repo.get_product_detail("123", platform="jd", key_type="id")["name"], "jd")
         self.assertEqual(self.repo.get_product_detail("SAME_SIGN", platform="tb", key_type="sign")["name"], "taobao")
-        self.assertEqual(self.col.queries[-1], {"platform": "taobao", "goods_sign": "SAME_SIGN"})
+        self.assertEqual(self.col.queries[-1]["$and"][0], {"platform": "taobao", "goods_sign": "SAME_SIGN"})
+        self.assertEqual(self.col.queries[-1]["$and"][1], self.repo._displayable_content_filter())
         self.repo.get_product_detail("123", platform="jd")
-        self.assertEqual(self.col.queries[-1], {"platform": "jd", "$or": [{"product_id": "123"}, {"goods_sign": "123"}]})
+        self.assertEqual(self.col.queries[-1]["$and"][0], {"platform": "jd", "$or": [{"product_id": "123"}, {"goods_sign": "123"}]})
 
     def test_explicit_key_type_prevents_id_and_sign_ambiguity(self):
-        self.repo.upsert_product_detail({"goods_id": "A", "goods_sign": "B", "name": "by-sign"})
-        self.repo.upsert_product_detail({"goods_id": "B", "goods_sign": "C", "name": "by-id"})
+        self.repo.upsert_product_detail({"goods_id": "A", "goods_sign": "B", "name": "by-sign", "price": 10})
+        self.repo.upsert_product_detail({"goods_id": "B", "goods_sign": "C", "name": "by-id", "price": 20})
         self.assertEqual(self.repo.get_product_detail("B", key_type="sign")["name"], "by-sign")
         self.assertEqual(self.repo.get_product_detail("B", key_type="id")["name"], "by-id")
 
@@ -265,6 +387,175 @@ class TestProductRepository(unittest.TestCase):
         self.assertIsNone(self.repo.get_product_detail("sign:internal", key_type="id"))
         self.assertEqual(self.col.docs, [])
         self.assertEqual(self.col.queries, [])
+
+    def test_only_two_requested_sort_indexes_are_added_to_existing_indexes(self):
+        self.assertEqual(self.col.indexes, [
+            ([("platform", 1), ("product_id", 1)], {"unique": True, "background": True}),
+            ("goods_sign", {"background": True}),
+            ([("updated_at", -1)], {"background": True}),
+            ([("platform", 1), ("updated_at", -1)], {"background": True}),
+        ])
+
+    def test_displayable_content_requires_name_and_known_valid_price(self):
+        cases = [
+            ({"activity_price": 0, "price": 99}, 0),
+            ({"price": 0}, 0),
+            ({"activity_price": None, "price": "12.50"}, 12.5),
+            ({"activity_price": "0", "price": 99}, 0),
+            ({"activity_price": 2}, 2),
+            ({"activity_price": Decimal128("2.50")}, 2.5),
+            ({"activity_price": None}, None),
+            ({}, None),
+            ({"activity_price": "", "price": 99}, None),
+            ({"activity_price": "not-money", "price": 99}, None),
+            ({"activity_price": -1, "price": 99}, None),
+            ({"activity_price": True}, None),
+            ({"activity_price": False}, None),
+            ({"activity_price": float("nan")}, None),
+            ({"activity_price": float("inf")}, None),
+            ({"activity_price": float("-inf")}, None),
+            ({"activity_price": []}, None),
+            ({"activity_price": datetime.datetime(2026, 1, 1)}, None),
+        ]
+        for money, expected in cases:
+            with self.subTest(money=money):
+                self.col.docs = [{"platform": "pdd", "product_id": "001", "name": "商品", **money}]
+                listing = self.repo.query_boom_products()
+                detail = self.repo.get_product_detail("001", key_type="id")
+                self.assertEqual(listing["status"], "success")
+                if expected is None:
+                    self.assertEqual(listing["data"], [])
+                    self.assertIsNone(detail)
+                else:
+                    self.assertEqual(listing["data"][0]["price"], expected)
+                    self.assertEqual(detail["price"], expected)
+        for name in (None, "", " \t\n", 0, ["商品"]):
+            with self.subTest(name=name):
+                self.col.docs = [{"platform": "pdd", "product_id": "001", "name": name, "price": 0}]
+                self.assertEqual(self.repo.query_boom_products()["data"], [])
+                self.assertIsNone(self.repo.get_product_detail("001", key_type="id"))
+
+    def test_bare_promotion_record_stays_hidden_until_real_content_arrives(self):
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "pdd", {"final_link": "https://example.com/123"}, goods_id="00123", goods_sign="SIGN",
+        ))
+        self.assertEqual(self.repo.query_boom_products()["data"], [])
+        self.assertIsNone(self.repo.get_product_detail("00123", key_type="id"))
+        self.assertIsNone(self.repo.get_product_detail("SIGN", key_type="sign"))
+        self.assertIsNone(self.repo.get_product_detail("SIGN"))
+        identity = self.repo.get_product_identity("SIGN")
+        self.assertEqual(identity, {"platform": "pdd", "product_id": "00123", "goods_sign": "SIGN"})
+        self.assertEqual(self.repo.get_categories(), [])
+        self.repo.upsert_home_products([{"goods_id": "00123", "name": "后补商品", "price": 0, "category": "食品"}])
+        self.assertEqual(len(self.col.docs), 1)
+        self.assertEqual(self.repo.query_boom_products()["data"][0]["price"], 0)
+        self.assertEqual(self.repo.get_product_detail("SIGN", key_type="sign")["goods_id"], "00123")
+        self.assertEqual(self.repo.get_categories(), ["食品"])
+        self.assertIsNotNone(self.repo.get_promotion_link_cache("pdd", goods_id="00123"))
+
+    def test_content_filter_runs_before_pagination_and_keeps_count_semantics(self):
+        now = datetime.datetime(2026, 11, 3)
+        for number in range(8):
+            doc = {"platform": "pdd", "product_id": str(number + 1), "updated_at": now - datetime.timedelta(minutes=number)}
+            if number % 2:
+                doc.update(name=f"商品{number}", activity_price=number)
+            self.col.docs.append(doc)
+        page1 = self.repo.query_boom_products(page=1, page_size=2)
+        self.assertEqual([row["product_id"] for row in page1["data"]], ["2", "4"])
+        self.assertTrue(page1["has_more"])
+        self.assertEqual(page1["total_count"], 3)
+        page2 = self.repo.query_boom_products(page=2, page_size=2)
+        self.assertEqual([row["product_id"] for row in page2["data"]], ["6", "8"])
+        self.assertFalse(page2["has_more"])
+        self.assertEqual(page2["total_count"], 4)
+        keyword = self.repo.query_boom_products(keyword="商品", page=2, page_size=2)
+        self.assertEqual(keyword["total_count"], 2)
+        self.assertFalse(keyword["has_more"])
+        self.assertEqual(self.col.cursor_calls[-4:], [
+            ("sort", [("updated_at", -1)]), ("skip", 2), ("limit", 3), ("max_time_ms", 2000),
+        ])
+
+    def test_categories_use_same_content_filter_and_platform_scope(self):
+        self.col.docs = [
+            {"platform": "pdd", "name": "商品", "activity_price": 0, "category": "食品"},
+            {"platform": "pdd", "name": "缺价", "category": "推广裸类"},
+            {"platform": "pdd", "price": 0, "category": "无名类"},
+            {"platform": "pdd", "name": "无类", "price": 1, "category": " "},
+            {"platform": "taobao", "name": "另一平台", "price": "3", "category": "美妆"},
+        ]
+        self.assertEqual(set(self.repo.get_categories()), {"食品", "美妆"})
+        self.assertEqual(self.repo.get_categories("pdd"), ["食品"])
+        self.assertEqual(self.repo.get_categories("tb"), ["美妆"])
+        self.assertEqual(self.col.queries[-1]["$and"][0], {"platform": "taobao"})
+        self.assertEqual(self.col.queries[-1]["$and"][1], self.repo._displayable_content_filter())
+
+    def test_list_projection_preserves_complete_summary_but_not_rich_or_cache_fields(self):
+        doc = {
+            "_id": "mongo-id", "platform": "tb", "product_id": "AB", "goods_id": "AB",
+            "goods_sign": "SIGN", "name": "商品", "brand": "品牌", "category": "类目",
+            "activity_price": 0, "price": 90, "original_price": 100, "saved_price": 0,
+            "coupon_amount": 0, "has_coupon": False, "commission_rate": 0, "commission_amount": 0,
+            "sales_tip": "100人付款", "image_url": "https://example.com/a.png", "mall_name": "店铺",
+            "updated_at": datetime.datetime(2026, 11, 3), "desc": "大详情",
+            "carousel_images": ["https://example.com/b.png"], "coupon_info": {"large": "detail"},
+            "default_promotion": {"final_link": "https://example.com/private"},
+            "default_promotion_expires_at": datetime.datetime(2026, 11, 4),
+        }
+        self.col.docs = [doc]
+        result = self.repo.query_boom_products()["data"]
+        self.assertEqual(result, [self.repo._normalize_doc_summary(doc)])
+        self.assertEqual(self.col.projections[-1], {
+            "_id": 0, **dict.fromkeys((
+                "platform", "product_id", "goods_id", "goods_sign", "name", "brand", "category",
+                "activity_price", "price", "original_price", "saved_price", "coupon_amount", "has_coupon",
+                "commission_rate", "commission_amount", "sales_tip", "image_url", "mall_name", "updated_at",
+            ), 1),
+        })
+        for field in ("_id", "desc", "carousel_images", "default_promotion", "default_promotion_expires_at"):
+            self.assertNotIn(field, result[0])
+
+    def test_identity_lookup_is_platform_scoped_and_does_not_fetch_content(self):
+        self.col.docs = [
+            {"platform": "pdd", "product_id": "00123", "goods_sign": "SAME", "desc": "不要读取"},
+            {"platform": "taobao", "product_id": "AB", "goods_sign": "SAME", "name": "也不读取"},
+            {"platform": "jd", "goods_id": "LEGACY", "goods_sign": "OLD"},
+        ]
+        self.assertEqual(self.repo.get_product_identity("SAME")["product_id"], "00123")
+        self.assertEqual(self.repo.get_product_identity(" SAME ", "tb"), {
+            "platform": "taobao", "product_id": "AB", "goods_sign": "SAME",
+        })
+        self.assertEqual(self.col.queries[-1], {"platform": "taobao", "goods_sign": "SAME"})
+        self.assertEqual(self.col.projections[-1], {"_id": 0, "platform": 1, "product_id": 1, "goods_id": 1, "goods_sign": 1})
+        self.assertEqual(self.repo.get_product_identity("OLD", "jd")["goods_id"], "LEGACY")
+        self.assertIsNone(self.repo.get_product_identity("SAME", "jd"))
+        before = len(self.col.queries)
+        self.assertIsNone(self.repo.get_product_identity("  "))
+        self.assertEqual(len(self.col.queries), before)
+
+    def test_detail_query_keeps_string_id_type_under_and(self):
+        self.col.docs = [
+            {"platform": "pdd", "product_id": 123, "name": "数字ID不能误配", "price": 1},
+            {"platform": "pdd", "product_id": "00123", "name": "字符串ID", "price": 2},
+        ]
+        self.assertIsNone(self.repo.get_product_detail("123", key_type="id"))
+        self.assertEqual(self.repo.get_product_detail("00123", key_type="id")["name"], "字符串ID")
+        self.assertEqual(self.col.queries[-1]["$and"][0], {"platform": "pdd", "product_id": "00123"})
+
+    def test_detail_write_preserves_service_fetch_time_and_summary_never_refreshes_it(self):
+        utc = datetime.timezone.utc
+        fetched = datetime.datetime(2025, 1, 2, 3, 4, 5, tzinfo=utc)
+        for supplied in (fetched, fetched.replace(tzinfo=None), fetched.astimezone(datetime.timezone(datetime.timedelta(hours=8)))):
+            with self.subTest(supplied=supplied):
+                _, update = self.repo._build_product_update({"goods_id": "1", "detail_updated_at": supplied}, detail=True)
+                self.assertEqual(update["$set"]["detail_updated_at"], fetched.replace(tzinfo=None))
+                _, summary = self.repo._build_product_update({"goods_id": "1", "detail_updated_at": supplied}, detail=False)
+                self.assertNotIn("detail_updated_at", summary["$set"])
+        for invalid in (None, "2025-01-02", 123):
+            before = datetime.datetime.now(utc).replace(tzinfo=None)
+            _, update = self.repo._build_product_update({"goods_id": "1", "detail_updated_at": invalid}, detail=True)
+            after = datetime.datetime.now(utc).replace(tzinfo=None)
+            self.assertLessEqual(before, update["$set"]["detail_updated_at"])
+            self.assertLessEqual(update["$set"]["detail_updated_at"], after)
 
     def test_sign_only_promotion_cache_uses_same_unique_identity_strategy(self):
         for sign in ("S1", "S2"):
@@ -285,6 +576,144 @@ class TestProductRepository(unittest.TestCase):
         self.assertTrue(self.repo.save_promotion_link_cache("tb", {"final_link": "https://example.com/AB"}, goods_id="AB"))
         self.assertEqual(self.repo.get_promotion_link_cache("taobao", goods_id="AB")["final_link"], "https://example.com/AB")
         self.assertEqual(self.col.docs[0]["platform"], "taobao")
+
+    def test_explicit_numeric_sign_does_not_read_or_overwrite_same_numeric_id(self):
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "pdd", {"final_link": "https://example.com/by-id"}, goods_id="123", goods_sign="ID_SIGN",
+        ))
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "pdd", {"final_link": "https://example.com/by-sign"}, goods_id="456", goods_sign="123",
+        ))
+        original_id_doc = deepcopy(self.col.docs[0])
+        result = self.repo.get_promotion_link_cache("pdd", goods_sign="123", goods_key="123")
+        self.assertEqual(result["final_link"], "https://example.com/by-sign")
+        self.assertEqual(self.col.queries[-1], {"platform": "pdd", "goods_sign": "123"})
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "pdd", {"final_link": "https://example.com/updated-sign"}, goods_sign="123", goods_key="123",
+        ))
+        self.assertEqual(self.col.docs[0], original_id_doc)
+        self.assertEqual(self.col.docs[1]["product_id"], "456")
+        self.assertEqual(self.col.docs[1]["default_promotion"]["final_link"], "https://example.com/updated-sign")
+        self.assertEqual(len(self.col.docs), 2)
+
+    def test_explicit_non_numeric_id_does_not_invent_or_overwrite_sign(self):
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "taobao", {"final_link": "https://example.com/by-id"}, goods_id="sku-A", goods_sign="REAL_SIGN",
+        ))
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "taobao", {"final_link": "https://example.com/by-sign"}, goods_id="sku-B", goods_sign="sku-A",
+        ))
+        original_sign_doc = deepcopy(self.col.docs[1])
+        result = self.repo.get_promotion_link_cache("tb", goods_id="sku-A", goods_key="sku-A")
+        self.assertEqual(result["final_link"], "https://example.com/by-id")
+        self.assertEqual(self.col.queries[-1], {"platform": "taobao", "product_id": "sku-A"})
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "tb", {"final_link": "https://example.com/updated-id"}, goods_id="sku-A", goods_key="sku-A",
+        ))
+        self.assertEqual(self.col.docs[0]["goods_sign"], "REAL_SIGN")
+        self.assertEqual(self.col.docs[0]["default_promotion"]["final_link"], "https://example.com/updated-id")
+        self.assertEqual(self.col.docs[1], original_sign_doc)
+        self.assertEqual(self.repo.get_promotion_link_cache("tb", goods_sign="sku-A")["final_link"], "https://example.com/by-sign")
+
+    def test_explicit_invalid_id_is_not_reinterpreted_using_legacy_key(self):
+        self.assertTrue(self.repo.save_promotion_link_cache(
+            "pdd", {"final_link": "https://example.com/123"}, goods_id="123",
+        ))
+        before = deepcopy(self.col.docs)
+        for invalid_id in ("0", "sign:internal"):
+            with self.subTest(invalid_id=invalid_id):
+                self.assertIsNone(self.repo.get_promotion_link_cache("pdd", goods_id=invalid_id, goods_key="123"))
+                self.assertFalse(self.repo.save_promotion_link_cache(
+                    "pdd", {"final_link": "https://example.com/wrong"}, goods_id=invalid_id, goods_key="123",
+                ))
+        self.assertEqual(self.col.docs, before)
+
+    def test_promotion_cache_uses_utc_expiry_and_minimal_projection(self):
+        now = 1_800_000_000.0
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+            for timezone in (None, datetime.timezone.utc, datetime.timezone(datetime.timedelta(hours=8))):
+                with self.subTest(timezone=timezone):
+                    expiry = datetime.datetime.fromtimestamp(now + 60, datetime.timezone.utc)
+                    expiry = expiry.replace(tzinfo=None) if timezone is None else expiry.astimezone(timezone)
+                    self.col.docs = [{
+                        "platform": "pdd", "product_id": "1", "default_promotion_expires_at": expiry,
+                        "default_promotion": {"final_link": "https://example.com/1", "nested": {"value": 1}},
+                        "default_promotion_updated_at": datetime.datetime(2000, 1, 1), "desc": "不要读取详情",
+                    }]
+                    result = self.repo.get_promotion_link_cache("pdd", goods_id="1")
+                    self.assertEqual(result["final_link"], "https://example.com/1")
+                    self.assertTrue(result["from_cache"])
+                    self.assertIsInstance(result["_expires_at"], float)
+                    self.assertEqual(result["_expires_at"], now + 60)
+                    self.assertEqual(self.col.projections[-1], {
+                        "_id": 0, "default_promotion": 1, "default_promotion_expires_at": 1,
+                    })
+                    result["nested"]["value"] = 2
+                    self.assertEqual(self.col.docs[0]["default_promotion"]["nested"]["value"], 1)
+
+    def test_promotion_cache_rejects_missing_invalid_expired_or_distant_expiry(self):
+        now = 1_800_000_000.0
+        utc_dt = lambda seconds: datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
+        expiries = (None, "2099-01-01", now + 60, {}, utc_dt(now - 1), utc_dt(now), utc_dt(now + PROMOTION_LINK_TTL + 1))
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+            for expiry in expiries:
+                with self.subTest(expiry=expiry):
+                    self.col.docs = [{
+                        "platform": "pdd", "product_id": "1",
+                        "default_promotion": {"final_link": "https://example.com/1"},
+                        "default_promotion_updated_at": utc_dt(now),
+                    }]
+                    if expiry is not None:
+                        self.col.docs[0]["default_promotion_expires_at"] = expiry
+                    self.assertIsNone(self.repo.get_promotion_link_cache("pdd", goods_id="1"))
+            for seconds in (now + 0.001, now + PROMOTION_LINK_TTL):
+                self.col.docs[0]["default_promotion_expires_at"] = utc_dt(seconds)
+                self.assertIsNotNone(self.repo.get_promotion_link_cache("pdd", goods_id="1"))
+            for payload in (None, "link", {}, {"final_link": ""}):
+                self.col.docs[0]["default_promotion"] = payload
+                self.assertIsNone(self.repo.get_promotion_link_cache("pdd", goods_id="1"))
+
+    def test_promotion_save_keeps_supplied_expiry_without_renewing_and_strips_transient_fields(self):
+        now = 1_800_000_000.0
+        data = {
+            "final_link": "https://example.com/1", "command_text": "请求级口令",
+            "from_cache": True, "_expires_at": now + 5, "_debug": "internal",
+        }
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+            self.assertTrue(self.repo.save_promotion_link_cache("pdd", data, goods_id="1", expires_at=now + 10))
+            stored = self.col.docs[0]
+            self.assertEqual(stored["default_promotion"], {"final_link": "https://example.com/1"})
+            self.assertEqual(stored["default_promotion_updated_at"], datetime.datetime.fromtimestamp(now, datetime.timezone.utc))
+            self.assertEqual(stored["default_promotion_expires_at"].timestamp(), now + 10)
+            self.assertEqual(stored["default_promotion_expires_at"].utcoffset(), datetime.timedelta(0))
+            self.assertIn("command_text", data)
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now + 9):
+            self.assertEqual(self.repo.get_promotion_link_cache("pdd", goods_id="1")["_expires_at"], now + 10)
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now + 10):
+            self.assertIsNone(self.repo.get_promotion_link_cache("pdd", goods_id="1"))
+
+    def test_promotion_save_defaults_to_shared_ttl_and_preserves_legacy_goods_key_api(self):
+        now = 1_800_000_000.123456
+        expected_expiry = 1_800_000_000.123 + PROMOTION_LINK_TTL
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+            self.assertTrue(self.repo.save_promotion_link_cache("pdd", {"final_link": "https://example.com/1"}, goods_key="001"))
+            self.assertEqual(self.col.docs[0]["product_id"], "001")
+            self.assertEqual(self.col.docs[0]["default_promotion_expires_at"].timestamp(), expected_expiry)
+            self.assertEqual(self.repo.get_promotion_link_cache("pdd", goods_key="001")["_expires_at"], expected_expiry)
+            self.assertTrue(self.repo.save_promotion_link_cache("pdd", {"final_link": "https://example.com/S"}, goods_key="SIGN"))
+            self.assertEqual(self.col.docs[1]["goods_sign"], "SIGN")
+            self.assertIsNotNone(self.repo.get_promotion_link_cache("pdd", goods_key="SIGN"))
+            self.assertIsNone(self.repo.get_promotion_link_cache("jd", goods_key="SIGN"))
+
+    def test_promotion_save_rejects_invalid_expiry_without_writing(self):
+        now = 1_800_000_000.0
+        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+            for expiry in (True, "1800000001", float("nan"), float("inf"), now - 1, now, now + PROMOTION_LINK_TTL + 1):
+                with self.subTest(expiry=expiry):
+                    self.assertFalse(self.repo.save_promotion_link_cache(
+                        "pdd", {"final_link": "https://example.com/1"}, goods_id="1", expires_at=expiry,
+                    ))
+            self.assertEqual(self.col.docs, [])
 
 
 if __name__ == "__main__":

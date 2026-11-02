@@ -36,6 +36,7 @@ ORDER_SYNC_INTERVAL = 180       # 增量订单拉取全局最小冷却间隔 (�
 ORDER_SYNC_MAX_PAGES = 5        # 单次增量拉单最大翻页数
 AUTH_STATUS_TTL = 86400         # 已确认平台授权状态的本地有效期
 PRODUCT_DETAIL_TTL = 600        # 官方详情有效期，摘要更新不能延长它
+PROMOTION_LINK_TTL = 3 * 86400   # 站长推广链接的来源有效期，不由内存回填续期
 CACHE_MAX_RECOMMEND = 256       # 首页推荐流缓存最大条目
 CACHE_MAX_DETAIL = 2048         # 商品详情缓存最大条目
 CACHE_MAX_SEARCH = 1024         # 搜索缓存最大条目

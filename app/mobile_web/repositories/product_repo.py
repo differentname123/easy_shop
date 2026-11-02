@@ -5,12 +5,15 @@
 """
 import re
 import datetime
+import math
+import time
 from copy import deepcopy
 from typing import Dict, Any, List, Optional, Tuple
 from pymongo import UpdateOne
+from bson.decimal128 import Decimal128
 from app.mobile_web.repositories.base_repo import BaseRepository
 from app.mobile_web.models.product import clean_product_id, normalize_platform
-from app.mobile_web.config import logger
+from app.mobile_web.config import PROMOTION_LINK_TTL, logger
 
 
 class ProductRepository(BaseRepository):
@@ -20,6 +23,8 @@ class ProductRepository(BaseRepository):
         try:
             self.col.create_index([("platform", 1), ("product_id", 1)], unique=True, background=True)
             self.col.create_index("goods_sign", background=True)
+            self.col.create_index([("updated_at", -1)], background=True)
+            self.col.create_index([("platform", 1), ("updated_at", -1)], background=True)
             return True
         except Exception as e:
             logger.warning(f"商品集合索引创建提示: {e}")
@@ -28,6 +33,44 @@ class ProductRepository(BaseRepository):
     # 内部占位只用于兼容现有 unique(platform, product_id) 索引，不能当作真实 ID 返回。
     _SIGN_ID_PREFIX = "sign:"
     _platform = staticmethod(normalize_platform)
+    _SUMMARY_PROJECTION = {
+        "_id": 0,
+        **dict.fromkeys((
+            "platform", "product_id", "goods_id", "goods_sign", "name", "brand",
+            "category", "activity_price", "price", "original_price", "saved_price",
+            "coupon_amount", "has_coupon", "commission_rate", "commission_amount",
+            "sales_tip", "image_url", "mall_name", "updated_at",
+        ), 1),
+    }
+
+    @staticmethod
+    def _displayable_content_filter() -> Dict[str, Any]:
+        """在 Mongo 分页前排除身份裸记录；数值字符串等旧金额仍可展示，真 0 有效。"""
+        return {
+            "name": {"$regex": r"\S"},
+            "$expr": {
+                "$let": {
+                    "vars": {
+                        "display_price": {
+                            "$convert": {
+                                "input": {"$ifNull": ["$activity_price", "$price"]},
+                                "to": "double", "onError": None, "onNull": None,
+                            },
+                        },
+                    },
+                    "in": {"$and": [
+                        # 查询级 $type 会匹配字符串数组，表达式级类型才保证 name 是标量。
+                        {"$eq": [{"$type": "$name"}, "string"]},
+                        {"$in": [
+                            {"$type": {"$ifNull": ["$activity_price", "$price"]}},
+                            ["double", "int", "long", "decimal", "string"],
+                        ]},
+                        {"$gte": ["$$display_price", 0]},
+                        {"$lt": ["$$display_price", float("inf")]},
+                    ]},
+                },
+            },
+        }
 
     @staticmethod
     def _first_present(data: Dict[str, Any], *keys, default=None):
@@ -69,10 +112,15 @@ class ProductRepository(BaseRepository):
         return update_set, insert_set
 
     @staticmethod
-    def _calc_commission(activity_price: float, raw_commission: Any) -> Tuple[float, float]:
+    def _amount_float(value: Any) -> float:
+        """兼容既有数值、数值字符串及 BSON Decimal128 金额。"""
+        return float(value.to_decimal() if isinstance(value, Decimal128) else value)
+
+    @classmethod
+    def _calc_commission(cls, activity_price: float, raw_commission: Any) -> Tuple[float, float]:
         """只计算已知佣金，不为缺失值或真实 0 佣金虚构补贴。"""
-        act_price = float(activity_price if activity_price is not None else 0.0)
-        commission_amount = round(float(raw_commission if raw_commission is not None else 0.0), 2)
+        act_price = cls._amount_float(activity_price if activity_price is not None else 0.0)
+        commission_amount = round(cls._amount_float(raw_commission if raw_commission is not None else 0.0), 2)
         commission_rate = round((commission_amount / act_price) * 100, 1) if act_price > 0 else 0.0
         return commission_rate, commission_amount
 
@@ -138,7 +186,13 @@ class ProductRepository(BaseRepository):
             update_set["channel_type"] = channel_type
 
         if detail:
-            update_set["detail_updated_at"] = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+            detail_updated_at = item.get("detail_updated_at")
+            if not isinstance(detail_updated_at, datetime.datetime):
+                detail_updated_at = datetime.datetime.now(datetime.timezone.utc)
+            elif detail_updated_at.tzinfo is None:
+                # 与 Mongo 默认解码一致：该字段的 naive datetime 契约是 UTC。
+                detail_updated_at = detail_updated_at.replace(tzinfo=datetime.timezone.utc)
+            update_set["detail_updated_at"] = detail_updated_at.astimezone(datetime.timezone.utc).replace(tzinfo=None)
             for key in (
                 "desc", "carousel_images", "product_url", "specs", "detail_tags",
                 "unified_tags", "service_guarantees", "shop_ratings", "coupon_info", "search_id",
@@ -185,7 +239,10 @@ class ProductRepository(BaseRepository):
 
         try:
             cursor = (
-                self.col.find(filter_query)
+                self.col.find(
+                    {"$and": [filter_query, self._displayable_content_filter()]},
+                    self._SUMMARY_PROJECTION,
+                )
                 .sort(sort_spec)
                 .skip(skip)
                 .limit(page_size + 1)
@@ -220,13 +277,13 @@ class ProductRepository(BaseRepository):
         from app.mobile_web.adapters import platform_name
 
         platform, goods_id, goods_sign = self._identity(doc)
-        activity_price = float(self._first_present(doc, "activity_price", "price", default=0.0))
-        original_price = float(self._first_present(doc, "original_price", default=activity_price))
-        saved_price = float(self._first_present(doc, "saved_price", "coupon_amount", default=max(0.0, round(original_price - activity_price, 2))))
-        coupon_amount = float(self._first_present(doc, "coupon_amount", "saved_price", default=0.0))
+        activity_price = self._amount_float(self._first_present(doc, "activity_price", "price", default=0.0))
+        original_price = self._amount_float(self._first_present(doc, "original_price", default=activity_price))
+        saved_price = self._amount_float(self._first_present(doc, "saved_price", "coupon_amount", default=max(0.0, round(original_price - activity_price, 2))))
+        coupon_amount = self._amount_float(self._first_present(doc, "coupon_amount", "saved_price", default=0.0))
         commission_rate, commission_amount = self._calc_commission(activity_price, doc.get("commission_amount"))
         if doc.get("commission_rate") is not None:
-            commission_rate = float(doc["commission_rate"])
+            commission_rate = self._amount_float(doc["commission_rate"])
         updated_at_dt = doc.get("updated_at")
         updated_at_str = updated_at_dt.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at_dt, "strftime") else str(updated_at_dt or "")
         return {
@@ -300,12 +357,26 @@ class ProductRepository(BaseRepository):
         else:
             raise ValueError(f"不支持的商品查询键类型: {key_type}")
         try:
-            doc = self.col.find_one(query)
+            doc = self.col.find_one({"$and": [query, self._displayable_content_filter()]})
             if doc:
                 return self._normalize_doc(doc)
         except Exception as e:
             logger.warning(f"从 Mongo 反查商品详情失败: {e}")
         return None
+
+    def get_product_identity(self, goods_sign: str, platform: str = "pdd") -> Optional[Dict[str, Any]]:
+        """按同平台 Sign 反查可信身份，不要求该记录已有可展示商品内容。"""
+        sign = str(goods_sign or "").strip()
+        if not sign:
+            return None
+        try:
+            return self.col.find_one(
+                {"platform": self._platform(platform), "goods_sign": sign},
+                {"_id": 0, "platform": 1, "product_id": 1, "goods_id": 1, "goods_sign": 1},
+            )
+        except Exception as e:
+            logger.warning(f"从 Mongo 反查商品身份失败: {e}")
+            return None
 
     def get_categories(self, platform: str = "all") -> List[str]:
         """获取类目列表"""
@@ -313,7 +384,7 @@ class ProductRepository(BaseRepository):
         if platform and self._platform(platform) != "all":
             filter_query["platform"] = self._platform(platform)
         try:
-            cats = self.col.distinct("category", filter_query)
+            cats = self.col.distinct("category", {"$and": [filter_query, self._displayable_content_filter()]})
             return [c for c in cats if c and str(c).strip()]
         except Exception as e:
             logger.warning(f"获取类目失败: {e}")
@@ -367,6 +438,22 @@ class ProductRepository(BaseRepository):
             logger.warning(f"[ProductRepository.upsert_product_detail] 详情入库异常: {e}")
             return False
 
+    @classmethod
+    def _promotion_identity(
+        cls, goods_id: Optional[str], goods_sign: Optional[str], goods_key: Optional[str],
+    ) -> Tuple[str, str]:
+        """显式身份不猜类型；仅没有显式身份时兼容旧 goods_key。"""
+        raw_id = str(goods_id).strip() if goods_id is not None else ""
+        sign = str(goods_sign).strip() if goods_sign is not None else ""
+        gid = cls._real_goods_id(raw_id)
+        if not raw_id and not sign:
+            legacy_key = str(goods_key).strip() if goods_key is not None else ""
+            if legacy_key.isdigit():
+                gid = cls._real_goods_id(legacy_key)
+            else:
+                sign = legacy_key
+        return gid, sign
+
     def get_promotion_link_cache(
         self,
         platform: str,
@@ -376,8 +463,7 @@ class ProductRepository(BaseRepository):
     ) -> Optional[Dict[str, Any]]:
         """从 products 集合中读取站长官方推广链接缓存"""
         platform = self._platform(platform)
-        gid = self._real_goods_id(goods_id) or self._real_goods_id(goods_key if goods_key and str(goods_key).isdigit() else None)
-        gsign = str(goods_sign or (goods_key if goods_key and not str(goods_key).isdigit() else "") or "").strip()
+        gid, gsign = self._promotion_identity(goods_id, goods_sign, goods_key)
 
         if gid:
             filter_spec = {"platform": platform, "product_id": gid}
@@ -387,22 +473,28 @@ class ProductRepository(BaseRepository):
             return None
 
         try:
-            doc = self.col.find_one(filter_spec)
-            if doc:
-                promo_data = doc.get("default_promotion")
-                if isinstance(promo_data, dict) and promo_data.get("final_link"):
-                    promo_ts = doc.get("default_promotion_updated_at")
-                    if promo_ts:
-                        try:
-                            import time
-                            doc_ts = promo_ts.timestamp() if hasattr(promo_ts, "timestamp") else 0
-                            if (time.time() - doc_ts) > 3 * 86400:
-                                return None
-                        except Exception:
-                            pass
-                    result = dict(promo_data)
-                    result["from_cache"] = True
-                    return result
+            doc = self.col.find_one(filter_spec, {
+                "_id": 0, "default_promotion": 1, "default_promotion_expires_at": 1,
+            })
+            if not doc:
+                return None
+            promo_data = doc.get("default_promotion")
+            expiry = doc.get("default_promotion_expires_at")
+            if not isinstance(promo_data, dict) or not promo_data.get("final_link"):
+                return None
+            if not isinstance(expiry, datetime.datetime):
+                return None
+            # 新字段只按 UTC 解码；不从旧的本地 updated_at 推测生命周期。
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=datetime.timezone.utc)
+            expires_at = expiry.timestamp()
+            now = time.time()
+            if not math.isfinite(expires_at) or not now < expires_at <= now + PROMOTION_LINK_TTL:
+                return None
+            result = deepcopy(promo_data)
+            result["from_cache"] = True
+            result["_expires_at"] = expires_at
+            return result
         except Exception as e:
             logger.warning(f"读取 products 表官方推广缓存异常: {e}")
         return None
@@ -413,19 +505,30 @@ class ProductRepository(BaseRepository):
         data: Dict[str, Any],
         goods_id: Optional[str] = None,
         goods_sign: Optional[str] = None,
-        goods_key: Optional[str] = None
+        goods_key: Optional[str] = None,
+        expires_at: Optional[float] = None,
     ) -> bool:
-        """持久化保存未登录用户（站长官方位）的转链结果"""
+        """保存官方转链；expires_at 为 UTC Unix 秒时间戳，省略时采用统一 TTL。"""
         if not data or not isinstance(data, dict):
             return False
 
-        now = datetime.datetime.now()
-        cache_data = dict(data)
-        cache_data.pop("from_cache", None)
+        now_ts = time.time()
+        if expires_at is None:
+            expires_at = now_ts + PROMOTION_LINK_TTL
+        if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+            return False
+        if not math.isfinite(expires_at) or not now_ts < expires_at <= now_ts + PROMOTION_LINK_TTL:
+            return False
+        now = datetime.datetime.fromtimestamp(now_ts, datetime.timezone.utc)
+        # BSON datetime 仅有毫秒精度，向下取整，避免内存/持久缓存意外延长寿命。
+        expiry = datetime.datetime.fromtimestamp(math.floor(expires_at * 1000) / 1000, datetime.timezone.utc)
+        cache_data = {
+            key: deepcopy(value) for key, value in data.items()
+            if key not in ("command_text", "from_cache") and not str(key).startswith("_")
+        }
 
         platform = self._platform(platform)
-        gid = self._real_goods_id(goods_id) or self._real_goods_id(goods_key if goods_key and str(goods_key).isdigit() else None)
-        gsign = str(goods_sign or (goods_key if goods_key and not str(goods_key).isdigit() else "") or "").strip()
+        gid, gsign = self._promotion_identity(goods_id, goods_sign, goods_key)
 
         if gid:
             filter_spec = {"platform": platform, "product_id": gid}
@@ -438,6 +541,7 @@ class ProductRepository(BaseRepository):
         update_set.update({
             "default_promotion": cache_data,
             "default_promotion_updated_at": now,
+            "default_promotion_expires_at": expiry,
         })
         insert_set["created_at"] = now
 

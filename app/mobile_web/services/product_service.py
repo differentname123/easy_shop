@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """商品应用服务：平台调度、缓存与本地商品库编排，不解释平台原始字段。"""
+import math
 import time
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from app.mobile_web.adapters import get_adapter, normalize_platform
@@ -58,9 +60,11 @@ class ProductService:
         return result
 
     @staticmethod
-    def _detail_is_fresh(item: dict) -> bool:
-        # 摘要 updated_at 会被推荐流不断更新，不能作为完整详情的新鲜度。
+    def _detail_expires_at(item: dict) -> float:
+        # 摘要时间不能延长完整详情的寿命；Mongo 的 naive 详情时间遵循 UTC 契约。
         updated = item.get("detail_updated_at")
+        if isinstance(updated, bool):
+            return 0.0
         if isinstance(updated, datetime):
             if updated.tzinfo is None:
                 updated = updated.replace(tzinfo=timezone.utc)
@@ -72,18 +76,31 @@ class ProductService:
                 parsed = datetime.fromisoformat(updated)
                 timestamp = (parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)).timestamp()
             except ValueError:
-                return False
+                return 0.0
         else:
-            return False
-        return 0 <= time.time() - timestamp < PRODUCT_DETAIL_TTL
+            return 0.0
+        if not math.isfinite(timestamp) or timestamp > time.time():
+            return 0.0
+        return timestamp + PRODUCT_DETAIL_TTL
+
+    @classmethod
+    def _detail_is_fresh(cls, item: dict) -> bool:
+        return time.time() < cls._detail_expires_at(item)
 
     @staticmethod
-    def _cache_detail(platform: str, result: dict, uid=None):
-        """只缓存来源确认的 ID/Sign；绝不盲信请求提供的另一别名。"""
+    def _database_detail(item: dict, source: str) -> dict:
+        data = deepcopy(item)
+        data.pop("detail_updated_at", None)
+        return {"status": "success", "data": data, "source": source}
+
+    @staticmethod
+    def _cache_detail(platform: str, result: dict, expires_at: float, uid=None):
+        """缓存私有截止时间及可信别名，不将回填时刻当成新的来源时间。"""
         item = result.get("data") or {}
         ref = ProductRef(platform, item.get("goods_id") or item.get("product_id"), item.get("goods_sign"))
+        entry = (expires_at, deepcopy(result))
         for key in ref.cache_keys(uid):
-            DETAIL_CACHE.set(key, result)
+            DETAIL_CACHE.set(key, entry)
 
     def get_goods_detail(self, platform="pdd", goods_id_or_sign="", goods_id=None,
                          goods_sign=None, uid=None, **kwargs) -> Dict[str, Any]:
@@ -99,13 +116,16 @@ class ProductService:
         lookup_ref = ProductRef(plat, "" if ref.goods_sign else ref.goods_id, ref.goods_sign)
         for key in lookup_ref.cache_keys(uid):
             cached = DETAIL_CACHE.get(key)
+            if isinstance(cached, tuple) and len(cached) == 2 and time.time() < cached[0]:
+                return deepcopy(cached[1])
             if cached is not None:
-                return cached
+                DETAIL_CACHE.pop(key)
 
         item = self.repo.get_product_detail(ref.key, platform=plat, key_type="sign" if ref.goods_sign else "id")
-        if item and self._detail_is_fresh(item):
-            result = {"status": "success", "data": item, "source": "database"}
-            self._cache_detail(plat, result, uid)
+        expires_at = self._detail_expires_at(item) if item else 0.0
+        if time.time() < expires_at:
+            result = self._database_detail(item, "database")
+            self._cache_detail(plat, result, expires_at, uid)
             return result
 
         result = adapter.get_goods_detail(goods_id_or_sign=ref.key, goods_id=ref.goods_id or None,
@@ -115,15 +135,17 @@ class ProductService:
             if normalize_platform(data.get("platform") or plat) != plat:
                 return {"status": "error", "error_msg": "商品返回平台不匹配", "error_code": "product_identity_mismatch"}
             data.setdefault("platform", plat)
+            fetched_at = datetime.fromtimestamp(time.time(), timezone.utc)
+            persisted = dict(data, detail_updated_at=fetched_at)
             try:
-                self.repo.upsert_product_detail(data)
+                self.repo.upsert_product_detail(persisted)
             except Exception as exc:
                 logger.warning(f"商品详情入库失败，不影响在线结果: {exc}")
-            self._cache_detail(plat, result, uid)
+            self._cache_detail(plat, result, fetched_at.timestamp() + PRODUCT_DETAIL_TTL, uid)
             return result
         if item:
             # 上游故障仅作本次降级，不缓存整段 TTL，以便恢复后立即重试最新价格。
-            return {"status": "success", "data": item, "source": "database_fallback"}
+            return self._database_detail(item, "database_fallback")
         return result
 
     def get_boom_products(self, platform="all", category=None, keyword=None, sort_by="latest",

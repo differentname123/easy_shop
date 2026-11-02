@@ -7,6 +7,10 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from fastapi.responses import Response
 
+from app.mobile_web.tests.offline_support import BLOCKED_CALLS, install_offline_environment
+
+install_offline_environment()
+
 from app.mobile_web.main import create_app
 from app.mobile_web.adapters import get_adapter
 from app.mobile_web.api import home, goods, promote, user, order
@@ -37,6 +41,10 @@ class MemoryProducts:
     def get_product_detail(self, key, platform="pdd", key_type=None):
         return next((deepcopy(item) for item in PRODUCTS if item["platform"] == platform and
                      key in (item["goods_id"], item["goods_sign"])), None)
+    def get_product_identity(self, goods_sign, platform="pdd"):
+        item = next((item for item in PRODUCTS if item["platform"] == platform
+                     and item["goods_sign"] == goods_sign), None)
+        return {"platform": platform, "product_id": item["goods_id"], "goods_sign": goods_sign} if item else None
     def upsert_home_products(self, items, **kwargs): return len(items)
     def upsert_product_detail(self, item): return True
     def query_boom_products(self, platform="all", keyword=None, page=1, page_size=20, **kwargs):
@@ -95,6 +103,11 @@ adapter.generate_authority_url = lambda uid, **kwargs: {"status": "success", "au
 adapter.fetch_increment_orders = lambda **kwargs: {"status": "success", "order_list": [], "total_count": 0, "has_more": False}
 
 app = create_app()
+
+
+@app.get("/test/offline-status")
+def offline_status():
+    return {"status": "error" if BLOCKED_CALLS else "ok", "blocked_external_calls": list(BLOCKED_CALLS)}
 
 
 @app.get("/test-product.svg")
