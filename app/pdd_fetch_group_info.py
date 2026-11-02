@@ -625,26 +625,6 @@ def normalize_intercept_goods(item, default_category, source_account=""):
 # ==========================================
 def web_search_intercept_task():
     """后台任务：利用 Playwright 拦截指定关键词的商品流数据，严格按 USER_DATA_DIR_LIST 顺序使用与切换账户"""
-    default_keywords = [
-        "猕猴桃", "蒜", "冲牙器",
-        # 基础水饮与酒水
-        "可乐", "牛奶", "果汁", "咖啡", "茶叶", "啤酒", "酸奶", "功能饮料", "气泡水",
-        "奶茶", "豆奶", "苏打水", "鸡尾酒", "红酒", "白酒", "燕麦奶", "柠檬茶", "凉茶",
-        # 休闲零食
-        "零食", "饼干", "薯片", "巧克力", "坚果", "糖果", "火腿肠", "牛肉干", "辣条", "冰淇淋",
-        "果冻", "话梅", "肉脯", "海苔", "曲奇", "瓜子", "花生", "魔芋爽", "凤爪", "鸭脖",
-        # 饱腹代餐与速食
-        "方便面", "面包", "麦片", "速冻水饺", "自热火锅", "螺蛳粉", "酸辣粉", "罐头", "蛋黄酥", "手撕面包",
-        # 厨房粮油与生鲜调味
-        "大米", "面条", "食用油", "酱油", "食盐", "鸡蛋", "蜂蜜", "燕麦片", "火锅底料", "老干妈",
-        "陈醋", "白糖", "鸡精", "豆瓣酱", "蚝油", "芝麻酱", "面粉", "粉丝", "紫菜", "干香菇",
-        # 家庭日用与清洁
-        "抽纸", "卷纸", "湿巾", "洗衣液", "洗洁精", "垃圾袋", "保鲜膜", "保鲜袋", "洁厕灵", "消毒液",
-        "柔顺剂", "洗手液", "驱蚊液", "除湿盒", "厨房纸",
-        # 个人护理与日化
-        "洗发水", "沐浴露", "牙膏", "牙刷", "洗面奶", "护发素", "润唇膏", "身体乳", "卫生巾", "棉签",
-        "洗脸巾", "漱口水", "香皂", "剃须刀", "护手霜"
-    ]
 
     stats_file_path = Path("keyword_intercept_stats.json")
     monitored_file = Path(r"W:\project\python_project\easy_shop\app\web_front\monitored_products.json")
@@ -670,9 +650,6 @@ def web_search_intercept_task():
             logger.error("❌ [UI拦截任务/配置错误] USER_DATA_DIR_LIST 与 USER_DATA_DIR 均为空，等待 60 秒后重试...")
             time.sleep(60)
             continue
-
-        # 1. 健壮读取待搜索关键词（优先读取监控配置，异常或为空时回退到默认词表）
-        search_keywords = default_keywords
         if monitored_file.exists():
             try:
                 monitored_products = read_json(str(monitored_file))
