@@ -10,6 +10,7 @@ from app.mobile_web.adapters.jd_adapter import JdAdapter
 
 _ADAPTERS: Dict[str, BasePlatformAdapter] = {
     "pdd": PddAdapter(),
+    "tb": TaobaoAdapter(),
     "taobao": TaobaoAdapter(),
     "jd": JdAdapter(),
 }

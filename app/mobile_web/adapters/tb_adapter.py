@@ -61,20 +61,9 @@ class TaobaoAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """淘宝商品详情（预留）"""
         return {
-            "status": "success",
-            "data": {
-                "platform": "taobao",
-                "platform_name": "淘宝",
-                "goods_id": str(goods_id_or_sign),
-                "name": "淘宝精选好物",
-                "price": 99.0,
-                "original_price": 129.0,
-                "coupon_amount": 30.0,
-                "has_coupon": True,
-                "carousel_images": [],
-                "detail_tags": ["天猫正品", "退货运费险"],
-                "desc": "官方旗舰店正品保障",
-            }
+            "status": "error",
+            "error_msg": "淘宝官方商品详情待配置正式联盟物料接口",
+            "data": None
         }
 
     def convert_promotion_url(
@@ -112,4 +101,20 @@ class TaobaoAdapter(BasePlatformAdapter):
             "auth_url": "https://pub.alimama.com/",
             "short_url": "https://pub.alimama.com/",
             "msg": "淘宝授权功能已预留"
+        }
+
+    def fetch_increment_orders(
+        self,
+        start_time: int,
+        end_time: int,
+        page: int = 1,
+        page_size: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """淘宝订单增量拉取（预留接入 taobao.tbk.order.details.get）"""
+        return {
+            "status": "success",
+            "order_list": [],
+            "total_count": 0,
+            "msg": "淘宝订单增量接口待配置"
         }

@@ -99,3 +99,23 @@ class BasePlatformAdapter(ABC):
         :return: {"status": "success", "auth_url": str, "short_url": str, "we_app_info": dict}
         """
         pass
+
+    @abstractmethod
+    def fetch_increment_orders(
+        self,
+        start_time: int,
+        end_time: int,
+        page: int = 1,
+        page_size: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        拉取该平台在指定时间范围内的增量订单列表
+        :param start_time: 起始时间戳 (秒)
+        :param end_time: 截止时间戳 (秒)
+        :param page: 页码
+        :param page_size: 每页数量
+        :return: {"status": "success", "order_list": List[Dict], "total_count": int}
+        """
+        pass
+

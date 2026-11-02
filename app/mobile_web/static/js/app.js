@@ -225,6 +225,9 @@ const app = createApp({
 
           localStorage.setItem('easy_shop_uid', data.user.uid);
           localStorage.setItem('easy_shop_phone', data.user.phone);
+          if (data.user.auth_token) {
+            localStorage.setItem('easy_shop_token', data.user.auth_token);
+          }
 
           showToast(isRegisterMode.value ? '注册并登录成功！' : '登录成功！');
           formPassword.value = '';
@@ -258,6 +261,7 @@ const app = createApp({
       };
       localStorage.removeItem('easy_shop_phone');
       localStorage.removeItem('easy_shop_uid');
+      localStorage.removeItem('easy_shop_token');
       userOrdersData.value = {
         total_count: 0,
         total_commission: 0.0,
@@ -270,15 +274,23 @@ const app = createApp({
     };
 
     const fetchUserInfo = async () => {
-      const savedPhone = localStorage.getItem('easy_shop_phone');
-      // 只有本地真正存有已登录手机号时，才恢复登录状态
-      if (!savedPhone) {
-        isLoggedIn.value = false;
+      const savedToken = localStorage.getItem('easy_shop_token');
+      // 必须有已存储的 token 才能恢复会话
+      if (!savedToken) {
+        if (localStorage.getItem('easy_shop_phone')) {
+          handleLogout();
+        } else {
+          isLoggedIn.value = false;
+        }
         return;
       }
 
       try {
-        const res = await fetch(`/api/user/info?phone=${encodeURIComponent(savedPhone)}`);
+        const res = await fetch('/api/user/info', {
+          headers: {
+            'Authorization': `Bearer ${savedToken}`
+          }
+        });
         const data = await res.json();
         if (res.ok && data.status === 'success' && data.user) {
           userProfile.value = data.user;
@@ -286,8 +298,11 @@ const app = createApp({
           userPhone.value = data.user.phone;
           isLoggedIn.value = true;
           localStorage.setItem('easy_shop_uid', data.user.uid);
+          if (data.user.auth_token) {
+            localStorage.setItem('easy_shop_token', data.user.auth_token);
+          }
         } else {
-          // 账号失效，清除本地
+          // 凭证失效，清除本地并退出登录
           handleLogout();
         }
       } catch (err) {
@@ -300,9 +315,19 @@ const app = createApp({
         showToast('请先完成手机号登记注册');
         return;
       }
+      const token = localStorage.getItem('easy_shop_token');
+      if (!token) {
+        handleLogout();
+        showToast('登录凭证已过期，请重新登录');
+        return;
+      }
       isCheckingAuth.value = true;
       try {
-        const res = await fetch(`/api/user/auth?uid=${encodeURIComponent(uid.value)}&platform=${platform}`);
+        const res = await fetch(`/api/user/auth?platform=${platform}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
         const data = await res.json();
         if (data.status === 'success') {
           currentAuthInfo.value = data;
@@ -312,7 +337,12 @@ const app = createApp({
             showToast(`${data.platform_name} 已成功备案！`);
           }
         } else {
-          showToast(data.error_msg || '获取授权状态失败');
+          if (res.status === 401) {
+            handleLogout();
+            showToast('登录凭证已过期，请重新登录');
+          } else {
+            showToast(data.error_msg || data.detail || '获取授权状态失败');
+          }
         }
       } catch (err) {
         showToast('网络请求异常');
@@ -639,16 +669,22 @@ const app = createApp({
       if (!isLoggedIn.value || !uid.value) {
         return;
       }
+      const token = localStorage.getItem('easy_shop_token');
+      if (!token) {
+        return;
+      }
       isSyncingOrders.value = true;
       try {
         const query = new URLSearchParams({
-          uid: uid.value,
           platform: 'pdd',
           days: orderDays.value,
           force: force ? 'true' : 'false',
         });
         const res = await fetch(`/api/order/sync_and_query?${query.toString()}`, {
           method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
         });
         const data = await res.json();
         if (data.status === 'success' && data.data) {
@@ -656,6 +692,9 @@ const app = createApp({
           if (force) {
             showToast('已同步最近23小时官方订单！');
           }
+        } else if (res.status === 401) {
+          handleLogout();
+          showToast('登录凭证已过期，请重新登录');
         }
       } catch (e) {
         showToast('订单同步异常');

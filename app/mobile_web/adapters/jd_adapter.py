@@ -60,20 +60,9 @@ class JdAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """京东商品详情（预留）"""
         return {
-            "status": "success",
-            "data": {
-                "platform": "jd",
-                "platform_name": "京东",
-                "goods_id": str(goods_id_or_sign),
-                "name": "京东精选好物",
-                "price": 88.0,
-                "original_price": 108.0,
-                "coupon_amount": 20.0,
-                "has_coupon": True,
-                "carousel_images": [],
-                "detail_tags": ["京东自营", "次日达"],
-                "desc": "品质保障 售后无忧",
-            }
+            "status": "error",
+            "error_msg": "京东官方商品详情待配置正式联盟物料接口",
+            "data": None
         }
 
     def convert_promotion_url(
@@ -109,4 +98,20 @@ class JdAdapter(BasePlatformAdapter):
             "auth_url": "https://union.jd.com/",
             "short_url": "https://union.jd.com/",
             "msg": "京东授权功能已预留"
+        }
+
+    def fetch_increment_orders(
+        self,
+        start_time: int,
+        end_time: int,
+        page: int = 1,
+        page_size: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """京东订单增量拉取（预留接入 jd.union.open.order.row.query）"""
+        return {
+            "status": "success",
+            "order_list": [],
+            "total_count": 0,
+            "msg": "京东订单增量接口待配置"
         }

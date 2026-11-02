@@ -11,14 +11,9 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from common.mongo_db.mongo_base import gen_db_object
 from common.common_utils import setup_logger
+from app.mobile_web.auth import hash_password, verify_password
 
 logger = setup_logger(app_name="mobile_web")
-
-
-def hash_password(password: str, salt: str = "easy_shop_salt_2026") -> str:
-    """使用加盐 SHA-256 生成密码哈希"""
-    salted = f"{salt}_{password}_{salt}"
-    return hashlib.sha256(salted.encode("utf-8")).hexdigest()
 
 
 class UserRepository:
@@ -91,23 +86,27 @@ class UserRepository:
     ) -> Dict[str, Any]:
         """
         手机号注册登录一体化：
-        - 若手机号已存在：校验密码，成功则登录；
+        - 若手机号已存在：校验密码，成功则登录并平滑升级哈希；
         - 若手机号未存在：自动注册新账号，绑定邀请码，直接登录。
         """
         phone = str(phone).strip()
-        pwd_hash = hash_password(password)
         now = datetime.now(timezone.utc)
 
         existing = self.get_user_by_phone(phone)
         if existing:
-            # 已注册用户：校验密码
-            if existing.get("password_hash") != pwd_hash:
+            # 已注册用户：校验密码（兼容旧加盐 SHA256 与 PBKDF2）
+            stored_hash = existing.get("password_hash")
+            if not verify_password(password, stored_hash):
                 raise ValueError("手机号已注册，输入的密码不正确")
 
-            # 更新最后活跃与登录时间
+            update_fields: Dict[str, Any] = {"last_login_at": now, "last_active_at": now}
+            # 若仍为旧单次 SHA256 哈希，顺带静默平滑升级为 PBKDF2
+            if not str(stored_hash or "").startswith("pbkdf2_sha256$"):
+                update_fields["password_hash"] = hash_password(password)
+
             self.col.update_one(
                 {"phone": phone},
-                {"$set": {"last_login_at": now, "last_active_at": now}}
+                {"$set": update_fields}
             )
             existing["last_login_at"] = now
             existing["last_active_at"] = now
@@ -115,6 +114,7 @@ class UserRepository:
             return existing
 
         # 新用户：注册
+        pwd_hash = hash_password(password)
         new_uid = self.generate_uid()
         my_invite_code = self.generate_unique_invite_code()
         final_nickname = nickname.strip() if (nickname and nickname.strip()) else f"推手_{phone[-4:]}"

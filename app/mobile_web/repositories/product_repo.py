@@ -3,8 +3,9 @@
 商品数据仓储模块 (MongoDB: products 集合)
 用于爆单推广库商品的多维度筛选、聚合排序与分页查询。
 """
+import re
 import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pymongo import UpdateOne
 from common.mongo_db.mongo_base import gen_db_object
 from app.mobile_web.config import logger
@@ -25,6 +26,19 @@ class ProductRepository:
     def col(self):
         return self._db.get_collection(self.COLLECTION_NAME)
 
+    @staticmethod
+    def _calc_commission(activity_price: float, raw_commission: Any) -> Tuple[float, float]:
+        """统一佣金比例与金额计算逻辑，杜绝冗余重复"""
+        act_price = float(activity_price or 0.0)
+        commission_amount = round(float(raw_commission or 0.0), 2)
+        if commission_amount > 0 and act_price > 0:
+            commission_rate = round((commission_amount / act_price) * 100, 1)
+        else:
+            commission_rate = 10.0
+            if act_price > 0 and commission_amount == 0.0:
+                commission_amount = round(act_price * (commission_rate / 100.0), 2)
+        return commission_rate, commission_amount
+
     def query_boom_products(
         self,
         platform: str = "all",
@@ -43,8 +57,8 @@ class ProductRepository:
         :param page: 页码
         :param page_size: 每页数量
         """
-        page = max(1, int(page or 1))
-        page_size = max(1, min(100, int(page_size or 20)))
+        page = max(1, min(50, int(page or 1)))
+        page_size = max(1, min(50, int(page_size or 20)))
         skip = (page - 1) * page_size
 
         filter_query: Dict[str, Any] = {}
@@ -57,9 +71,10 @@ class ProductRepository:
         if category and category.strip() and category != "全部":
             filter_query["category"] = category.strip()
 
-        # 关键词模糊搜索
+        # 关键词模糊搜索 (使用 re.escape 彻底转义特殊元字符，截断长度防 ReDoS)
         if keyword and keyword.strip():
-            filter_query["name"] = {"$regex": keyword.strip(), "$options": "i"}
+            safe_kw = re.escape(keyword.strip()[:30])
+            filter_query["name"] = {"$regex": safe_kw, "$options": "i"}
 
         # 排序规则
         sort_mapping = {
@@ -71,18 +86,25 @@ class ProductRepository:
         sort_spec = sort_mapping.get(sort_by, [("updated_at", -1)])
 
         try:
-            total_count = self.col.count_documents(filter_query)
-            cursor = self.col.find(filter_query).sort(sort_spec).skip(skip).limit(page_size)
-            items = []
-            for doc in cursor:
-                items.append(self._normalize_doc_summary(doc))
+            # 使用游标 + 预查 1 条探测下一页，并附加 2000ms 硬超时；
+            # 避免在带有正则模糊查询时触发全表扫描的 count_documents
+            cursor = (
+                self.col.find(filter_query)
+                .sort(sort_spec)
+                .skip(skip)
+                .limit(page_size + 1)
+                .max_time_ms(2000)
+            )
+            raw_docs = list(cursor)
+            has_more = len(raw_docs) > page_size
+            items = [self._normalize_doc_summary(doc) for doc in raw_docs[:page_size]]
 
             return {
                 "status": "success",
-                "total_count": total_count,
+                "total_count": len(items) if keyword else (skip + len(raw_docs)),
                 "page": page,
                 "page_size": page_size,
-                "has_more": (skip + len(items)) < total_count,
+                "has_more": has_more,
                 "data": items,
             }
         except Exception as e:
@@ -103,15 +125,8 @@ class ProductRepository:
         original_price = doc.get("original_price") or activity_price
         saved_price = doc.get("saved_price") or max(0.0, round(original_price - activity_price, 2))
 
-        # 真实返利佣金与比例（严格读取当前代码生成的 commission_amount 字段）
-        act_price = float(activity_price or 0.0)
-        commission_amount = round(float(doc.get("commission_amount") or 0.0), 2)
-        if commission_amount > 0 and act_price > 0:
-            commission_rate = round((commission_amount / act_price) * 100, 1)
-        else:
-            commission_rate = 10.0
-            if act_price > 0 and commission_amount == 0.0:
-                commission_amount = round(act_price * (commission_rate / 100.0), 2)
+        # 真实返利佣金与比例（统一使用 _calc_commission）
+        commission_rate, commission_amount = self._calc_commission(activity_price, doc.get("commission_amount"))
 
         updated_at_dt = doc.get("updated_at")
         updated_at_str = updated_at_dt.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at_dt, "strftime") else str(updated_at_dt or "")
@@ -158,15 +173,8 @@ class ProductRepository:
 
         purl = doc.get("product_url", "")
 
-        # 真实返利佣金与比例（严格读取当前代码生成的 commission_amount 字段）
-        act_price = float(activity_price or 0.0)
-        commission_amount = round(float(doc.get("commission_amount") or 0.0), 2)
-        if commission_amount > 0 and act_price > 0:
-            commission_rate = round((commission_amount / act_price) * 100, 1)
-        else:
-            commission_rate = 10.0
-            if act_price > 0 and commission_amount == 0.0:
-                commission_amount = round(act_price * (commission_rate / 100.0), 2)
+        # 真实返利佣金与比例（统一使用 _calc_commission）
+        commission_rate, commission_amount = self._calc_commission(activity_price, doc.get("commission_amount"))
 
         # 处理更新时间
         updated_at_dt = doc.get("updated_at")
@@ -303,6 +311,9 @@ class ProductRepository:
                 "category": item.get("category_name") or item.get("category") or "精选好物",
                 "updated_at": now,
                 "source": "pdd_recommend_stream",
+                "need_reformat": False,
+                "format_status": "success",
+                "format_retry_count": 999,
             }
             if channel_type is not None:
                 update_data["channel_type"] = channel_type
@@ -364,6 +375,9 @@ class ProductRepository:
             "shop_ratings": detail.get("shop_ratings") or {},
             "coupon_info": detail.get("coupon_info") or {},
             "updated_at": now,
+            "need_reformat": False,
+            "format_status": "success",
+            "format_retry_count": 999,
         }
 
         try:

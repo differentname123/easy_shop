@@ -26,7 +26,7 @@ logger = setup_logger(app_name="mobile_web")
 # 全局复用的高性能 HTTP 会话池，消除每次建立连接与 TLS 握手的几秒延迟
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.trust_env = False  # 避免 Windows 系统代理误匹配带来的长延时
-_ADAPTER = HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=2)
+_ADAPTER = HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0)
 _HTTP_SESSION.mount("https://", _ADAPTER)
 _HTTP_SESSION.mount("http://", _ADAPTER)
 
@@ -473,6 +473,7 @@ class PddAdapter(BasePlatformAdapter):
         command_text = self._build_command_text(title, final_raw_link, price, coupon)
         return {
             "status": "success",
+            "is_fallback": True,
             "need_auth": False,
             "link_type": "商品直连保底",
             "final_link": final_raw_link,
@@ -522,3 +523,32 @@ class PddAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error(f"[PddAdapter.generate_authority_url] 生成授权异常: {str(e)}")
             return {"status": "error", "error_msg": str(e)}
+
+    def fetch_increment_orders(
+        self,
+        start_time: int,
+        end_time: int,
+        page: int = 1,
+        page_size: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """拉取拼多多指定时间段的增量订单"""
+        try:
+            from app.pdd_utils import query_increment_orders
+            res = query_increment_orders(
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                start_time=start_time,
+                end_time=end_time,
+                page=page,
+                page_size=page_size,
+            )
+            orders = res.get("order_list", []) if isinstance(res, dict) else []
+            return {
+                "status": "success",
+                "order_list": orders,
+                "total_count": res.get("total_count", len(orders)) if isinstance(res, dict) else len(orders),
+            }
+        except Exception as e:
+            logger.error(f"[PddAdapter.fetch_increment_orders] 增量拉单失败: {e}")
+            return {"status": "error", "error_msg": str(e), "order_list": [], "total_count": 0}
