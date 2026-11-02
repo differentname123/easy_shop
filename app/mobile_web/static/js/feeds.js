@@ -228,6 +228,10 @@
       activeBoomKeyword = boomSearchKeyword.value.trim();
       return loadBoomGoods(true);
     };
+    const clearBoomSearch = () => {
+      boomSearchKeyword.value = '';
+      return onSearchBoom();
+    };
     const switchBoomPlatform = code => {
       const platform = boomPlatforms.value.find(item => item.code === code);
       if (!platform || !platform.active) {
@@ -246,7 +250,7 @@
       homeLoading, homeHasMore, homeError, loadHomeChannels, loadPlatforms, loadHomeGoods,
       retryLoadHomeGoods, onSearchHome, clearHomeSearch, switchChannel, initializeHome, saveSearchState,
       boomPlatforms, boomPlatform, boomSearchKeyword, boomSortBy, boomGoodsList, boomLoading, boomHasMore,
-      loadBoomGoods, onSearchBoom, switchBoomPlatform, switchBoomSort,
+      loadBoomGoods, onSearchBoom, clearBoomSearch, switchBoomPlatform, switchBoomSort,
       dispose: () => { homeGeneration += 1; boomGeneration += 1; },
     };
   };

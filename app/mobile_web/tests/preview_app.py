@@ -53,7 +53,7 @@ class MemoryUsers:
         self.profile = None
     def register_or_login(self, phone, password, nickname=None, invite_code=None):
         self.profile = {"uid": "u_12345678", "phone": phone, "nickname": nickname or "离线测试用户",
-                        "invite_code": "SMOKE01", "balance": 0, "total_rebate": 0, "pending_rebate": 0,
+                        "avatar": "", "invite_code": "SMOKE01", "balance": 0, "total_rebate": 0, "pending_rebate": 0,
                         "auth_status": {"pdd": {"is_authorized": False, "bind": 0}}}
         return deepcopy(self.profile)
     def get_user_by_uid(self, uid):

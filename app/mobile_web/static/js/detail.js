@@ -24,6 +24,13 @@
       if (Array.isArray(goods.value.carousel_images) && goods.value.carousel_images.length) return goods.value.carousel_images;
       return [goods.value.image_url || 'https://img.pddpic.com/mms-avatar/default_avatar.png'];
     });
+    const detailGalleryList = computed(() => {
+      if (!goods.value) return [];
+      const list = Array.isArray(goods.value.carousel_images) && goods.value.carousel_images.length
+        ? goods.value.carousel_images
+        : (goods.value.image_url ? [goods.value.image_url] : []);
+      return list.length > 1 ? list.slice(1) : list;
+    });
     const realSpecs = computed(() => !goods.value || !Array.isArray(goods.value.specs) ? [] :
       goods.value.specs.filter(spec => spec && spec.label && spec.value));
     const onCarouselScroll = () => {
@@ -170,10 +177,10 @@
       browser.dispose();
     };
     return {
-      ...browser, goods, carouselRef, currentImgIndex, carouselList, realSpecs, isLoggedIn, uid,
+      ...browser, goods, carouselRef, currentImgIndex, carouselList, detailGalleryList, realSpecs, isLoggedIn, uid,
       isDeepLoading, detailError, onCarouselScroll, goHome, goBack, goToRegister,
       retryLoadDeepDetail: loadDeepDetail, handleJumpToBuy, handleCopyPromoteLink, initialize, dispose,
-      formatMoney: shop.formatMoney,
+      formatMoney: shop.formatMoney, formatSales: shop.formatSales,
     };
   };
   const { createApp, ref, computed, onMounted, onUnmounted } = global.Vue;

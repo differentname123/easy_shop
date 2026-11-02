@@ -60,6 +60,16 @@ class ProductSummary(BaseModel):
     category: str = "精选好物"
     updated_at: Optional[str] = None
 
+    def model_dump(self, **kwargs) -> Dict[str, Any]:
+        """兼顾 Pydantic v1 (.dict) 与 v2 (.model_dump)"""
+        dump_fn = getattr(super(), "model_dump", None)
+        if callable(dump_fn):
+            return dump_fn(**kwargs)
+        return self.dict(exclude_unset=kwargs.get("exclude_unset", False))
+
+    def to_dict(self, **kwargs) -> Dict[str, Any]:
+        return self.model_dump(**kwargs)
+
 
 class ProductDetail(ProductSummary):
     """完整商品详情，商业承诺和券信息仅保存来源提供的真实值。"""

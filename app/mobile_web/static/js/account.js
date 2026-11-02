@@ -2,9 +2,10 @@
 (function (global) {
   'use strict';
   const shop = global.EasyShop = global.EasyShop || {};
+  const DEFAULT_AVATAR = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="%23f0f2f5"/><circle cx="32" cy="24" r="12" fill="%23cbd5e1"/><path d="M14 54c0-10 8-18 18-18s18 8 18 18" fill="%23cbd5e1"/></svg>';
   shop.createAccount = function ({ ref, api, session, showToast }) {
     const emptyProfile = () => ({
-      uid: '', phone: '', nickname: '未登录', avatar: 'https://img.pddpic.com/mms-avatar/default_avatar.png',
+      uid: '', phone: '', nickname: '未登录', avatar: DEFAULT_AVATAR,
       invite_code: '', invited_by: null, balance: 0, total_rebate: 0, pending_rebate: 0,
       auth_status: { pdd: { is_authorized: false, bind: 0 }, taobao: { is_authorized: false, bind: 0 }, jd: { is_authorized: false, bind: 0 } },
     });
@@ -27,7 +28,7 @@
     const userOrdersData = ref(emptyOrders());
     let orderGeneration = 0;
     const applyUser = user => {
-      userProfile.value = user;
+      userProfile.value = { ...emptyProfile(), ...user, avatar: user.avatar || DEFAULT_AVATAR };
       uid.value = user.uid;
       userPhone.value = user.phone;
       isLoggedIn.value = true;
@@ -146,11 +147,15 @@
       orderDays.value = days;
       return syncAndQueryOrders(false);
     };
+    const handleAvatarError = e => {
+      if (e && e.target) e.target.src = DEFAULT_AVATAR;
+    };
     return {
       isLoggedIn, uid, userPhone, userProfile, isRegisterMode, formPhone, formPassword,
       formNickname, formInviteCode, isSubmittingAuth, handleRegisterOrLogin, handleLogout, fetchUserInfo,
       isAuthModalOpen, currentAuthInfo, isCheckingAuth, handleCheckAndGetAuth,
       orderDays, isSyncingOrders, userOrdersData, syncAndQueryOrders, switchOrderDays,
+      defaultAvatar: DEFAULT_AVATAR, handleAvatarError,
       dispose: () => { orderGeneration += 1; },
     };
   };

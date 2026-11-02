@@ -130,7 +130,8 @@
       });
       return {
         ...browser, ...account, ...feeds, currentTab, isHeaderHidden,
-        formatPhone: shop.formatPhone, formatMoney: shop.formatMoney, goodsKey: shop.goodsKey, openGoodsDetail,
+        formatPhone: shop.formatPhone, formatMoney: shop.formatMoney, formatSales: shop.formatSales,
+        goodsKey: shop.goodsKey, openGoodsDetail,
       };
     },
   }).mount('#app');

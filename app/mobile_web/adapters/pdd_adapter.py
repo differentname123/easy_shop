@@ -84,7 +84,7 @@ class PddAdapter(BasePlatformAdapter):
         for source, target in (("brand_name", "brand"), ("category_name", "category"), ("mall_name", "mall_name")):
             if raw_cleaned.get(source):
                 data[target] = raw_cleaned[source]
-        return ProductSummary(**data).model_dump(exclude_unset=True)
+        return ProductSummary(**data).to_dict(exclude_unset=True)
 
     def _normalize_goods(self, raw_cleaned: dict) -> dict:
         """商业承诺、评分与券库存只使用来源数据，缺失即留空。"""
@@ -116,7 +116,7 @@ class PddAdapter(BasePlatformAdapter):
             "specs": specs,
             "coupon_info": coupon_info,
         })
-        result = ProductDetail(**data).model_dump(exclude_unset=True)
+        result = ProductDetail(**data).to_dict(exclude_unset=True)
         result.update({
             "brand_name": raw_cleaned.get("brand_name") or "",
             "category_name": raw_cleaned.get("category_name") or "",

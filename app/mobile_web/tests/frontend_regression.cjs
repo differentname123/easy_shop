@@ -477,3 +477,132 @@ test('scroll anchoring is disabled in CSS and app.js enforces sentinel tab-isola
     'app.js enforces cooldown on automatic bottom feed fetches');
 });
 
+test('visual fixes: search input does not abruptly collapse channel bar, safe top transitions exist', () => {
+  const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'static', 'css', 'style.css'), 'utf8');
+
+  // Channel scroller is guarded by activeHomeKeyword instead of homeSearchKeyword
+  assert.ok(indexHtml.includes('v-if="!activeHomeKeyword"'), 'Channel bar visibility depends on committed search keyword');
+  assert.ok(indexHtml.includes(":class=\"{ 'is-searching': Boolean(activeHomeKeyword) }\""), 'Home tab page applies is-searching dynamically');
+
+  // CSS transitions
+  assert.ok(css.includes('.tab-page.tab-home.is-searching'), 'CSS provides dedicated padding for is-searching');
+  assert.ok(css.includes('var(--safe-top)'), 'CSS uses safe-top for top header');
+});
+
+test('visual fixes: boom tab has flame icon, clear search button, and disabled platform badges', () => {
+  const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'static', 'css', 'style.css'), 'utf8');
+
+  // Flame icon on boom tab
+  assert.ok(indexHtml.includes('d="M13.5.67s.74 2.65.74 4.8'), 'Boom tab bar uses flame SVG icon');
+  // Clear button for boom search
+  assert.ok(indexHtml.includes('clearBoomSearch'), 'Boom tab includes clear search button');
+  // Disabled chip badge
+  assert.ok(indexHtml.includes('plat-chip-badge'), 'Platform chip includes badge');
+  assert.ok(css.includes('.plat-chip[aria-disabled="true"]'), 'CSS defines disabled state styling for unavailable platform');
+});
+
+test('clearBoomSearch clears keyword and reloads default boom feed', async () => {
+  const h = harness(), feed = h.makeFeeds();
+  feed.boomSearchKeyword.value = '蓝牙耳机';
+  const searchPromise = feed.onSearchBoom();
+  assert.equal(new URL(h.requests[0].url, 'https://shop.test').searchParams.get('keyword'), '蓝牙耳机');
+  await h.finish(0, { status: 'success', data: [], has_more: false });
+  await searchPromise;
+
+  const resetPromise = feed.clearBoomSearch();
+  assert.equal(feed.boomSearchKeyword.value, '');
+  assert.equal(new URL(h.requests[1].url, 'https://shop.test').searchParams.get('keyword'), '');
+  await h.finish(1, { status: 'success', data: [], has_more: false });
+  await resetPromise;
+});
+
+test('visual fixes: avatar error fallback, receipt order icon, and orderDays 0 message', () => {
+  const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const accountJs = fs.readFileSync(path.join(scripts, 'account.js'), 'utf8');
+
+  // Avatar error fallback
+  assert.ok(accountJs.includes('DEFAULT_AVATAR'), 'account.js defines inline SVG DEFAULT_AVATAR');
+  assert.ok(accountJs.includes('handleAvatarError'), 'account.js exports handleAvatarError');
+  assert.ok(indexHtml.includes('handleAvatarError'), 'index.html attaches handleAvatarError to user avatar');
+
+  // Order icon is receipt (path with M19 3H5... 10H7v-2h10v2...)
+  assert.ok(indexHtml.includes('10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z'), 'Order section title uses receipt SVG icon');
+
+  // PDD badge is CSS badge matching Taobao and JD
+  assert.ok(indexHtml.includes('>拼</span>'), 'PDD authorization card uses CSS text badge');
+
+  // orderDays === 0 empty state
+  assert.ok(indexHtml.includes("orderDays === 0 ? '全部历史暂无出单记录"), 'Empty order message correctly addresses all-history (0 days)');
+});
+
+test('visual fixes: detail page safe-top, word break, ratings, tags, specs icon, and gallery flow', () => {
+  const detailHtml = fs.readFileSync(path.join(root, 'static', 'detail.html'), 'utf8');
+  const detailJs = fs.readFileSync(path.join(scripts, 'detail.js'), 'utf8');
+
+  // Safe area on detail navbar and container
+  assert.ok(detailHtml.includes('height: calc(48px + var(--safe-top));'), 'Detail nav bar uses safe-top');
+  assert.ok(detailHtml.includes('padding-top: calc(48px + var(--safe-top));'), 'Detail container offsets content by safe-top');
+
+  // Word breaking
+  assert.ok(detailHtml.includes('overflow-wrap: break-word;'), 'Detail h1 title uses overflow-wrap: break-word');
+
+  // Unused footer CSS removed
+  assert.ok(!detailHtml.includes('.detail-fixed-footer'), 'Dead .detail-fixed-footer CSS removed');
+
+  // Ratings and guarantees mounted
+  assert.ok(detailHtml.includes('shop-ratings-strip'), 'Detail mounts shop-ratings-strip');
+  assert.ok(detailHtml.includes('service-guarantees-grid'), 'Detail mounts service-guarantees-grid');
+
+  // Specs icon is sliders SVG
+  assert.ok(detailHtml.includes('d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2z'), 'Specs table uses sliders/parameters SVG icon');
+
+  // Gallery flow uses detailGalleryList to avoid hero image duplication
+  assert.ok(detailJs.includes('detailGalleryList'), 'detail.js exports detailGalleryList');
+  assert.ok(detailHtml.includes('detailGalleryList'), 'detail.html iterates over detailGalleryList');
+});
+
+test('formatSales produces universal sales text across multi-platform formats', () => {
+  const shop = harness().context.EasyShop;
+  assert.equal(shop.formatSales('1869'), '已售 1869');
+  assert.equal(shop.formatSales('已拼 1869'), '已售 1869');
+  assert.equal(shop.formatSales('已拼10万+'), '已售 10万+');
+  assert.equal(shop.formatSales('月销 2000'), '月销 2000');
+  assert.equal(shop.formatSales('热销1000件'), '热销1000件');
+  assert.equal(shop.formatSales('100+'), '已售 100+');
+  assert.equal(shop.formatSales('0'), '热销爆款');
+  assert.equal(shop.formatSales(''), '热销爆款');
+  assert.equal(shop.formatSales(null), '热销爆款');
+});
+
+test('goods card layout eliminates bottom-right void and highlights coupon/rebate tags', () => {
+  const indexHtml = fs.readFileSync(path.join(root, 'static', 'index.html'), 'utf8');
+  const detailHtml = fs.readFileSync(path.join(root, 'static', 'detail.html'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'static', 'css', 'style.css'), 'utf8');
+
+  // No hardcoded "已拼" in index.html or detail.html
+  assert.ok(!indexHtml.includes("'已拼 '"), 'index.html no longer hardcodes 已拼');
+  assert.ok(!detailHtml.includes('已拼 {{'), 'detail.html no longer hardcodes 已拼');
+
+  // Both index.html and detail.html use formatSales
+  assert.ok(indexHtml.includes('formatSales(item.sales_tip)'), 'index.html uses formatSales');
+  assert.ok(detailHtml.includes('formatSales(goods.sales_tip)'), 'detail.html uses formatSales');
+
+  // Action button in index.html
+  assert.ok(indexHtml.includes('goods-action-btn'), 'index.html includes right-bottom action button');
+  assert.ok(indexHtml.includes("item.has_coupon ? '去领券' : '马上抢'"), 'index.html shows dynamic CTA text');
+
+  // Dual-tone tags with tag-badge and tag-val
+  assert.ok(indexHtml.includes('tag-badge'), 'index.html uses tag-badge for highlighted chips');
+  assert.ok(indexHtml.includes('tag-val'), 'index.html uses tag-val for amounts');
+
+  // CSS definitions
+  assert.ok(css.includes('.goods-action-btn'), 'CSS defines goods-action-btn');
+  assert.ok(css.includes('.goods-footer'), 'CSS defines goods-footer layout');
+  assert.ok(css.includes('.coupon-tag .tag-badge'), 'CSS defines dual-tone coupon badge');
+  assert.ok(css.includes('.rebate-tag .tag-badge'), 'CSS defines dual-tone rebate badge');
+});
+
+
+

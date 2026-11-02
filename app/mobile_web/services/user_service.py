@@ -144,7 +144,7 @@ class UserService:
             return {
                 "status": "success", "platform": plat, "platform_name": adapter.platform_name,
                 "is_authorized": False, "bind": bind,
-                "msg": f"用户 [{uid}] 尚未在 {adapter.platform_name} 完成授权，请点击链接前往授权",
+                "msg": f"您尚未在 {adapter.platform_name} 完成授权备案，请点击下方按钮前往授权",
                 "auth_url": auth_url, "short_url": url_result.get("short_url") or auth_url,
                 "we_app_info": url_result.get("we_app_info", {})
             }
@@ -157,6 +157,6 @@ class UserService:
         return {
             "status": "success", "platform": platform, "platform_name": name,
             "is_authorized": True, "bind": bind,
-            "msg": f"用户 [{uid}] 已成功完成 {name} 渠道授权备案",
+            "msg": f"您已成功完成 {name} 渠道授权备案",
             "auth_url": "", "short_url": ""
         }

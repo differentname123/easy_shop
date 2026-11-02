@@ -14,7 +14,7 @@
 <div id="app">
 
   <!-- ==================== TAB 1: 首页 (拼多多进宝官方推荐) ==================== -->
-  <div v-show="currentTab === 'home'" class="tab-page tab-home">
+  <div v-show="currentTab === 'home'" class="tab-page tab-home" :class="{ 'is-searching': Boolean(activeHomeKeyword) }">
     <header class="top-header" :class="{ 'header-hidden': isHeaderHidden }">
       <div class="search-box">
         <div class="search-input-wrap">
@@ -32,7 +32,7 @@
       </div>
 
       <!-- 推荐频道滑动栏 -->
-      <nav class="channel-scroller" v-if="!homeSearchKeyword">
+      <nav class="channel-scroller" v-if="!activeHomeKeyword">
         <div 
           v-for="ch in homeChannels" 
           :key="ch.channel_type"
@@ -60,18 +60,31 @@
         <div class="goods-body">
           <h4 class="goods-title">{{ item.name }}</h4>
           <div class="goods-tags">
-            <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">券减 ¥{{ item.coupon_amount }}</span>
-            <span v-if="item.commission_amount > 0" class="rebate-tag">补贴 ¥{{ item.commission_amount }}</span>
+            <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">
+              <span class="tag-badge">券</span>
+              <span class="tag-val">减¥{{ formatMoney(item.coupon_amount) }}</span>
+            </span>
+            <span v-if="item.commission_amount > 0" class="rebate-tag">
+              <span class="tag-badge">补贴</span>
+              <span class="tag-val">¥{{ formatMoney(item.commission_amount) }}</span>
+            </span>
           </div>
-          <div class="price-row">
-            <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
-            <span class="price-unit">¥</span>
-            <span class="price-value">{{ item.price }}</span>
-            <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
-          </div>
-          <div class="sales-row">
-            <span class="sales-tip">{{ item.sales_tip ? '已拼 ' + item.sales_tip : '热销爆款' }}</span>
-            <span class="mall-tip" v-if="item.mall_name">{{ item.mall_name }}</span>
+          <div class="goods-footer">
+            <div class="goods-price-box">
+              <div class="price-row">
+                <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
+                <span class="price-unit">¥</span>
+                <span class="price-value">{{ formatMoney(item.price) }}</span>
+              </div>
+              <div class="meta-row">
+                <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ formatMoney(item.original_price) }}</span>
+                <span class="sales-tip">{{ formatSales(item.sales_tip) }}</span>
+              </div>
+            </div>
+            <div class="goods-action-btn">
+              <span>{{ item.has_coupon ? '去领券' : '马上抢' }}</span>
+              <svg class="action-arrow" viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
+            </div>
           </div>
         </div>
       </div>
@@ -84,7 +97,10 @@
         <div class="skeleton-body">
           <div class="skeleton-line line-title"></div>
           <div class="skeleton-line line-tags"></div>
-          <div class="skeleton-line line-price"></div>
+          <div class="skeleton-footer">
+            <div class="skeleton-line line-price"></div>
+            <div class="skeleton-line line-btn"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -129,6 +145,7 @@
             v-model="boomSearchKeyword"
             @keyup.enter="onSearchBoom"
           />
+          <button v-if="boomSearchKeyword" class="search-clear-btn" @click="clearBoomSearch" title="清空搜索">✕</button>
         </div>
         <button class="search-btn" @click="onSearchBoom">搜索</button>
       </div>
@@ -144,7 +161,7 @@
           :title="p.active ? p.name : p.name + '暂未开放'"
           @click="switchBoomPlatform(p.code)"
         >
-          {{ p.name }}
+          {{ p.name }}<span v-if="!p.active" class="plat-chip-badge">待开放</span>
         </div>
       </div>
 
@@ -171,18 +188,31 @@
         <div class="goods-body">
           <h4 class="goods-title">{{ item.name }}</h4>
           <div class="goods-tags">
-            <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">券减 ¥{{ item.coupon_amount }}</span>
-            <span v-if="item.commission_amount > 0" class="rebate-tag">补贴 ¥{{ item.commission_amount }}</span>
+            <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">
+              <span class="tag-badge">券</span>
+              <span class="tag-val">减¥{{ formatMoney(item.coupon_amount) }}</span>
+            </span>
+            <span v-if="item.commission_amount > 0" class="rebate-tag">
+              <span class="tag-badge">补贴</span>
+              <span class="tag-val">¥{{ formatMoney(item.commission_amount) }}</span>
+            </span>
           </div>
-          <div class="price-row">
-            <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
-            <span class="price-unit">¥</span>
-            <span class="price-value">{{ item.price }}</span>
-            <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
-          </div>
-          <div class="sales-row">
-            <span class="sales-tip">{{ item.sales_tip ? '已拼 ' + item.sales_tip : '热卖中' }}</span>
-            <span class="mall-tip" v-if="item.brand || item.mall_name">{{ item.brand || item.mall_name }}</span>
+          <div class="goods-footer">
+            <div class="goods-price-box">
+              <div class="price-row">
+                <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
+                <span class="price-unit">¥</span>
+                <span class="price-value">{{ formatMoney(item.price) }}</span>
+              </div>
+              <div class="meta-row">
+                <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ formatMoney(item.original_price) }}</span>
+                <span class="sales-tip">{{ formatSales(item.sales_tip) }}</span>
+              </div>
+            </div>
+            <div class="goods-action-btn">
+              <span>{{ item.has_coupon ? '去领券' : '马上抢' }}</span>
+              <svg class="action-arrow" viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg>
+            </div>
           </div>
         </div>
       </div>
@@ -195,7 +225,10 @@
         <div class="skeleton-body">
           <div class="skeleton-line line-title"></div>
           <div class="skeleton-line line-tags"></div>
-          <div class="skeleton-line line-price"></div>
+          <div class="skeleton-footer">
+            <div class="skeleton-line line-price"></div>
+            <div class="skeleton-line line-btn"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -221,7 +254,7 @@
     <!-- 头部身份卡片 (已登录展示) -->
     <div class="user-profile-header" v-if="isLoggedIn">
       <div class="user-info-row">
-        <img :src="userProfile.avatar" class="user-avatar" alt="用户头像" />
+        <img :src="userProfile.avatar || defaultAvatar" @error="handleAvatarError" class="user-avatar" alt="用户头像" />
         <div class="user-meta">
           <h3>{{ userProfile.nickname }}</h3>
           <div class="phone-text" v-if="userProfile.phone">手机号: {{ formatPhone(userProfile.phone) }}</div>
@@ -327,7 +360,7 @@
     <div class="order-section-card" v-if="isLoggedIn">
       <div class="order-sec-header">
         <div class="order-sec-title">
-          <svg style="width:16px;height:16px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z"/></svg>
+          <svg style="width:16px;height:16px;fill:var(--primary-color)" viewBox="0 0 24 24"><path d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10H7v-2h10v2zm0-4H7V7h10v2zm0 8H7v-2h10v2z"/></svg>
           我的返利订单
         </div>
         <button 
@@ -355,8 +388,8 @@
             <h4 class="order-item-title">{{ ord.goods_name }}</h4>
             <div class="order-item-bottom">
               <div>
-                <span style="color:var(--text-muted)">实付: ¥{{ ord.order_amount_yuan }}</span>
-                <span style="color:var(--primary-color);font-weight:700;margin-left:6px">返 ¥{{ ord.promotion_amount_yuan }}</span>
+                <span style="color:var(--text-muted)">实付: ¥{{ formatMoney(ord.order_amount_yuan) }}</span>
+                <span style="color:var(--primary-color);font-weight:700;margin-left:6px">返 ¥{{ formatMoney(ord.promotion_amount_yuan) }}</span>
               </div>
               <span 
                 class="order-status-tag"
@@ -369,7 +402,7 @@
         </div>
       </div>
       <div v-else class="empty-wrap" style="padding:24px 0;font-size:12px">
-        {{ isSyncingOrders ? '正在同步订单数据...' : '近 ' + orderDays + ' 天内暂无出单记录，快去分享商品赚佣吧！' }}
+        {{ isSyncingOrders ? '正在同步订单数据...' : (orderDays === 0 ? '全部历史暂无出单记录，快去分享商品赚佣吧！' : '近 ' + orderDays + ' 天内暂无出单记录，快去分享商品赚佣吧！') }}
       </div>
     </div>
 
@@ -383,7 +416,7 @@
     <div class="auth-card">
       <div class="auth-header">
         <div class="auth-plat-info">
-          <img src="https://funimg.pddpic.com/common/jinbao/c5231b6b-172b-456a-a6e1-7de567e6bc9b.png.slim.png" class="auth-icon" alt="PDD" />
+          <span style="display:inline-block;width:24px;height:24px;background:#e02e24;color:#fff;text-align:center;line-height:24px;border-radius:4px;font-size:12px;font-weight:700">拼</span>
           <span>拼多多官方推手备案</span>
         </div>
         <span 
@@ -468,7 +501,7 @@
       <span>首页</span>
     </div>
     <div class="tab-item" :class="{ active: currentTab === 'boom' }" @click="currentTab = 'boom'">
-      <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-7 14l-5-5 1.41-1.41L12 14.17l7.59-7.59L21 8l-9 9z"/></svg>
+      <svg viewBox="0 0 24 24"><path d="M13.5.67s.74 2.65.74 4.8c0 2.06-1.35 3.73-3.41 3.73-2.07 0-3.63-1.67-3.63-3.73l.03-.36C5.21 7.51 4 10.61 4 14c0 4.42 3.58 8 8 8s8-3.58 8-8C20 8.61 17.41 3.8 13.5.67zM11.71 19c-1.78 0-3.22-1.4-3.22-3.14 0-1.62 1.05-2.76 2.81-3.12 1.77-.36 3.6-1.21 4.62-2.58.39 1.29.59 2.65.59 4.04 0 2.65-2.15 4.8-4.8 4.8z"/></svg>
       <span>爆单推广</span>
     </div>
     <div class="tab-item" :class="{ active: currentTab === 'user' }" @click="currentTab = 'user'">
