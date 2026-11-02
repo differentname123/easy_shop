@@ -462,3 +462,18 @@ test('summary identity prioritizes a supplied Sign and preserves known zero coup
   assert.notEqual(shop.goodsKey({ goods_id: 'A' }), shop.goodsKey({ goods_sign: 'A' }));
   assert.equal(shop.promotionPayload({ price: 0, coupon_amount: 0, saved_price: 10 }, '').coupon_amount, 0);
 });
+
+test('scroll anchoring is disabled in CSS and app.js enforces sentinel tab-isolation', () => {
+  const css = fs.readFileSync(path.join(root, 'static', 'css', 'style.css'), 'utf8');
+  assert.ok(css.includes('overflow-anchor: none'), 'CSS disables scroll anchoring');
+  assert.ok(css.includes('#homeBottomSentinel'), 'CSS includes sentinel selector for overflow-anchor');
+
+  const appSource = fs.readFileSync(path.join(scripts, 'app.js'), 'utf8');
+  assert.ok(appSource.includes("entry.target.id === 'homeBottomSentinel' && currentTab.value === 'home'"),
+    'app.js isolates home sentinel to home tab');
+  assert.ok(appSource.includes("entry.target.id === 'boomBottomSentinel' && currentTab.value === 'boom'"),
+    'app.js isolates boom sentinel to boom tab');
+  assert.ok(appSource.includes('lastFeedFetchTime'),
+    'app.js enforces cooldown on automatic bottom feed fetches');
+});
+

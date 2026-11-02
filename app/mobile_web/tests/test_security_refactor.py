@@ -11,10 +11,8 @@
 7. API 参数边界防御与接口鉴权 (Pydantic / Query 边界校验, 401/422 状态码)
 """
 import asyncio
-import copy
 import hashlib
 import re
-import threading
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -41,8 +39,6 @@ from app.mobile_web.repositories.product_repo import ProductRepository
 from app.mobile_web.repositories.user_repo import UserRepository
 from app.mobile_web.services.user_service import UserService
 from app.mobile_web.services.order_service import OrderService, _SYNC_LOCK
-from app.mobile_web.services.product_service import ProductService
-from app.mobile_web.services.promote_service import PromoteService
 
 
 # ==================== 1. 认证鉴权与密码安全测试 ====================

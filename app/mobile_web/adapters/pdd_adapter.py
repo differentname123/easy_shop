@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """拼多多边界：SDK 调用、原始字段转换、商品标识与推广降级策略。"""
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from urllib.parse import urlencode, urlsplit
 from app.mobile_web.adapters.base import BasePlatformAdapter, build_command_text
 from app.mobile_web.models.product import ProductRef, ProductSummary, ProductDetail, clean_product_id

@@ -9,7 +9,7 @@ from app.mobile_web.repositories.product_repo import ProductRepository
 from app.mobile_web.cache import RECOMMEND_CACHE, DETAIL_CACHE, SEARCH_CACHE, CATEGORY_CACHE
 from app.mobile_web.config import PRODUCT_DETAIL_TTL, logger
 
-# 保留既有依赖方使用的缓存别名。
+# 兼容统一缓存分域别名，供测试及向后兼容使用
 _RECOMMEND_CACHE = RECOMMEND_CACHE
 _DETAIL_CACHE = DETAIL_CACHE
 _SEARCH_CACHE = SEARCH_CACHE

@@ -18,16 +18,31 @@ class BaseRepository:
             self._ensure_indexes()
 
     def _ensure_indexes(self):
-        if not self.COLLECTION_NAME or getattr(self._index_state, "building", False):
+        if not self.COLLECTION_NAME or getattr(self._index_state, "building", False) or self._db is None:
             return
-        key = (id(self._db), self.COLLECTION_NAME)
         with self._initialization_lock:
-            if key in self._initialized_collections:
-                return
+            # 优先挂载在具体 db 实例上，彻底避免短生命周期测试 mock 对象 GC 后 id() 地址重用冲突
+            initialized = getattr(self._db, "_initialized_collections", None)
+            if not isinstance(initialized, set):
+                initialized = set()
+                try:
+                    self._db._initialized_collections = initialized
+                except Exception:
+                    initialized = None
+            if initialized is not None:
+                if self.COLLECTION_NAME in initialized:
+                    return
+            else:
+                key = (id(self._db), self.COLLECTION_NAME)
+                if key in self._initialized_collections:
+                    return
             self._index_state.building = True
             try:
                 if self._init_indexes() is not False:
-                    self._initialized_collections.add(key)
+                    if initialized is not None:
+                        initialized.add(self.COLLECTION_NAME)
+                    else:
+                        self._initialized_collections.add((id(self._db), self.COLLECTION_NAME))
             except Exception as exc:
                 logger.warning(f"{self.COLLECTION_NAME} 索引初始化失败，后续访问将重试: {exc}")
             finally:

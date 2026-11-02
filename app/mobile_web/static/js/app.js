@@ -47,26 +47,49 @@
           touchStartY = y;
         }
       };
-      const loadVisibleFeed = () => {
-        if (currentTab.value === 'home') feeds.loadHomeGoods(false);
-        else if (currentTab.value === 'boom') feeds.loadBoomGoods(false);
+      let lastFeedFetchTime = 0;
+      const triggerLoadFeed = tab => {
+        if (tab !== currentTab.value) return;
+        if (tab === 'home') {
+          if (feeds.homeLoading.value || !feeds.homeHasMore.value || feeds.homeError.value) return;
+        } else if (tab === 'boom') {
+          if (feeds.boomLoading.value || !feeds.boomHasMore.value) return;
+        } else {
+          return;
+        }
+        const now = Date.now();
+        if (now - lastFeedFetchTime < 350) return;
+        lastFeedFetchTime = now;
+        if (tab === 'home') feeds.loadHomeGoods(false);
+        else if (tab === 'boom') feeds.loadBoomGoods(false);
       };
       const handleGlobalScroll = () => {
         const document = global.document;
         const top = global.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || (document.scrollingElement ? document.scrollingElement.scrollTop : 0);
         const height = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight, document.scrollingElement ? document.scrollingElement.scrollHeight : 0);
         const viewport = global.innerHeight || document.documentElement.clientHeight || document.body.clientHeight;
+        const isScrollingDown = top > lastScrollTop;
         if (top <= 15) isHeaderHidden.value = false;
         else if (top - lastScrollTop > 5 && top > 50) isHeaderHidden.value = true;
         else if (top - lastScrollTop < -5) isHeaderHidden.value = false;
         lastScrollTop = Math.max(0, top);
-        if (height - top - viewport < 800) loadVisibleFeed();
+        if (isScrollingDown && height - top - viewport < 300) {
+          triggerLoadFeed(currentTab.value);
+        }
       };
       const setupBottomObserver = () => {
         if (typeof global.IntersectionObserver === 'undefined') return;
         bottomObserver = new global.IntersectionObserver(entries => {
-          if (entries.some(entry => entry.isIntersecting)) loadVisibleFeed();
-        }, { rootMargin: '800px' });
+          for (const entry of entries) {
+            if (entry.isIntersecting && entry.target) {
+              if (entry.target.id === 'homeBottomSentinel' && currentTab.value === 'home') {
+                triggerLoadFeed('home');
+              } else if (entry.target.id === 'boomBottomSentinel' && currentTab.value === 'boom') {
+                triggerLoadFeed('boom');
+              }
+            }
+          }
+        }, { rootMargin: '250px' });
         observerTimer = global.setTimeout(() => {
           ['homeBottomSentinel', 'boomBottomSentinel'].forEach(id => {
             const sentinel = global.document.getElementById(id);
