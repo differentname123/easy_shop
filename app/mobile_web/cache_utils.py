@@ -4,7 +4,7 @@
 基于 cachetools.TTLCache 与 threading.RLock，彻底消除进程 OOM 与并发竞态
 """
 import threading
-from typing import Any, Optional
+from typing import Any, Hashable
 from cachetools import TTLCache
 
 
@@ -18,22 +18,22 @@ class ThreadSafeTTLCache:
         self._cache = TTLCache(maxsize=maxsize, ttl=ttl)
         self._lock = threading.RLock()
 
-    def get(self, key: str, default: Any = None) -> Any:
+    def get(self, key: Hashable, default: Any = None) -> Any:
         with self._lock:
             try:
                 return self._cache[key]
             except KeyError:
                 return default
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: Hashable, value: Any) -> None:
         with self._lock:
             self._cache[key] = value
 
-    def __contains__(self, key: str) -> bool:
+    def __contains__(self, key: Hashable) -> bool:
         with self._lock:
             return key in self._cache
 
-    def pop(self, key: str, default: Any = None) -> Any:
+    def pop(self, key: Hashable, default: Any = None) -> Any:
         with self._lock:
             return self._cache.pop(key, default)
 

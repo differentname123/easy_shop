@@ -4,7 +4,7 @@
 """
 from typing import Optional
 from fastapi import APIRouter, Query, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from app.mobile_web.models.user import RegisterOrLoginDTO
 from app.mobile_web.services.user_service import UserService
 from app.mobile_web.auth import get_current_uid
 
@@ -12,11 +12,8 @@ router = APIRouter(prefix="/api/user", tags=["用户与授权"])
 user_service = UserService()
 
 
-class RegisterOrLoginRequest(BaseModel):
-    phone: str = Field(..., description="11位中国大陆手机号")
-    password: str = Field(..., min_length=6, max_length=32, description="登录密码")
-    nickname: Optional[str] = Field(None, max_length=20, description="用户昵称")
-    invite_code: Optional[str] = Field(None, max_length=20, description="上级邀请码 (选填)")
+# 保留旧导入名，参数约束统一由领域 DTO 定义。
+RegisterOrLoginRequest = RegisterOrLoginDTO
 
 
 @router.post("/register_or_login")
@@ -60,7 +57,7 @@ def get_user_info(
 def check_or_get_auth(
     current_uid: str = Depends(get_current_uid),
     uid: Optional[str] = Query(None, description="用户唯一UID (兼容参数)"),
-    platform: str = Query("pdd", pattern="^(pdd|taobao|jd)$", description="平台代码: pdd, taobao, jd"),
+    platform: str = Query("pdd", max_length=32, pattern="^[a-z][a-z0-9_]*$", description="平台代码"),
 ):
     """
     查询当前认证推手在指定平台的授权备案状态。若未授权，则自动返回专属备案授权链接。

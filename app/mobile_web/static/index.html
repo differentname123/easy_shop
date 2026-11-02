@@ -49,7 +49,7 @@
     <main class="goods-grid" v-if="homeGoodsList.length > 0">
       <div 
         v-for="item in homeGoodsList" 
-        :key="item.goods_id || item.goods_sign"
+        :key="goodsKey(item)"
         class="goods-card"
         @click="openGoodsDetail(item)"
       >
@@ -140,6 +140,8 @@
           :key="p.code"
           class="plat-chip"
           :class="{ active: boomPlatform === p.code }"
+          :aria-disabled="!p.active"
+          :title="p.active ? p.name : p.name + '暂未开放'"
           @click="switchBoomPlatform(p.code)"
         >
           {{ p.name }}
@@ -158,7 +160,7 @@
     <main class="goods-grid" v-if="boomGoodsList.length > 0">
       <div 
         v-for="item in boomGoodsList" 
-        :key="item.platform + '_' + item.product_id"
+        :key="goodsKey(item)"
         class="goods-card"
         @click="openGoodsDetail(item)"
       >
@@ -307,15 +309,15 @@
     <div class="stats-card" v-if="isLoggedIn">
       <div class="stats-grid">
         <div class="stat-item">
-          <div class="num">¥{{ (userOrdersData.total_commission || userProfile.total_rebate || 0).toFixed(2) }}</div>
+          <div class="num">¥{{ formatMoney(userOrdersData.total_commission ?? userProfile.total_rebate ?? 0) }}</div>
           <div class="label">预估总佣金</div>
         </div>
         <div class="stat-item">
-          <div class="num">¥{{ (userOrdersData.settled_commission || userProfile.balance || 0).toFixed(2) }}</div>
+          <div class="num">¥{{ formatMoney(userOrdersData.settled_commission ?? userProfile.balance ?? 0) }}</div>
           <div class="label">已结算返利</div>
         </div>
         <div class="stat-item">
-          <div class="num">¥{{ (userOrdersData.refund_commission || 0).toFixed(2) }}</div>
+          <div class="num">¥{{ formatMoney(userOrdersData.refund_commission || 0) }}</div>
           <div class="label">维权/退款({{ userOrdersData.refund_count || 0 }}笔)</div>
         </div>
       </div>
@@ -415,7 +417,7 @@
           <span style="display:inline-block;width:24px;height:24px;background:#ff5000;color:#fff;text-align:center;line-height:24px;border-radius:4px;font-size:12px;font-weight:700">淘</span>
           <span>淘宝客渠道关系备案</span>
         </div>
-        <span class="auth-status-badge unauthed">标准接口已就绪</span>
+        <span class="auth-status-badge unauthed">暂未接入</span>
       </div>
       <p class="auth-desc">
         支持淘宝联盟渠道关系管理 (relation_id)，后续接入淘宝 App 授权即可享受淘宝天猫返利。
@@ -432,7 +434,7 @@
           <span style="display:inline-block;width:24px;height:24px;background:#e1251b;color:#fff;text-align:center;line-height:24px;border-radius:4px;font-size:12px;font-weight:700">京</span>
           <span>京东推客渠道授权</span>
         </div>
-        <span class="auth-status-badge unauthed">标准接口已就绪</span>
+        <span class="auth-status-badge unauthed">暂未接入</span>
       </div>
       <p class="auth-desc">
         支持京东联盟子联盟分销 (subUnionId)，后续接入京东开放平台后即可无缝对接。
@@ -518,6 +520,7 @@
         </div>
       </div>
     </div>
+  </div>
   <!-- ==================== 全局高质感智能加载器与省钱话术轮播 ==================== -->
   <div class="smart-loader-overlay" v-if="smartLoading.visible">
     <div class="smart-loader-card">
@@ -544,6 +547,12 @@
 </div>
 
 <!-- 引入前端核心驱动脚本 -->
+<script src="/static/js/api.js"></script>
+<script src="/static/js/session.js"></script>
+<script src="/static/js/format.js"></script>
+<script src="/static/js/browser.js"></script>
+<script src="/static/js/feeds.js"></script>
+<script src="/static/js/account.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>

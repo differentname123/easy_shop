@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
-拼多多多多进宝平台适配器 (Decoupled Provider)
-对接多多进宝开放平台，实现推荐榜单、搜索、规范化清洗、推手备案与带 UID 推广转链。
-"""
-from typing import Dict, Any, List, Optional
-from app.mobile_web.adapters.base import BasePlatformAdapter
+"""拼多多边界：SDK 调用、原始字段转换、商品标识与推广降级策略。"""
+from typing import Dict, Any, Optional
+from urllib.parse import urlencode, urlsplit
+from app.mobile_web.adapters.base import BasePlatformAdapter, build_command_text
+from app.mobile_web.models.product import ProductRef, ProductSummary, ProductDetail, clean_product_id
 from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID, logger
 from app.pdd_utils import (
     call_pdd_api,
@@ -23,497 +22,285 @@ from app.pdd_utils import (
 class PddAdapter(BasePlatformAdapter):
     platform_code = "pdd"
     platform_name = "拼多多"
+    recommendation_limit = 400
+    channels = (
+        {"channel_type": 5, "name": "实时热销", "icon": "fire"},
+        {"channel_type": 1, "name": "今日爆款", "icon": "crown"},
+        {"channel_type": 6, "name": "百亿补贴", "icon": "diamond"},
+        {"channel_type": 3, "name": "高佣优选", "icon": "tag"},
+        {"channel_type": 4, "name": "秒杀抢购", "icon": "clock"},
+        {"channel_type": 7, "name": "品牌大促", "icon": "star"},
+    )
+    legacy_order_statuses = {"refund": [4], "settled": [3, 5]}
 
-    def __init__(
-        self,
-        client_id: str = PDD_CLIENT_ID,
-        client_secret: str = PDD_CLIENT_SECRET,
-        pid: str = PDD_PID,
-    ):
+    def __init__(self, client_id=PDD_CLIENT_ID, client_secret=PDD_CLIENT_SECRET, pid=PDD_PID):
         self.client_id = client_id
         self.client_secret = client_secret
         self.pid = pid
 
-    def _normalize_goods_summary(self, raw_cleaned: dict) -> dict:
-        """极简商品卡片摘要对象：专供列表推荐与搜索秒开"""
-        price = raw_cleaned.get("min_group_price_yuan", 0.0)
-        coupon_discount = raw_cleaned.get("coupon_discount_yuan", 0.0)
-        final_price = round(max(0.0, price - coupon_discount), 2) if raw_cleaned.get("has_coupon") else price
+    def resolve_product_ref(self, goods_id_or_sign="", goods_id=None, goods_sign=None) -> ProductRef:
+        raw = str(goods_id_or_sign or "").strip()
+        if raw and not goods_id and not goods_sign:
+            if raw.isdigit():
+                goods_id = raw
+            else:
+                goods_sign = raw
+        return ProductRef(self.platform_code, goods_id or "", goods_sign or "")
 
-        return {
+    def warmup(self) -> None:
+        from app.pdd_utils import _PDD_SESSION
+        try:
+            _PDD_SESSION.head("https://gw-api.pinduoduo.com", timeout=3.0)
+        except Exception:
+            logger.debug("拼多多连接池预热未完成，首次请求时重试")
+
+    def normalize_order(self, order: dict) -> dict:
+        result = dict(order)
+        status = result.get("order_status")
+        for field, rule in (("is_refund", "refund"), ("is_settled", "settled")):
+            result[field] = bool(result[field]) if result.get(field) is not None else status in self.legacy_order_statuses[rule]
+        return result
+
+    def _normalize_goods_summary(self, raw_cleaned: dict) -> dict:
+        """摘要是详情的公共子集，金额/佣金只在平台边界转换一次。"""
+        price = float(raw_cleaned.get("min_group_price_yuan") or 0.0)
+        has_coupon = bool(raw_cleaned.get("has_coupon"))
+        coupon = float(raw_cleaned.get("coupon_discount_yuan") or 0.0) if has_coupon else 0.0
+        data = {
             "platform": self.platform_code,
             "platform_name": self.platform_name,
-            "goods_id": str(raw_cleaned.get("goods_id", "")),
-            "goods_sign": raw_cleaned.get("goods_sign", ""),
-            "name": raw_cleaned.get("goods_name", ""),
-            "image_url": raw_cleaned.get("goods_image_url") or raw_cleaned.get("goods_thumbnail_url", ""),
-            "price": final_price,
+            "goods_id": clean_product_id(raw_cleaned.get("goods_id")),
+            "goods_sign": raw_cleaned.get("goods_sign") or "",
+            "name": raw_cleaned.get("goods_name") or "",
+            "image_url": raw_cleaned.get("goods_image_url") or raw_cleaned.get("goods_thumbnail_url") or "",
+            "price": round(max(0.0, price - coupon), 2),
             "original_price": price,
-            "coupon_amount": coupon_discount,
-            "has_coupon": raw_cleaned.get("has_coupon", False),
-            "commission_rate": round(raw_cleaned.get("promotion_rate", 0) / 10.0, 1),
-            "commission_amount": raw_cleaned.get("estimated_commission_yuan", 0.0),
-            "sales_tip": raw_cleaned.get("sales_tip", "0"),
-            "mall_name": raw_cleaned.get("mall_name", "品牌官方店"),
+            "coupon_amount": coupon,
+            "has_coupon": has_coupon,
+            "commission_rate": round(float(raw_cleaned.get("promotion_rate") or 0) / 10.0, 1),
+            "commission_amount": float(raw_cleaned.get("estimated_commission_yuan") or 0.0),
+            "sales_tip": str(raw_cleaned.get("sales_tip") or "0"),
         }
+        for source, target in (("brand_name", "brand"), ("category_name", "category"), ("mall_name", "mall_name")):
+            if raw_cleaned.get(source):
+                data[target] = raw_cleaned[source]
+        return ProductSummary(**data).model_dump(exclude_unset=True)
 
     def _normalize_goods(self, raw_cleaned: dict) -> dict:
-        """规范化商品详情对象（包含多图轮播图与保障）"""
-        price = raw_cleaned.get("min_group_price_yuan", 0.0)
-        coupon_discount = raw_cleaned.get("coupon_discount_yuan", 0.0)
-        final_price = round(max(0.0, price - coupon_discount), 2) if raw_cleaned.get("has_coupon") else price
-
-        raw_dict = raw_cleaned.get("_raw_data", {})
-        gallery = raw_dict.get("goods_gallery_urls") or []
-        if not gallery:
-            img = raw_cleaned.get("goods_image_url") or raw_cleaned.get("goods_thumbnail_url")
-            thumb = raw_cleaned.get("goods_thumbnail_url")
-            gallery = [u for u in [img, thumb] if u]
-            gallery = list(dict.fromkeys(gallery))
-
-        brand_name = raw_cleaned.get("brand_name") or "官方优选"
-        category_name = raw_cleaned.get("category_name") or "精选好物"
-        sales_tip = raw_cleaned.get("sales_tip", "0")
-        mall_name = raw_cleaned.get("mall_name", "品牌官方店")
-
-        unified = raw_dict.get("unified_tags") or []
-        if not unified:
-            unified = [t for t in ["官方补贴", "退货包运费", "极速发货", "正品保障"] if raw_cleaned.get("has_coupon") or price > 20]
-
-        coupon_remain = raw_cleaned.get("coupon_remain_quantity", 0)
-        coupon_total = raw_cleaned.get("coupon_total_quantity", 0)
-
-        return {
-            "platform": self.platform_code,
-            "platform_name": self.platform_name,
-            "goods_id": str(raw_cleaned.get("goods_id", "")),
-            "goods_sign": raw_cleaned.get("goods_sign", ""),
-            "name": raw_cleaned.get("goods_name", ""),
-            "desc": raw_cleaned.get("goods_desc") or f"{raw_cleaned.get('goods_name', '')}，{brand_name}官方优选爆款，限时优惠特卖！",
-            "category_name": category_name,
-            "brand_name": brand_name,
-            "image_url": raw_cleaned.get("goods_image_url") or raw_cleaned.get("goods_thumbnail_url", ""),
-            "carousel_images": gallery if gallery else [raw_cleaned.get("goods_image_url", "")],
-            "price": final_price,
-            "original_price": price,
-            "coupon_amount": coupon_discount,
-            "has_coupon": raw_cleaned.get("has_coupon", False),
-            "commission_rate": round(raw_cleaned.get("promotion_rate", 0) / 10.0, 1),
-            "commission_amount": raw_cleaned.get("estimated_commission_yuan", 0.0),
-            "sales_tip": sales_tip,
-            "mall_name": mall_name,
-            "search_id": raw_cleaned.get("search_id", ""),
-            "detail_tags": unified,
-            "unified_tags": unified,
-            "service_guarantees": [
-                "🛡️ 正品保障 · 假一赔十",
-                "📦 退货包运费 · 极速退款",
-                "⚡ 48小时内闪电发货",
-                "💰 多多进宝官方活动补贴"
-            ],
-            "shop_ratings": {
-                "desc_score": f"{raw_cleaned.get('desc_txt', '高')} (4.8)",
-                "serv_score": f"{raw_cleaned.get('serv_txt', '高')} (4.9)",
-                "lgst_score": f"{raw_cleaned.get('lgst_txt', '高')} (4.8)"
-            },
-            "specs": [
-                {"label": "商品品牌", "value": brand_name},
-                {"label": "商品类目", "value": category_name},
-                {"label": "店铺名称", "value": mall_name},
-                {"label": "发货承诺", "value": "48小时内顺丰/中通极速出库"},
-                {"label": "售后服务", "value": "假一赔十 · 退货包运费 (送运费险)"},
-                {"label": "累计销量", "value": f"已拼 {sales_tip} 件"}
-            ],
-            "coupon_info": {
-                "coupon_remain_quantity": coupon_remain,
-                "coupon_total_quantity": coupon_total,
-                "valid_tip": "领券后即刻生效，限时限量抢购"
-            }
+        """商业承诺、评分与券库存只使用来源数据，缺失即留空。"""
+        data = self._normalize_goods_summary(raw_cleaned)
+        raw = raw_cleaned.get("_raw_data") or raw_cleaned
+        gallery = raw.get("goods_gallery_urls") or [data["image_url"]]
+        gallery = list(dict.fromkeys(u for u in gallery if isinstance(u, str) and u))
+        tags = raw.get("unified_tags") or []
+        ratings = {
+            target: str(raw[source]) for source, target in
+            (("desc_txt", "desc_score"), ("serv_txt", "serv_score"), ("lgst_txt", "lgst_score"))
+            if raw.get(source) is not None
         }
+        specs = [
+            {"label": label, "value": str(raw_cleaned[key])}
+            for key, label in (("brand_name", "商品品牌"), ("category_name", "商品类目"), ("mall_name", "店铺名称"))
+            if raw_cleaned.get(key)
+        ]
+        coupon_info = {
+            key: raw[key] for key in ("coupon_remain_quantity", "coupon_total_quantity", "coupon_start_time", "coupon_end_time")
+            if key in raw
+        }
+        data.update({
+            "desc": raw_cleaned.get("goods_desc") or "",
+            "carousel_images": gallery,
+            "detail_tags": tags,
+            "service_guarantees": raw.get("service_guarantees") or [],
+            "shop_ratings": ratings,
+            "specs": specs,
+            "coupon_info": coupon_info,
+        })
+        result = ProductDetail(**data).model_dump(exclude_unset=True)
+        result.update({
+            "brand_name": raw_cleaned.get("brand_name") or "",
+            "category_name": raw_cleaned.get("category_name") or "",
+            "search_id": raw_cleaned.get("search_id") or "",
+            "unified_tags": tags,
+        })
+        return result
 
-    def get_recommend_goods(
-        self,
-        channel_type: int = 5,
-        offset: int = 0,
-        limit: int = 20,
-        uid: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """获取多多进宝推荐榜单商品"""
+    def get_recommend_goods(self, channel_type=5, offset=0, limit=20, uid=None, **kwargs) -> Dict[str, Any]:
+        """400 条推荐上限是拼多多规则，不下沉到通用商品服务。"""
+        if offset >= self.recommendation_limit:
+            return {"status": "success", "total_count": self.recommendation_limit, "offset": offset,
+                    "limit": limit, "has_more": False, "data": []}
+        request_limit = min(limit, self.recommendation_limit - offset)
         try:
-            custom_params = make_custom_parameters(uid=uid) if uid else None
             params = {
-                "channel_type": channel_type,
-                "limit": limit,
-                "offset": offset,
-                "pid": self.pid,
-                "custom_parameters": custom_params,
+                "channel_type": channel_type, "offset": offset, "limit": request_limit,
+                "pid": self.pid, "custom_parameters": make_custom_parameters(uid=uid) if uid else None,
+                **kwargs,
             }
-            params.update(kwargs)
-
             res = call_pdd_api(self.client_id, self.client_secret, "pdd.ddk.goods.recommend.get", params)
-            resp_data = res.get("goods_basic_detail_response", {})
-            goods_list = resp_data.get("list", [])
-            total = resp_data.get("total", len(goods_list))
-
-            normalized_list = []
-            for item in goods_list:
-                cleaned = clean_goods_item(item, source_type=f"pdd_recommend_{channel_type}")
-                if cleaned:
-                    normalized_list.append(self._normalize_goods_summary(cleaned))
-
+            response = res.get("goods_basic_detail_response", {})
+            raw_items = response.get("list", [])
+            items = [self._normalize_goods_summary(clean_goods_item(item, source_type=f"pdd_recommend_{channel_type}"))
+                     for item in raw_items if item]
             return {
-                "status": "success",
-                "total_count": total,
-                "offset": offset,
-                "limit": limit,
-                "list_id": resp_data.get("list_id", ""),
-                "data": normalized_list,
+                "status": "success", "total_count": response.get("total", len(items)),
+                "offset": offset, "limit": limit, "list_id": response.get("list_id", ""),
+                "has_more": len(raw_items) >= request_limit and offset + request_limit < self.recommendation_limit,
+                "data": items,
             }
-        except Exception as e:
-            logger.error(f"[PddAdapter.get_recommend_goods] 出错: {str(e)}")
-            return {"status": "error", "error_msg": str(e), "data": []}
+        except Exception as exc:
+            logger.error(f"[PddAdapter.get_recommend_goods] {exc}")
+            return {"status": "error", "error_msg": str(exc), "data": []}
 
-    def search_goods(
-        self,
-        keyword: str,
-        page: int = 1,
-        page_size: int = 20,
-        uid: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """关键词搜索多多进宝商品"""
+    def search_goods(self, keyword, page=1, page_size=20, uid=None, **kwargs) -> Dict[str, Any]:
         try:
-            safe_page_size = max(10, min(100, int(page_size or 20)))
-            custom_params = make_custom_parameters(uid=uid) if uid else None
-            params = {
-                "keyword": keyword,
-                "pid": self.pid,
-                "page": page,
-                "page_size": safe_page_size,
-                "custom_parameters": custom_params,
-            }
-            params.update(kwargs)
-
+            size = max(1, min(100, int(page_size or 20)))
+            params = {"keyword": keyword, "pid": self.pid, "page": page, "page_size": size,
+                      "custom_parameters": make_custom_parameters(uid=uid) if uid else None, **kwargs}
             res = call_pdd_api(self.client_id, self.client_secret, "pdd.ddk.goods.search", params)
-            resp_data = res.get("goods_search_response", {})
-            goods_list = resp_data.get("goods_list", [])
-            total = resp_data.get("total_count", len(goods_list))
-
-            normalized_list = []
-            for item in goods_list:
-                cleaned = clean_goods_item(item, source_type="pdd_search")
-                if cleaned:
-                    normalized_list.append(self._normalize_goods_summary(cleaned))
-
+            response = res.get("goods_search_response", {})
+            raw_items = response.get("goods_list", [])
+            items = [self._normalize_goods_summary(clean_goods_item(item, source_type="pdd_search"))
+                     for item in raw_items if item]
+            total = response.get("total_count")
             return {
-                "status": "success",
-                "total_count": total,
-                "page": page,
-                "page_size": page_size,
-                "list_id": resp_data.get("list_id", ""),
-                "data": normalized_list,
+                "status": "success", "total_count": total if total is not None else len(items),
+                "page": page, "page_size": size, "list_id": response.get("list_id", ""),
+                "has_more": page * size < total if total is not None else len(raw_items) >= size,
+                "data": items,
             }
-        except Exception as e:
-            logger.error(f"[PddAdapter.search_goods] 搜索出错: {str(e)}")
-            return {"status": "error", "error_msg": str(e), "data": []}
+        except Exception as exc:
+            logger.error(f"[PddAdapter.search_goods] {exc}")
+            return {"status": "error", "error_msg": str(exc), "data": []}
 
-    def get_goods_detail(
-        self,
-        goods_id_or_sign: str = "",
-        uid: Optional[str] = None,
-        goods_id: Optional[str] = None,
-        goods_sign: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """获取拼多多官方完整商品详情"""
+    def get_goods_detail(self, goods_id_or_sign="", uid=None, goods_id=None, goods_sign=None, **kwargs) -> Dict[str, Any]:
         try:
-            real_sign = str(goods_sign).strip() if goods_sign else None
-            real_id = str(goods_id).strip() if goods_id else None
-
-            if not real_sign and not real_id and goods_id_or_sign:
-                is_sign = len(str(goods_id_or_sign)) > 16 or not str(goods_id_or_sign).isdigit()
-                real_sign = str(goods_id_or_sign) if is_sign else None
-                real_id = str(goods_id_or_sign) if not is_sign else None
-
-            res = pdd_get_detail(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                pid=self.pid,
-                goods_sign=real_sign,
-                goods_id=real_id,
-                uid=uid,
-                **kwargs
-            )
-            if res.get("status") == "success" and res.get("data"):
-                normalized = self._normalize_goods(res["data"])
-                return {"status": "success", "data": normalized}
-            return {"status": "error", "error_msg": res.get("error_msg", "未查询到官方商品详情")}
-        except Exception as e:
-            logger.error(f"[PddAdapter.get_goods_detail] 异常: {e}")
-            return {"status": "error", "error_msg": str(e)}
+            ref = self.resolve_product_ref(goods_id_or_sign, goods_id, goods_sign)
+            res = pdd_get_detail(client_id=self.client_id, client_secret=self.client_secret, pid=self.pid,
+                                 goods_sign=ref.goods_sign or None, goods_id=ref.goods_id or None, uid=uid, **kwargs)
+            if res.get("status") != "success" or not res.get("data"):
+                return {"status": "error", "error_msg": res.get("error_msg", "未查询到官方商品详情")}
+            item = self._normalize_goods(res["data"])
+            if ref.goods_sign and not item.get("goods_sign"):
+                item["goods_sign"] = ref.goods_sign
+            if not ref.goods_sign and ref.goods_id and item.get("goods_id") not in ("", ref.goods_id):
+                return {"status": "error", "error_msg": "商品 ID 反查结果不匹配", "error_code": "product_identity_mismatch"}
+            return {"status": "success", "data": item}
+        except Exception as exc:
+            logger.error(f"[PddAdapter.get_goods_detail] {exc}")
+            return {"status": "error", "error_msg": str(exc)}
 
     @staticmethod
-    def _build_command_text(title: str, final_link: str, price: Optional[float] = None, coupon: Optional[float] = None) -> str:
-        cmd_lines = [f"【好物精选】{title or '精选高性价比好物'}"]
-        if price is not None and float(price) > 0:
-            p_info = f"【券后特惠】¥{price}"
-            if coupon and float(coupon) > 0:
-                p_info += f"（已立减 ¥{coupon}）"
-            cmd_lines.append(p_info)
-        cmd_lines.append("【抢购口令】长按复制本段全部信息，打开【拼多多APP】立即领券下单！")
-        cmd_lines.append(f"{final_link}")
-        return "\n".join(cmd_lines)
+    def _build_command_text(title, final_link, price=None, coupon=None) -> str:
+        return build_command_text(title, final_link, price, coupon, "拼多多")
 
-    def _resolve_goods_id(self, goods_id_or_sign: str, kwargs: dict) -> tuple[Optional[str], Optional[str]]:
-        """纯内存参数提取真实的 goods_id 与 goods_sign，绝不反查外部仓储"""
-        goods_id = kwargs.get("goods_id")
-        goods_sign = kwargs.get("goods_sign")
+    def _resolve_goods_id(self, goods_id_or_sign: str, kwargs: dict) -> tuple:
+        ref = self.resolve_product_ref(goods_id_or_sign, kwargs.get("goods_id"), kwargs.get("goods_sign"))
+        return ref.goods_id or None, ref.goods_sign or None
 
-        if goods_id_or_sign:
-            if str(goods_id_or_sign).isdigit():
-                if not goods_id:
-                    goods_id = str(goods_id_or_sign)
-            else:
-                if not goods_sign:
-                    goods_sign = str(goods_id_or_sign)
+    def _promotion_result(self, link, raw, title, price, coupon, link_type, is_fallback=False) -> dict:
+        """所有生链路径返回同一契约，降级标记不能在某个分支丢失。"""
+        return {
+            "status": "success", "need_auth": False, "is_fallback": is_fallback, "link_type": link_type,
+            "final_link": link, "url": link, "short_url": link, "mobile_url": link, "mobile_short_url": link,
+            "schema_url": raw.get("schema_url") or "",
+            "command_text": self.build_command_text(title, link, price, coupon),
+            "we_app_info": raw.get("we_app_info") or {}, "raw": raw,
+        }
 
-        return goods_id, goods_sign
-
-    def convert_promotion_url(
-        self,
-        goods_id_or_sign: str,
-        uid: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        使用推手专属 UID 生成拼多多推广链接
-        """
+    def convert_promotion_url(self, goods_id_or_sign, uid=None, **kwargs) -> Dict[str, Any]:
         goods_id, goods_sign = self._resolve_goods_id(goods_id_or_sign, kwargs)
         title = kwargs.get("title") or kwargs.get("name") or kwargs.get("goods_name") or "精选高性价比好物"
         price = kwargs.get("price")
-        coupon = kwargs.get("coupon_amount") or kwargs.get("coupon")
-        target_sign = goods_sign or goods_id_or_sign
-
-        # 1. 尝试标准智能生链
-        try:
-            smart_kwargs = {k: v for k, v in kwargs.items() if k not in ("goods_sign", "goods_id", "title", "price", "coupon", "coupon_amount")}
-            res = generate_smart_promotion_url(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                pid=self.pid,
-                goods_sign=target_sign,
-                uid=uid,
-                **smart_kwargs
-            )
-            if res.get("status") == "success":
-                data = res.get("data", {})
-                final_link = (
-                    data.get("mobile_short_url")
-                    or data.get("short_url")
-                    or data.get("mobile_url")
-                    or data.get("url", "")
-                )
-                if final_link:
-                    schema_url = data.get("schema_url") or ""
-                    command_text = self._build_command_text(title, final_link, price, coupon)
-                    return {
-                        "status": "success",
-                        "need_auth": False,
-                        "link_type": res.get("link_type", "专属推广链接"),
-                        "final_link": final_link,
-                        "url": final_link,
-                        "short_url": final_link,
-                        "mobile_url": final_link,
-                        "mobile_short_url": final_link,
-                        "schema_url": schema_url,
-                        "command_text": command_text,
-                        "we_app_info": data.get("we_app_info", {}),
-                        "raw": data,
-                    }
-        except Exception as e:
-            logger.warning(f"[PddAdapter.convert_promotion_url] 智能生链未成，平滑进入官方招商券兜底: {e}")
-
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("goods_id", "goods_sign", "title", "price", "coupon", "coupon_amount")}
-        return self._handle_fallback_conversion(goods_id, target_sign, uid, title=title, price=price, coupon=coupon, **extra_kwargs)
-
-    def _handle_unauthorized_conversion(self, goods_sign: str, uid: Optional[str], **kwargs) -> Dict[str, Any]:
-        """兼容未备案降级接口：调用高质量官方转链兜底"""
-        goods_id, real_sign = self._resolve_goods_id(goods_sign, kwargs)
-        title = kwargs.get("title") or kwargs.get("name") or "精选高性价比好物"
-        price = kwargs.get("price")
-        coupon = kwargs.get("coupon_amount") or kwargs.get("coupon")
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("goods_id", "goods_sign", "title", "price", "coupon", "coupon_amount")}
-        return self._handle_fallback_conversion(goods_id, real_sign or goods_sign, uid, title=title, price=price, coupon=coupon, **extra_kwargs)
-
-    def _handle_fallback_conversion(
-        self,
-        goods_id: Optional[str],
-        goods_sign: str,
-        uid: Optional[str],
-        title: str = "精选高性价比好物",
-        price: Optional[float] = None,
-        coupon: Optional[float] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """官方优惠券转链兜底处理"""
-        # 1. 优先使用数字 goods_id 构造 source_url 并通过 convert_pdd_url 生成官方券短链
-        if goods_id and str(goods_id).isdigit():
-            source_url = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
+        coupon = kwargs.get("coupon_amount") if kwargs.get("coupon_amount") is not None else kwargs.get("coupon")
+        product_url = kwargs.get("product_url")
+        options = {k: v for k, v in kwargs.items() if k not in
+                   ("goods_id", "goods_sign", "product_url", "title", "name", "goods_name", "price", "coupon", "coupon_amount")}
+        target = goods_sign or goods_id
+        if target:
             try:
-                zs_res = convert_pdd_url(
-                    client_id=self.client_id,
-                    client_secret=self.client_secret,
-                    pid=self.pid,
-                    source_url=source_url,
-                    uid=uid
-                )
-                if zs_res.get("status") == "success" and zs_res.get("jump_url"):
-                    jump_url = zs_res["jump_url"]
-                    raw_data = zs_res.get("raw_data", {})
-                    command_text = self._build_command_text(title, jump_url, price, coupon)
-                    return {
-                        "status": "success",
-                        "need_auth": False,
-                        "link_type": "官方招商券推广",
-                        "final_link": jump_url,
-                        "url": jump_url,
-                        "short_url": jump_url,
-                        "mobile_url": jump_url,
-                        "mobile_short_url": jump_url,
-                        "schema_url": raw_data.get("mobile_url") or "",
-                        "command_text": command_text,
-                        "we_app_info": {},
-                        "raw": raw_data,
-                    }
-            except Exception as e:
-                logger.warning(f"[PddAdapter] 招商券转链异常: {e}")
+                res = generate_smart_promotion_url(client_id=self.client_id, client_secret=self.client_secret,
+                                                   pid=self.pid, goods_sign=target, uid=uid, **options)
+                raw = res.get("data") or {}
+                link = raw.get("mobile_short_url") or raw.get("short_url") or raw.get("mobile_url") or raw.get("url")
+                if res.get("status") == "success" and link:
+                    return self._promotion_result(link, raw, title, price, coupon, res.get("link_type", "专属推广链接"))
+            except Exception as exc:
+                logger.warning(f"[PddAdapter] 智能生链失败，进入官方转链兜底: {exc}")
+        return self._handle_fallback_conversion(goods_id, goods_sign or "", uid, title, price, coupon,
+                                                product_url=product_url, **options)
 
-        # 2. 通用无 UID 生链兜底
-        try:
-            fallback_res = generate_goods_promotion_url(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                pid=self.pid,
-                goods_sign=goods_sign,
-                uid=None,
-                **kwargs
-            )
-            fb_data = fallback_res.get("data", {}) if fallback_res.get("status") == "success" else {}
-            fb_link = (
-                fb_data.get("mobile_short_url")
-                or fb_data.get("short_url")
-                or fb_data.get("mobile_url")
-                or fb_data.get("url")
-            )
-            if fb_link:
-                command_text = self._build_command_text(title, fb_link, price, coupon)
-                return {
-                    "status": "success",
-                    "need_auth": False,
-                    "link_type": "通用官方推广",
-                    "final_link": fb_link,
-                    "url": fb_link,
-                    "short_url": fb_link,
-                    "mobile_url": fb_link,
-                    "mobile_short_url": fb_link,
-                    "schema_url": fb_data.get("schema_url") or "",
-                    "command_text": command_text,
-                    "we_app_info": fb_data.get("we_app_info", {}),
-                    "raw": fb_data,
-                }
-        except Exception as e:
-            logger.warning(f"[PddAdapter] 通用推广生链异常: {e}")
+    def _handle_unauthorized_conversion(self, goods_sign, uid, **kwargs) -> Dict[str, Any]:
+        return self.convert_promotion_url(goods_sign, uid=uid, **kwargs)
 
-        # 3. 最终直连保底（带 is_fallback: True 标记）
+    def _handle_fallback_conversion(self, goods_id, goods_sign, uid, title="精选高性价比好物", price=None, coupon=None,
+                                    product_url=None, **kwargs) -> Dict[str, Any]:
+        # 已有主标识时不能让客户端另一条 URL 把商品切换成其它商品。
+        source_url = product_url if not goods_id and not goods_sign else None
         if goods_id and str(goods_id).isdigit():
-            final_raw_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
-        else:
-            final_raw_link = f"https://mobile.yangkeduo.com/goods.html?goods_sign={goods_sign}"
+            source_url = "https://mobile.pinduoduo.com/goods.html?" + urlencode({"goods_id": goods_id})
+        if source_url:
+            parsed = urlsplit(source_url)
+            host = (parsed.hostname or "").lower()
+            if parsed.scheme not in ("https", "http") or not any(
+                    host == root or host.endswith("." + root) for root in ("pinduoduo.com", "yangkeduo.com")):
+                return {"status": "error", "error_msg": "请提供有效的拼多多商品链接"}
+            try:
+                res = convert_pdd_url(client_id=self.client_id, client_secret=self.client_secret, pid=self.pid,
+                                      source_url=source_url, uid=uid)
+                if res.get("status") == "success" and res.get("jump_url"):
+                    raw = res.get("raw_data") or {}
+                    result = self._promotion_result(res["jump_url"], raw, title, price, coupon, "官方招商券推广")
+                    result["schema_url"] = raw.get("schema_url") or raw.get("mobile_url") or ""
+                    return result
+            except Exception as exc:
+                logger.warning(f"[PddAdapter] 招商券转链失败: {exc}")
+        if goods_sign:
+            try:
+                res = generate_goods_promotion_url(client_id=self.client_id, client_secret=self.client_secret,
+                                                   pid=self.pid, goods_sign=goods_sign, uid=None, **kwargs)
+                raw = res.get("data") or {}
+                link = raw.get("mobile_short_url") or raw.get("short_url") or raw.get("mobile_url") or raw.get("url")
+                if res.get("status") == "success" and link:
+                    # 这是原有的无 UID 兜底：登录用户不能将其视为已保证佣金归因。
+                    return self._promotion_result(link, raw, title, price, coupon, "通用官方推广", is_fallback=bool(uid))
+            except Exception as exc:
+                logger.warning(f"[PddAdapter] 通用推广生链失败: {exc}")
+        if not source_url and not goods_sign:
+            return {"status": "error", "error_msg": "缺少商品 ID、Sign 或商品链接"}
+        link = source_url or ("https://mobile.yangkeduo.com/goods.html?" + urlencode({"goods_sign": goods_sign}))
+        return self._promotion_result(link, {}, title, price, coupon, "商品直连保底", is_fallback=True)
 
-        command_text = self._build_command_text(title, final_raw_link, price, coupon)
-        return {
-            "status": "success",
-            "is_fallback": True,
-            "need_auth": False,
-            "link_type": "商品直连保底",
-            "final_link": final_raw_link,
-            "url": final_raw_link,
-            "short_url": final_raw_link,
-            "mobile_url": final_raw_link,
-            "mobile_short_url": final_raw_link,
-            "schema_url": "",
-            "command_text": command_text,
-            "we_app_info": {},
-            "raw": {},
-        }
-
-    def check_authority(self, uid: str) -> Dict[str, Any]:
-        """检查推手在拼多多的渠道备案状态"""
+    def check_authority(self, uid) -> Dict[str, Any]:
         try:
-            return check_member_authority(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                pid=self.pid,
-                uid=uid
-            )
-        except Exception as e:
-            logger.error(f"[PddAdapter.check_authority] 检查备案出错: {str(e)}")
-            return {"status": "error", "is_authorized": False, "bind": 0, "error_msg": str(e)}
+            return check_member_authority(client_id=self.client_id, client_secret=self.client_secret, pid=self.pid, uid=uid)
+        except Exception as exc:
+            logger.error(f"[PddAdapter.check_authority] {exc}")
+            return {"status": "error", "is_authorized": False, "bind": 0, "error_msg": str(exc)}
 
-    def generate_authority_url(self, uid: str, **kwargs) -> Dict[str, Any]:
-        """生成推手专属备案授权链接 (channel_type=10)"""
+    def generate_authority_url(self, uid, **kwargs) -> Dict[str, Any]:
         try:
-            res = pdd_gen_auth_url(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                pid=self.pid,
-                uid=uid,
-                **kwargs
-            )
-            if res.get("status") == "success":
-                url_info = res.get("url_info", {})
-                auth_link = (
-                    url_info.get("mobile_short_url")
-                    or url_info.get("mobile_url")
-                    or url_info.get("short_url")
-                    or url_info.get("url", "")
-                )
-                return {
-                    "status": "success",
-                    "auth_url": auth_link,
-                    "short_url": auth_link,
-                    "we_app_info": url_info.get("we_app_info", {}),
-                }
+            res = pdd_gen_auth_url(client_id=self.client_id, client_secret=self.client_secret, pid=self.pid, uid=uid, **kwargs)
+            info = res.get("url_info") or {}
+            link = info.get("mobile_short_url") or info.get("mobile_url") or info.get("short_url") or info.get("url")
+            if res.get("status") == "success" and link:
+                return {"status": "success", "auth_url": link, "short_url": link, "we_app_info": info.get("we_app_info", {})}
             return {"status": "error", "error_msg": res.get("error_msg", "生成授权链接失败")}
-        except Exception as e:
-            logger.error(f"[PddAdapter.generate_authority_url] 生成授权异常: {str(e)}")
-            return {"status": "error", "error_msg": str(e)}
+        except Exception as exc:
+            logger.error(f"[PddAdapter.generate_authority_url] {exc}")
+            return {"status": "error", "error_msg": str(exc)}
 
-    def fetch_increment_orders(
-        self,
-        start_time: int,
-        end_time: int,
-        page: int = 1,
-        page_size: int = 50,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """拉取拼多多指定时间段的增量订单"""
+    def fetch_increment_orders(self, start_time, end_time, page=1, page_size=50, **kwargs) -> Dict[str, Any]:
         try:
-            res = query_increment_orders(
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-                start_time=start_time,
-                end_time=end_time,
-                page=page,
-                page_size=page_size,
-            )
-            orders = res.get("order_list", []) if isinstance(res, dict) else []
-            return {
-                "status": "success",
-                "order_list": orders,
-                "total_count": res.get("total_count", len(orders)) if isinstance(res, dict) else len(orders),
-            }
-        except Exception as e:
-            logger.error(f"[PddAdapter.fetch_increment_orders] 增量拉单失败: {e}")
-            return {"status": "error", "error_msg": str(e), "order_list": [], "total_count": 0}
+            res = query_increment_orders(client_id=self.client_id, client_secret=self.client_secret,
+                                         start_time=start_time, end_time=end_time, page=page, page_size=page_size, **kwargs)
+            if not isinstance(res, dict) or res.get("status") != "success":
+                message = res.get("error_msg", "增量订单查询失败") if isinstance(res, dict) else "增量订单响应无效"
+                return {"status": "error", "error_msg": message, "order_list": [], "total_count": 0}
+            orders = [self.normalize_order(order) for order in res.get("order_list", [])]
+            total = res.get("total_count", len(orders))
+            return {"status": "success", "order_list": orders, "total_count": total,
+                    "has_more": page * page_size < total}
+        except Exception as exc:
+            logger.error(f"[PddAdapter.fetch_increment_orders] {exc}")
+            return {"status": "error", "error_msg": str(exc), "order_list": [], "total_count": 0}

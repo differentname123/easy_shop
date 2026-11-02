@@ -12,7 +12,7 @@ product_service = ProductService()
 
 @router.get("/list")
 def list_boom_goods(
-    platform: str = Query("all", pattern="^(all|pdd|taobao|jd)$", description="平台: all, pdd, taobao, jd"),
+    platform: str = Query("all", min_length=1, max_length=32, pattern="^[a-z][a-z0-9_]*$", description="平台代码，all 查询全部本地商品"),
     category: Optional[str] = Query(None, max_length=20, description="商品分类"),
     keyword: Optional[str] = Query(None, max_length=30, description="关键词模糊查询 (最长30字)"),
     sort_by: str = Query("latest", pattern="^(latest|save_desc|price_asc|price_desc)$", description="排序"),
@@ -34,7 +34,7 @@ def list_boom_goods(
 
 @router.get("/categories")
 def get_categories(
-    platform: str = Query("all", description="平台代码"),
+    platform: str = Query("all", min_length=1, max_length=32, pattern="^[a-z][a-z0-9_]*$", description="平台代码"),
 ):
     """
     获取爆单库现存分类列表

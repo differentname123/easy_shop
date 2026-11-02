@@ -1,36 +1,49 @@
 # -*- coding: utf-8 -*-
-"""
-数据仓储抽象基类 (BaseRepository)
-封装 MongoDB 连接获取、集合操作与统一索引保障
-"""
-from typing import Optional
+"""MongoDB 仓储基础设施：延迟连接、可注入数据库及可重试的索引初始化。"""
+import threading
 from common.mongo_db.mongo_base import gen_db_object
-from common.common_utils import setup_logger
-
-logger = setup_logger(app_name="mobile_web")
+from app.mobile_web.config import logger
 
 
 class BaseRepository:
-    """仓储基础类：提供统一的 DB 实例和集合访问"""
     COLLECTION_NAME: str = ""
     _initialized_collections = set()
+    _initialization_lock = threading.RLock()
 
     def __init__(self, db_instance=None):
-        self._db = db_instance or gen_db_object()
-        # 针对真实数据库连接，单进程生命周期内只初始化一次索引，避免多次重复调用
-        if db_instance is None:
-            if self.COLLECTION_NAME and self.COLLECTION_NAME not in BaseRepository._initialized_collections:
-                self._init_indexes()
-                BaseRepository._initialized_collections.add(self.COLLECTION_NAME)
-        else:
-            self._init_indexes()
+        # 路由/服务装配不触发网络 I/O；真实连接和索引在首次仓储操作时获取。
+        self._db = db_instance
+        self._index_state = threading.local()
+        if db_instance is not None and self.COLLECTION_NAME:
+            self._ensure_indexes()
+
+    def _ensure_indexes(self):
+        if not self.COLLECTION_NAME or getattr(self._index_state, "building", False):
+            return
+        key = (id(self._db), self.COLLECTION_NAME)
+        with self._initialization_lock:
+            if key in self._initialized_collections:
+                return
+            self._index_state.building = True
+            try:
+                if self._init_indexes() is not False:
+                    self._initialized_collections.add(key)
+            except Exception as exc:
+                logger.warning(f"{self.COLLECTION_NAME} 索引初始化失败，后续访问将重试: {exc}")
+            finally:
+                self._index_state.building = False
 
     @property
     def col(self):
         if not self.COLLECTION_NAME:
             raise NotImplementedError("子类仓储必须声明 COLLECTION_NAME")
+        if self._db is None:
+            with self._initialization_lock:
+                if self._db is None:
+                    self._db = gen_db_object()
+        self._ensure_indexes()
         return self._db.get_collection(self.COLLECTION_NAME)
 
     def _init_indexes(self):
-        """子类可选覆盖，用于创建集合必要索引"""
-        pass
+        """子类失败须返回 False 或抛异常，不能误登记为已完成。"""
+        return True

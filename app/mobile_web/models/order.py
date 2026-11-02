@@ -16,7 +16,7 @@ class OrderItem(BaseModel):
     order_amount_yuan: float = 0.0
     promotion_amount_yuan: float = 0.0
     promotion_rate: int = 0
-    order_status: Optional[int] = None
+    order_status: Optional[int | str] = None
     order_status_desc: str = "未知状态"
     is_refund: bool = False
     is_settled: bool = False
@@ -36,3 +36,7 @@ class UserOrderStats(BaseModel):
     uid: str = ""
     query_days: int = 7
     last_sync_time: int = 0
+    last_sync_attempt_time: int = 0
+    sync_status: str = "idle"
+    sync_error: str = ""
+    synced_count: int = 0

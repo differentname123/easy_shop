@@ -1,42 +1,63 @@
 # -*- coding: utf-8 -*-
-"""
-多平台适配器注册与获取工厂
-"""
+"""显式平台装配表：新增适配器后在此登记，不使用插件发现或动态加载。"""
+from functools import lru_cache
 from typing import Dict, List, Any
 from app.mobile_web.adapters.base import BasePlatformAdapter
 from app.mobile_web.adapters.pdd_adapter import PddAdapter
 from app.mobile_web.adapters.tb_adapter import TaobaoAdapter
 from app.mobile_web.adapters.jd_adapter import JdAdapter
+from app.mobile_web.models.product import normalize_platform
 
-# 单例注册表（支持惰性获取与扩展注册）
+
+_ADAPTER_TYPES = {
+    "pdd": PddAdapter,
+    "taobao": TaobaoAdapter,
+    "jd": JdAdapter,
+}
 _ADAPTER_REGISTRY: Dict[str, BasePlatformAdapter] = {}
 
 
+class PlatformUnavailableError(ValueError):
+    """未知或未启用的平台，供 API 统一转换为可读业务错误。"""
+
+
 def register_adapter(platform_code: str, adapter_instance: BasePlatformAdapter):
-    """动态注册或覆盖平台适配器"""
-    _ADAPTER_REGISTRY[platform_code.lower()] = adapter_instance
+    """显式装配入口，也用于测试替身；没有运行期插件加载机制。"""
+    _ADAPTER_REGISTRY[normalize_platform(platform_code)] = adapter_instance
 
 
-def get_adapter(platform: str) -> BasePlatformAdapter:
-    """获取指定平台的适配器，未知平台回退到 pdd，支持快速缓存"""
-    plat = (platform or "pdd").lower()
-    if plat not in _ADAPTER_REGISTRY:
-        if plat in ("tb", "taobao"):
-            _ADAPTER_REGISTRY[plat] = TaobaoAdapter()
-        elif plat == "jd":
-            _ADAPTER_REGISTRY[plat] = JdAdapter()
-        elif plat == "pdd":
-            _ADAPTER_REGISTRY[plat] = PddAdapter()
-        else:
-            raise ValueError(f"不支持的平台: {platform}")
+@lru_cache(maxsize=None)
+def _create_adapter(platform: str) -> BasePlatformAdapter:
+    return _ADAPTER_TYPES[platform]()
 
-    return _ADAPTER_REGISTRY[plat]
+
+def get_adapter(platform: str = "pdd") -> BasePlatformAdapter:
+    """兼容获取占位适配器；业务入口须检查 active 或使用 require_adapter。"""
+    code = normalize_platform(platform)
+    if code in _ADAPTER_REGISTRY:
+        return _ADAPTER_REGISTRY[code]
+    if code not in _ADAPTER_TYPES:
+        raise PlatformUnavailableError(f"不支持的平台: {platform}")
+    return _create_adapter(code)
+
+
+def require_adapter(platform: str = "pdd") -> BasePlatformAdapter:
+    adapter = get_adapter(platform)
+    if not adapter.active:
+        raise PlatformUnavailableError(f"{adapter.platform_name}暂未接入")
+    return adapter
+
+
+def platform_name(platform: str) -> str:
+    code = normalize_platform(platform)
+    descriptor = _ADAPTER_REGISTRY.get(code) or _ADAPTER_TYPES.get(code)
+    return descriptor.platform_name if descriptor else code
 
 
 def get_all_platforms() -> List[Dict[str, Any]]:
-    """获取当前已支持/已注册的平台元信息列表"""
+    """平台名称与是否启用均来自同一装配表，前后端不再各自猜测。"""
+    descriptors = {**_ADAPTER_TYPES, **_ADAPTER_REGISTRY}
     return [
-        {"code": "pdd", "name": "拼多多", "active": True},
-        {"code": "taobao", "name": "淘宝", "active": True},
-        {"code": "jd", "name": "京东", "active": True},
+        {"code": code, "name": adapter.platform_name, "active": adapter.active}
+        for code, adapter in descriptors.items()
     ]

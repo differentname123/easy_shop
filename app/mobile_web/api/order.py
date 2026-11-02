@@ -15,8 +15,8 @@ order_service = OrderService()
 def sync_and_query_orders(
     current_uid: str = Depends(get_current_uid),
     uid: Optional[str] = Query(None, description="前端传入的推手UID (兼容参数，服务端严格校验)"),
-    platform: str = Query("pdd", pattern="^(pdd|taobao|jd)$", description="平台: pdd, taobao, jd"),
-    days: int = Query(7, ge=1, le=90, description="查询时间跨度(天)，默认7天，最大90天"),
+    platform: str = Query("pdd", max_length=32, pattern="^[a-z][a-z0-9_]*$", description="平台代码"),
+    days: int = Query(7, ge=0, le=90, description="查询时间跨度(天)，0为全部，默认7天，最大90天"),
     force: bool = Query(False, description="是否强制立即同步 (服务端统一控频，前端无法穿透)"),
 ):
     """

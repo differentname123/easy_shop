@@ -4,7 +4,21 @@
 定义统一的导购商品查询、搜索、推广生链、推手授权备案协议。
 """
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
+from app.mobile_web.models.product import ProductRef
+
+
+def build_command_text(title: str, final_link: str, price=None, coupon=None, app_name: str = "") -> str:
+    """共享文案结构；具体平台名称由适配器传入。"""
+    lines = [f"【好物精选】{title or '精选高性价比好物'}"]
+    if price is not None and float(price) > 0:
+        price_text = f"【券后特惠】¥{price}"
+        if coupon is not None and float(coupon) > 0:
+            price_text += f"（已立减 ¥{coupon}）"
+        lines.append(price_text)
+    destination = f"【{app_name}APP】" if app_name else "商品页面"
+    lines.extend([f"【抢购口令】长按复制本段全部信息，打开{destination}立即领券下单！", final_link])
+    return "\n".join(lines)
 
 
 class BasePlatformAdapter(ABC):
@@ -13,6 +27,26 @@ class BasePlatformAdapter(ABC):
     """
     platform_code: str = ""
     platform_name: str = ""
+    active: bool = True
+    channels: tuple = ()
+    recommendation_limit: Optional[int] = None
+    legacy_order_statuses: dict = {}
+
+    def resolve_product_ref(self, goods_id_or_sign="", goods_id=None, goods_sign=None) -> ProductRef:
+        """公共层不猜测非数字标识的含义；各平台自行解析其兼容输入。"""
+        if not goods_id and not goods_sign:
+            goods_id = goods_id_or_sign
+        return ProductRef(self.platform_code, goods_id or "", goods_sign or "")
+
+    def warmup(self) -> None:
+        """可选的启动预热，不要求通用入口了解任何平台 SDK。"""
+
+    def normalize_order(self, order: dict) -> dict:
+        """平台应返回金额元、时间秒及明确退款/结算标志。"""
+        return dict(order)
+
+    def build_command_text(self, title, final_link, price=None, coupon=None) -> str:
+        return build_command_text(title, final_link, price, coupon, self.platform_name)
 
     @abstractmethod
     def get_recommend_goods(
@@ -122,4 +156,28 @@ class BasePlatformAdapter(ABC):
         :return: {"status": "success", "order_list": List[Dict], "total_count": int}
         """
         pass
+
+
+class UnavailablePlatformAdapter(BasePlatformAdapter):
+    """未接入平台只保留兼容入口，不能生成假链接或假授权成功。"""
+    active = False
+
+    def _unavailable(self, *args, **kwargs):
+        return {
+            "status": "error",
+            "error_code": "platform_unavailable",
+            "error_msg": f"{self.platform_name}暂未接入",
+            "data": [],
+            "order_list": [],
+            "total_count": 0,
+            "is_authorized": False,
+        }
+
+    get_recommend_goods = _unavailable
+    search_goods = _unavailable
+    get_goods_detail = _unavailable
+    convert_promotion_url = _unavailable
+    check_authority = _unavailable
+    generate_authority_url = _unavailable
+    fetch_increment_orders = _unavailable
 

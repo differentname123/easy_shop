@@ -19,15 +19,6 @@ PDD_CLIENT_ID = safe_get_config("myself_pdd_client_id")
 PDD_CLIENT_SECRET = safe_get_config("myself_pdd_client_secret")
 PDD_PID = safe_get_config("myself_pdd_pid")
 
-# 淘宝客配置 (预留)
-TB_APP_KEY = safe_get_config("myself_taobao_app_key")
-TB_APP_SECRET = safe_get_config("myself_taobao_app_secret")
-TB_PID = safe_get_config("myself_taobao_pid")
-
-# 京东联盟配置 (预留)
-JD_APP_KEY = safe_get_config("jd_app_key")
-JD_APP_SECRET = safe_get_config("jd_app_secret")
-
 # MongoDB 配置
 MONGO_HOST = get_config("local_mongo_host") or "localhost"
 MONGO_PORT = int(get_config("local_mongo_port") or 27017)
@@ -43,6 +34,8 @@ AUTH_SECRET = os.environ.get("WEB_AUTH_SECRET") or safe_get_config("web_auth_sec
 # 业务安全与防刷约束常量
 ORDER_SYNC_INTERVAL = 180       # 增量订单拉取全局最小冷却间隔 (秒)
 ORDER_SYNC_MAX_PAGES = 5        # 单次增量拉单最大翻页数
+AUTH_STATUS_TTL = 86400         # 已确认平台授权状态的本地有效期
+PRODUCT_DETAIL_TTL = 600        # 官方详情有效期，摘要更新不能延长它
 CACHE_MAX_RECOMMEND = 256       # 首页推荐流缓存最大条目
 CACHE_MAX_DETAIL = 2048         # 商品详情缓存最大条目
 CACHE_MAX_SEARCH = 1024         # 搜索缓存最大条目

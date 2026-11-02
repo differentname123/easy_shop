@@ -318,7 +318,7 @@ class TestUserServiceSecurity(unittest.TestCase):
             "uid": "u_888",
             "phone": "13900139000",
             "auth_status": {
-                "pdd": {"is_authorized": True, "authorized_at": 1700000000}
+                "pdd": {"is_authorized": True, "updated_at": time.time()}
             }
         }
 

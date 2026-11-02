@@ -1,16 +1,50 @@
 # -*- coding: utf-8 -*-
-"""
-商品领域统一数据模型 (DTO)
-"""
+"""商品领域数据契约及跨缓存、仓储使用的商品身份。"""
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
 
 
+def normalize_platform(platform: Optional[str], default: str = "pdd") -> str:
+    code = (platform or default).strip().lower()
+    return "taobao" if code == "tb" else code
+
+
+def clean_product_id(value: Any) -> str:
+    """0 是旧清洗函数的缺省值，不可作为真实商品 ID。"""
+    if isinstance(value, bool) or isinstance(value, (int, float)) and value == 0:
+        return ""
+    text = str(value).strip() if value is not None else ""
+    return "" if text in ("", "0", "0.0", "None") or text.startswith("sign:") else text
+
+
+@dataclass(frozen=True)
+class ProductRef:
+    """平台、真实 ID 与加密 Sign 独立保存，不将请求里的两者视为已验证别名。"""
+    platform: str = "pdd"
+    goods_id: str = ""
+    goods_sign: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "platform", normalize_platform(self.platform))
+        object.__setattr__(self, "goods_id", clean_product_id(self.goods_id))
+        object.__setattr__(self, "goods_sign", str(self.goods_sign or "").strip())
+
+    @property
+    def key(self) -> str:
+        return self.goods_sign or self.goods_id
+
+    def cache_keys(self, uid: Optional[str] = None) -> list:
+        scope = ("detail", self.platform, uid or "")
+        return [scope + (kind, value) for kind, value in
+                (("sign", self.goods_sign), ("id", self.goods_id)) if value]
+
+
 class ProductSummary(BaseModel):
-    """商品卡片极简摘要（专供列表推荐与搜索秒开）"""
+    """商品卡片摘要。goods_id 可为空，不能用 Sign 冒充数字 ID。"""
     platform: str = "pdd"
     platform_name: str = "拼多多"
-    goods_id: str
+    goods_id: str = ""
     goods_sign: str = ""
     name: str
     image_url: str
@@ -28,7 +62,7 @@ class ProductSummary(BaseModel):
 
 
 class ProductDetail(ProductSummary):
-    """全屏深度商品详情（包含全量轮播图、参数、店铺评分与服务保障）"""
+    """完整商品详情，商业承诺和券信息仅保存来源提供的真实值。"""
     desc: str = ""
     carousel_images: List[str] = Field(default_factory=list)
     product_url: str = ""

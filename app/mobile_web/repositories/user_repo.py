@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 from app.mobile_web.repositories.base_repo import BaseRepository
 from app.mobile_web.auth import hash_password, verify_password
 from app.mobile_web.config import logger
+from app.mobile_web.models.product import normalize_platform
 
 DEFAULT_AVATAR = "https://img.pddpic.com/mms-avatar/default_avatar.png"
 
@@ -24,8 +25,10 @@ class UserRepository(BaseRepository):
             self.col.create_index([("phone", 1)], unique=True, sparse=True)
             self.col.create_index([("invite_code", 1)], unique=True, sparse=True)
             self.col.create_index([("created_at", -1)])
+            return True
         except Exception as e:
             logger.warning(f"用户集合索引创建提示: {e}")
+            return False
 
     @staticmethod
     def generate_uid() -> str:
@@ -198,7 +201,9 @@ class UserRepository(BaseRepository):
     ) -> bool:
         """更新推手在指定平台的渠道备案授权状态"""
         now = datetime.now(timezone.utc)
-        plat = (platform or "pdd").lower()
+        plat = normalize_platform(platform)
+        if len(plat) > 32 or not plat.isascii() or not plat.replace("_", "a").isalnum() or not plat[0].isalpha():
+            raise ValueError("无效的平台代码")
         field_prefix = f"auth_status.{plat}"
 
         update_fields = {

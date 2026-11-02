@@ -84,7 +84,7 @@ class TestProductRepoAdjustments(unittest.TestCase):
         self.mock_col.find_one.return_value = None
         self.repo.get_product_detail("12345")
         call_args = self.mock_col.find_one.call_args[0][0]
-        self.assertEqual(call_args, {"$or": [{"product_id": "12345"}, {"goods_sign": "12345"}]})
+        self.assertEqual(call_args, {"platform": "pdd", "$or": [{"product_id": "12345"}, {"goods_sign": "12345"}]})
 
 
 class TestUserRepoAdjustments(unittest.TestCase):
@@ -179,6 +179,8 @@ class TestOffsetAndDetailEnhancements(unittest.TestCase):
         DETAIL_CACHE.clear()
         with patch("app.mobile_web.services.product_service.get_adapter") as mock_get_adapter:
             mock_adapter = MagicMock()
+            from app.mobile_web.adapters.pdd_adapter import PddAdapter
+            mock_adapter.resolve_product_ref.side_effect = PddAdapter().resolve_product_ref
             mock_adapter.get_goods_detail.return_value = {
                 "status": "success",
                 "data": {

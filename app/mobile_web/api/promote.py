@@ -12,7 +12,7 @@ promote_service = PromoteService()
 
 
 class ConvertRequest(BaseModel):
-    platform: str = Field("pdd", max_length=10)
+    platform: str = Field("pdd", max_length=32, pattern="^[a-z][a-z0-9_]*$")
     goods_sign: Optional[str] = Field(None, max_length=128)
     goods_id: Optional[str] = Field(None, max_length=64)
     product_url: Optional[str] = Field(None, max_length=512)
@@ -25,7 +25,7 @@ class ConvertRequest(BaseModel):
 @router.post("/convert")
 def convert_link(req: ConvertRequest):
     """
-    点击商品时生成推手专属转链与拼多多口令（未登录自动使用持久化缓存）
+    点击商品时生成推手专属转链及平台口令（未登录使用官方推广位缓存）
     """
     goods_key = req.goods_sign or req.goods_id or ""
     return promote_service.convert_link(
