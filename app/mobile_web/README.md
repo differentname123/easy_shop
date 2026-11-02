@@ -163,7 +163,7 @@ python -B -m uvicorn app.mobile_web.main:app --app-dir ../.. --host 127.0.0.1 --
 python -B -m uvicorn app.mobile_web.tests.preview_app:app --app-dir ../.. --host 127.0.0.1 --port 8000
 ```
 
-`.claude/launch.json` 的 `mobile-web-offline-smoke` 使用该**测试入口**：在应用导入前安装同一隔离，再替换仓储/适配器；启动预热也使用替身。`GET /test/offline-status` 仅存在于测试应用，可检查被阻断的资源访问尝试是否为空。测试商品、账户、订单和本机链接都是假数据，不可作为生产入口部署。生产入口不导入测试隔离。两个服务入口占用同一端口，不要同时运行。
+`.claude/launch.json` 的 `mobile-web-offline-smoke` 使用该**测试入口**：在应用导入前安装同一隔离，再替换仓储/适配器；启动预热也使用替身。`GET /test/offline-status` 仅存在于测试应用，可检查被阻断的资源访问尝试是否为空。测试商品、账户、订单和本机链接都是假数据，不可作为生产入口部署。生产入口不导入测试隔离。自动预览通过 `PORT` 选择可用端口，测试购买链接也使用同一端口，不会停止占用8000的其他进程；上述两个手动命令仍默认使用8000，不要同时运行。
 
 回归重点覆盖：源 TTL 临界、可信身份与缓存别名、推广热命中零仓储访问、当前价格文案、纯缓存记录不上榜/不作详情降级、真实零值、UTC 推广截止时间、完整启动生命周期、会话/卸载后的迟到响应。Node VM 回归不能替代真实 Vue 模板及窄屏浏览器验证；内存 Mongo 替身也不能替代真库执行计划检查。
 

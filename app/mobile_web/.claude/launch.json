@@ -5,10 +5,11 @@
       "name": "mobile-web-offline-smoke",
       "runtimeExecutable": "python",
       "runtimeArgs": [
-        "-B", "-m", "uvicorn", "app.mobile_web.tests.preview_app:app",
-        "--app-dir", "../..", "--host", "127.0.0.1", "--port", "8000", "--no-access-log"
+        "-B", "-c",
+        "import os, sys; sys.path.insert(0, '../..'); import uvicorn; uvicorn.run('app.mobile_web.tests.preview_app:app', host='127.0.0.1', port=int(os.environ.get('PORT', '8000')), access_log=False)"
       ],
-      "port": 8000
+      "port": 8000,
+      "autoPort": true
     }
   ]
 }

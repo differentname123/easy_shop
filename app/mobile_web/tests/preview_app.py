@@ -3,6 +3,7 @@
 
 生产入口仍是 app.mobile_web.main:app，不能将此测试入口用于部署。
 """
+import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from fastapi.responses import Response
@@ -96,7 +97,7 @@ adapter.search_goods = lambda keyword, page=1, page_size=20, **kwargs: catalog_r
 adapter.get_goods_detail = lambda goods_id_or_sign="", goods_id=None, goods_sign=None, **kwargs: {
     "status": "success", "data": products.get_product_detail(goods_sign or goods_id or goods_id_or_sign)}
 adapter.convert_promotion_url = lambda goods_id_or_sign="", **kwargs: adapter._promotion_result(
-    "http://127.0.0.1:8000/detail?goods_id=10001", {}, kwargs.get("title", "回归商品"),
+    f"http://localhost:{os.environ.get('PORT', '8000')}/detail?goods_id=10001", {}, kwargs.get("title", "回归商品"),
     kwargs.get("price"), kwargs.get("coupon_amount"), "离线测试链接")
 adapter.check_authority = lambda uid: {"status": "success", "is_authorized": False, "bind": 0}
 adapter.generate_authority_url = lambda uid, **kwargs: {"status": "success", "auth_url": "/", "short_url": "/"}
