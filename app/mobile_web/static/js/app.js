@@ -334,6 +334,21 @@ const app = createApp({
       }
     };
 
+    const syncHomeSearchToUrl = (kw) => {
+      try {
+        const url = new URL(window.location.href);
+        if (kw && kw.trim()) {
+          url.searchParams.set('keyword', kw.trim());
+          sessionStorage.setItem('easy_shop_home_search_keyword', kw.trim());
+        } else {
+          url.searchParams.delete('keyword');
+          sessionStorage.removeItem('easy_shop_home_search_keyword');
+          sessionStorage.removeItem('easy_shop_home_search_state');
+        }
+        window.history.replaceState({ keyword: kw ? kw.trim() : '', tab: 'home' }, '', url.toString());
+      } catch (e) {}
+    };
+
     const loadHomeGoods = async (isReset = false) => {
       if (homeLoading.value) return;
       if (isReset) {
@@ -345,8 +360,9 @@ const app = createApp({
 
       try {
         let apiUrl = '';
-        if (homeSearchKeyword.value.trim()) {
-          apiUrl = `/api/home/search?keyword=${encodeURIComponent(homeSearchKeyword.value.trim())}&page=${homeSearchPage.value}&page_size=20&uid=${encodeURIComponent(uid.value || '')}`;
+        const kw = homeSearchKeyword.value.trim();
+        if (kw) {
+          apiUrl = `/api/home/search?keyword=${encodeURIComponent(kw)}&page=${homeSearchPage.value}&page_size=20&uid=${encodeURIComponent(uid.value || '')}`;
         } else {
           apiUrl = `/api/home/recommend?channel_type=${currentChannel.value}&offset=${homeOffset.value}&limit=20&uid=${encodeURIComponent(uid.value || '')}`;
         }
@@ -360,8 +376,18 @@ const app = createApp({
             homeGoodsList.value.push(...data.data);
           }
           homeOffset.value += data.data.length;
-          if (homeSearchKeyword.value.trim()) {
+          if (kw) {
             homeSearchPage.value += 1;
+            // 实时保存当前搜索快照至 sessionStorage
+            try {
+              sessionStorage.setItem('easy_shop_home_search_state', JSON.stringify({
+                keyword: kw,
+                list: homeGoodsList.value,
+                page: homeSearchPage.value,
+                offset: homeOffset.value,
+                scrollTop: window.pageYOffset || document.documentElement.scrollTop || 0
+              }));
+            } catch (e) {}
           }
         } else {
           if (isReset) homeGoodsList.value = [];
@@ -374,12 +400,21 @@ const app = createApp({
     };
 
     const onSearchHome = () => {
+      const kw = homeSearchKeyword.value.trim();
+      syncHomeSearchToUrl(kw);
+      loadHomeGoods(true);
+    };
+
+    const clearHomeSearch = () => {
+      homeSearchKeyword.value = '';
+      syncHomeSearchToUrl('');
       loadHomeGoods(true);
     };
 
     const switchChannel = (type) => {
       currentChannel.value = type;
       homeSearchKeyword.value = '';
+      syncHomeSearchToUrl('');
       loadHomeGoods(true);
     };
 
@@ -443,6 +478,18 @@ const app = createApp({
       // 预置卡片简要数据到 sessionStorage，实现详情页 0ms 瞬间无白屏秒开渲染
       try {
         sessionStorage.setItem('current_goods_summary', JSON.stringify(item));
+        // 如果是在搜索态下跳转，立即持久化保存搜索快照及滚动条高度，保证手机返回时原样恢复
+        const kw = homeSearchKeyword.value.trim();
+        if (kw && homeGoodsList.value.length > 0) {
+          syncHomeSearchToUrl(kw);
+          sessionStorage.setItem('easy_shop_home_search_state', JSON.stringify({
+            keyword: kw,
+            list: homeGoodsList.value,
+            page: homeSearchPage.value,
+            offset: homeOffset.value,
+            scrollTop: window.pageYOffset || document.documentElement.scrollTop || 0
+          }));
+        }
       } catch (e) {}
 
       const params = new URLSearchParams({
@@ -486,7 +533,7 @@ const app = createApp({
           }
         } else {
           convertedLinkInfo.value = {
-            final_link: currentGoods.value.product_url || currentGoods.value.promotion_url || '',
+            final_link: currentGoods.value.product_url || '',
             command_text: `【好物精选】${currentGoods.value.name}\n【券后价】¥${currentGoods.value.price}\n【抢购口令】长按复制本段全部文字，打开【拼多多APP】立即领券下单！\n${currentGoods.value.product_url || ''}`,
             error: data.error_msg || '转链失败'
           };
@@ -519,8 +566,8 @@ const app = createApp({
             window.location.href = targetUrl;
           }
         }, 350);
-      } else if (currentGoods.value && (currentGoods.value.product_url || currentGoods.value.promotion_url)) {
-        window.location.href = currentGoods.value.product_url || currentGoods.value.promotion_url;
+      } else if (currentGoods.value && currentGoods.value.product_url) {
+        window.location.href = currentGoods.value.product_url;
       } else {
         showToast('未获取到商品购买链接');
       }
@@ -688,8 +735,39 @@ const app = createApp({
         currentTab.value = urlTab;
       }
 
-      // 极速加载：立即并发拉取首屏商品流与频道，绝不等待认证请求，实现 0ms 瞬间出图
-      loadHomeGoods(true);
+      // 检查是否有搜索关键词（优先读取 URL，兜底读取 sessionStorage）
+      const initialKeyword = (urlParams.get('keyword') || sessionStorage.getItem('easy_shop_home_search_keyword') || '').trim();
+
+      let restoredSearch = false;
+      if (initialKeyword && (!urlTab || urlTab === 'home')) {
+        homeSearchKeyword.value = initialKeyword;
+        syncHomeSearchToUrl(initialKeyword);
+        try {
+          const cachedSearch = sessionStorage.getItem('easy_shop_home_search_state');
+          if (cachedSearch) {
+            const parsed = JSON.parse(cachedSearch);
+            if (parsed && parsed.keyword === initialKeyword && Array.isArray(parsed.list) && parsed.list.length > 0) {
+              homeGoodsList.value = parsed.list;
+              homeSearchPage.value = parsed.page || 2;
+              homeOffset.value = parsed.offset || parsed.list.length;
+              restoredSearch = true;
+              setTimeout(() => {
+                if (parsed.scrollTop) {
+                  window.scrollTo(0, parsed.scrollTop);
+                }
+              }, 60);
+            }
+          }
+        } catch (e) {}
+
+        if (!restoredSearch) {
+          loadHomeGoods(true);
+        }
+      } else {
+        // 极速加载：立即并发拉取首屏推荐流
+        loadHomeGoods(true);
+      }
+
       loadHomeChannels();
       fetchUserInfo();
 
@@ -749,6 +827,7 @@ const app = createApp({
       homeLoading,
       switchChannel,
       onSearchHome,
+      clearHomeSearch,
       loadHomeGoods,
       // 爆单
       boomPlatforms,

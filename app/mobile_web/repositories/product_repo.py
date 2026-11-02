@@ -103,29 +103,15 @@ class ProductRepository:
         original_price = doc.get("original_price") or activity_price
         saved_price = doc.get("saved_price") or max(0.0, round(original_price - activity_price, 2))
 
-        # 真实返利佣金与比例计算（优先读取库内真实的 commission_amount 字段）
-        commission = doc.get("commission_amount")
-        if commission is None:
-            commission = doc.get("commission")
-        if commission is None:
-            commission = doc.get("estimated_commission_yuan")
-
+        # 真实返利佣金与比例（严格读取当前代码生成的 commission_amount 字段）
         act_price = float(activity_price or 0.0)
-        rate = doc.get("promotion_rate") or doc.get("commission_rate")
-        if rate is not None:
-            r_val = float(rate)
-            commission_rate = round(r_val / 10.0, 1) if r_val > 50 else round(r_val, 1)
-        elif commission is not None and act_price > 0:
-            commission_rate = round((float(commission) / act_price) * 100, 1)
+        commission_amount = round(float(doc.get("commission_amount") or 0.0), 2)
+        if commission_amount > 0 and act_price > 0:
+            commission_rate = round((commission_amount / act_price) * 100, 1)
         else:
             commission_rate = 10.0
-
-        if commission is not None:
-            commission_amount = round(float(commission), 2)
-        else:
-            commission_amount = round(act_price * (commission_rate / 100.0), 2)
-            if commission_amount < 0.1 and act_price > 0:
-                commission_amount = 0.50
+            if act_price > 0 and commission_amount == 0.0:
+                commission_amount = round(act_price * (commission_rate / 100.0), 2)
 
         updated_at_dt = doc.get("updated_at")
         updated_at_str = updated_at_dt.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at_dt, "strftime") else str(updated_at_dt or "")
@@ -153,73 +139,34 @@ class ProductRepository:
 
     def _normalize_doc(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         """将 Mongo 原生商品文档转化为统一、规范且富含详情的对象"""
-        import urllib.parse
         doc.pop("_id", None)
         activity_price = doc.get("activity_price") or doc.get("price") or 0.0
         original_price = doc.get("original_price") or activity_price
         saved_price = doc.get("saved_price") or max(0.0, round(original_price - activity_price, 2))
 
-        # 提取轮播图片：优先读取已沉淀入库的高清多图列表
+        # 提取轮播图片：直接读取已沉淀入库的高清多图列表
         gallery = []
         stored_carousel = doc.get("carousel_images")
         if stored_carousel and isinstance(stored_carousel, list):
-            for u in stored_carousel:
-                if u and isinstance(u, str) and u.startswith("http"):
-                    gallery.append(u)
+            gallery = [u for u in stored_carousel if u and isinstance(u, str) and u.startswith("http")]
 
         main_img = doc.get("image_url")
-        if main_img and main_img not in gallery:
-            gallery.append(main_img)
+        if not gallery and main_img and isinstance(main_img, str) and main_img.startswith("http"):
+            gallery = [main_img]
 
-        # 解析 product_url 中的 _oak_gallery
-        purl = doc.get("product_url", "")
-        if "_oak_gallery=" in purl:
-            try:
-                parsed = urllib.parse.urlparse(purl)
-                qs = urllib.parse.parse_qs(parsed.query)
-                for g_val in qs.get("_oak_gallery", []):
-                    if g_val and g_val.startswith("http"):
-                        gallery.append(g_val)
-            except Exception:
-                pass
-
-        # 解析 sku_info 中的小图
-        sku_list = doc.get("sku_info") or []
-        if isinstance(sku_list, list):
-            for sku in sku_list:
-                if isinstance(sku, dict):
-                    s_img = sku.get("小图地址") or sku.get("image_url") or ""
-                    if s_img and s_img.startswith("http"):
-                        gallery.append(s_img)
-
-        # 去重保持顺序
         clean_gallery = list(dict.fromkeys(gallery))
-        if not clean_gallery and main_img:
-            clean_gallery = [main_img]
 
-        # 真实返利佣金与比例计算（优先读取库内真实的 commission_amount 字段）
-        commission = doc.get("commission_amount")
-        if commission is None:
-            commission = doc.get("commission")
-        if commission is None:
-            commission = doc.get("estimated_commission_yuan")
+        purl = doc.get("product_url", "")
 
+        # 真实返利佣金与比例（严格读取当前代码生成的 commission_amount 字段）
         act_price = float(activity_price or 0.0)
-        rate = doc.get("promotion_rate") or doc.get("commission_rate")
-        if rate is not None:
-            r_val = float(rate)
-            commission_rate = round(r_val / 10.0, 1) if r_val > 50 else round(r_val, 1)
-        elif commission is not None and act_price > 0:
-            commission_rate = round((float(commission) / act_price) * 100, 1)
+        commission_amount = round(float(doc.get("commission_amount") or 0.0), 2)
+        if commission_amount > 0 and act_price > 0:
+            commission_rate = round((commission_amount / act_price) * 100, 1)
         else:
             commission_rate = 10.0
-
-        if commission is not None:
-            commission_amount = round(float(commission), 2)
-        else:
-            commission_amount = round(act_price * (commission_rate / 100.0), 2)
-            if commission_amount < 0.1 and act_price > 0:
-                commission_amount = 0.50
+            if act_price > 0 and commission_amount == 0.0:
+                commission_amount = round(act_price * (commission_rate / 100.0), 2)
 
         # 处理更新时间
         updated_at_dt = doc.get("updated_at")
@@ -252,7 +199,6 @@ class ProductRepository:
             "image_url": main_img or "",
             "carousel_images": clean_gallery,
             "product_url": purl,
-            "promotion_url": doc.get("promotion_url") or purl,
             "updated_at": updated_at_str,
             "detail_tags": ["官方正品", "退货包运费", "极速发货", "假一赔十"],
             "service_guarantees": [
@@ -286,8 +232,6 @@ class ProductRepository:
             return None
         key = str(goods_id_or_sign).strip()
         conds = [{"product_id": key}, {"goods_sign": key}]
-        if key.isdigit():
-            conds.append({"product_id": int(key)})
         try:
             doc = self.col.find_one({"$or": conds})
             if doc:
@@ -471,34 +415,6 @@ class ProductRepository:
                     result = dict(promo_data)
                     result["from_cache"] = True
                     return result
-
-                # 兼容底层 products 表原生已存储的 promotion_url
-                purl = doc.get("promotion_url")
-                if purl and isinstance(purl, str) and ("p.pinduoduo.com" in purl or "yangkeduo.com" in purl or purl.startswith("http")):
-                    name = doc.get("name") or "精选高性价比好物"
-                    price = doc.get("activity_price") or doc.get("price")
-                    coupon = doc.get("coupon_amount") or doc.get("saved_price")
-                    cmd_lines = [f"【好物精选】{name}"]
-                    if price and float(price) > 0:
-                        p_info = f"【券后特惠】¥{price}"
-                        if coupon and float(coupon) > 0:
-                            p_info += f"（已立减 ¥{coupon}）"
-                        cmd_lines.append(p_info)
-                    cmd_lines.append("【抢购口令】长按复制本段全部信息，打开【拼多多APP】立即领券下单！")
-                    cmd_lines.append(f"{purl}")
-                    return {
-                        "status": "success",
-                        "need_auth": False,
-                        "link_type": "官方专属转链",
-                        "final_link": purl,
-                        "url": purl,
-                        "short_url": purl,
-                        "mobile_url": purl,
-                        "mobile_short_url": purl,
-                        "command_text": "\n".join(cmd_lines),
-                        "we_app_info": {},
-                        "from_cache": True,
-                    }
         except Exception as e:
             logger.warning(f"读取 products 表官方推广缓存异常: {e}")
         return None
@@ -534,22 +450,10 @@ class ProductRepository:
         if not filter_spec:
             return False
 
-        final_link = (
-            cache_data.get("final_link")
-            or cache_data.get("mobile_short_url")
-            or cache_data.get("short_url")
-            or cache_data.get("url")
-            or ""
-        )
-
         update_set = {
             "default_promotion": cache_data,
             "default_promotion_updated_at": now,
         }
-        if final_link:
-            update_set["promotion_url"] = final_link
-            update_set["promotion_status"] = "success"
-            update_set["promotion_updated_at"] = now
         if gsign:
             update_set["goods_sign"] = str(gsign)
         if gid:

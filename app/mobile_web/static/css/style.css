@@ -120,6 +120,19 @@ body {
   color: var(--text-main);
 }
 
+.search-clear-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
 .search-btn {
   background: var(--accent-gradient);
   color: #fff;

@@ -26,6 +26,7 @@
             v-model="homeSearchKeyword"
             @keyup.enter="onSearchHome"
           />
+          <button v-if="homeSearchKeyword" class="search-clear-btn" @click="clearHomeSearch" title="清空搜索">✕</button>
         </div>
         <button class="search-btn" @click="onSearchHome">搜索</button>
       </div>

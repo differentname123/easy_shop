@@ -481,7 +481,12 @@ const app = createApp({
       if (window.history.length > 1) {
         window.history.back();
       } else {
-        window.location.href = '/';
+        const savedKw = sessionStorage.getItem('easy_shop_home_search_keyword');
+        if (savedKw) {
+          window.location.href = `/?keyword=${encodeURIComponent(savedKw)}`;
+        } else {
+          window.location.href = '/';
+        }
       }
     };
 
@@ -578,7 +583,7 @@ const app = createApp({
           return data;
         } else {
           const fallbackData = {
-            final_link: goods.value.product_url || goods.value.promotion_url || '',
+            final_link: goods.value.product_url || '',
             command_text: `【好物精选】${goods.value.name}\n【券后价】¥${goods.value.price}\n【抢购口令】长按复制本段全部文字，打开【拼多多APP】立即领券下单！\n${goods.value.product_url || ''}`
           };
           convertedLinkInfo.value = fallbackData;
@@ -600,7 +605,7 @@ const app = createApp({
       }
 
       const copyContent = linkInfo.command_text || linkInfo.final_link;
-      const targetUrl = linkInfo.final_link || goods.value?.product_url || goods.value?.promotion_url;
+      const targetUrl = linkInfo.final_link || goods.value?.product_url || '';
       const schemaUrl = linkInfo.schema_url;
 
       // 复制口令至剪贴板，方便用户在拼多多 APP 内自动识别

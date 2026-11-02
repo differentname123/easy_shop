@@ -101,19 +101,8 @@ class UserRepository:
         existing = self.get_user_by_phone(phone)
         if existing:
             # 已注册用户：校验密码
-            if existing.get("password_hash") and existing.get("password_hash") != pwd_hash:
+            if existing.get("password_hash") != pwd_hash:
                 raise ValueError("手机号已注册，输入的密码不正确")
-            
-            # 兼容历史无密码记录的老账号补充密码
-            if not existing.get("password_hash"):
-                self.col.update_one({"phone": phone}, {"$set": {"password_hash": pwd_hash}})
-                existing["password_hash"] = pwd_hash
-
-            # 如果老账号没有邀请码，自动为其补齐
-            if not existing.get("invite_code"):
-                my_code = self.generate_unique_invite_code()
-                self.col.update_one({"phone": phone}, {"$set": {"invite_code": my_code}})
-                existing["invite_code"] = my_code
 
             # 更新最后活跃与登录时间
             self.col.update_one(
