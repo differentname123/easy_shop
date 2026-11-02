@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-拼多多多多进宝平台适配器
-对接多多进宝开放平台，实现推荐商品榜单、搜索、多图轮播清洗、渠道授权备案与带统一 UID 的推广转链。
+拼多多多多进宝平台适配器 (Decoupled Provider)
+对接多多进宝开放平台，实现推荐榜单、搜索、规范化清洗、推手备案与带 UID 推广转链。
 """
 from typing import Dict, Any, List, Optional
-import requests
-from requests.adapters import HTTPAdapter
 from app.mobile_web.adapters.base import BasePlatformAdapter
-from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID
-from common.common_utils import setup_logger
+from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID, logger
 from app.pdd_utils import (
     call_pdd_api,
     clean_goods_item,
@@ -19,16 +16,8 @@ from app.pdd_utils import (
     make_custom_parameters,
     convert_pdd_url,
     get_goods_detail as pdd_get_detail,
+    query_increment_orders,
 )
-
-logger = setup_logger(app_name="mobile_web")
-
-# 全局复用的高性能 HTTP 会话池，消除每次建立连接与 TLS 握手的几秒延迟
-_HTTP_SESSION = requests.Session()
-_HTTP_SESSION.trust_env = False  # 避免 Windows 系统代理误匹配带来的长延时
-_ADAPTER = HTTPAdapter(pool_connections=20, pool_maxsize=50, max_retries=0)
-_HTTP_SESSION.mount("https://", _ADAPTER)
-_HTTP_SESSION.mount("http://", _ADAPTER)
 
 
 class PddAdapter(BasePlatformAdapter):
@@ -46,7 +35,7 @@ class PddAdapter(BasePlatformAdapter):
         self.pid = pid
 
     def _normalize_goods_summary(self, raw_cleaned: dict) -> dict:
-        """极简商品卡片摘要对象：专供列表推荐与搜索，减少冗余字段，极大加快首屏加载与解析速度"""
+        """极简商品卡片摘要对象：专供列表推荐与搜索秒开"""
         price = raw_cleaned.get("min_group_price_yuan", 0.0)
         coupon_discount = raw_cleaned.get("coupon_discount_yuan", 0.0)
         final_price = round(max(0.0, price - coupon_discount), 2) if raw_cleaned.get("has_coupon") else price
@@ -69,33 +58,28 @@ class PddAdapter(BasePlatformAdapter):
         }
 
     def _normalize_goods(self, raw_cleaned: dict) -> dict:
-        """将清洗后的商品数据转化为统一、规范且包含多图轮播的对外商品详情对象"""
+        """规范化商品详情对象（包含多图轮播图与保障）"""
         price = raw_cleaned.get("min_group_price_yuan", 0.0)
         coupon_discount = raw_cleaned.get("coupon_discount_yuan", 0.0)
         final_price = round(max(0.0, price - coupon_discount), 2) if raw_cleaned.get("has_coupon") else price
 
         raw_dict = raw_cleaned.get("_raw_data", {})
-        # 提取轮播图/更多图片列表
         gallery = raw_dict.get("goods_gallery_urls") or []
         if not gallery:
             img = raw_cleaned.get("goods_image_url") or raw_cleaned.get("goods_thumbnail_url")
             thumb = raw_cleaned.get("goods_thumbnail_url")
             gallery = [u for u in [img, thumb] if u]
-            gallery = list(dict.fromkeys(gallery))  # 去重
+            gallery = list(dict.fromkeys(gallery))
 
         brand_name = raw_cleaned.get("brand_name") or "官方优选"
         category_name = raw_cleaned.get("category_name") or "精选好物"
         sales_tip = raw_cleaned.get("sales_tip", "0")
         mall_name = raw_cleaned.get("mall_name", "品牌官方店")
 
-        # 官方标签
         unified = raw_dict.get("unified_tags") or []
         if not unified:
             unified = [t for t in ["官方补贴", "退货包运费", "极速发货", "正品保障"] if raw_cleaned.get("has_coupon") or price > 20]
 
-        # 优惠券起止时间与余量
-        coupon_start = raw_cleaned.get("coupon_start_time")
-        coupon_end = raw_cleaned.get("coupon_end_time")
         coupon_remain = raw_cleaned.get("coupon_remain_quantity", 0)
         coupon_total = raw_cleaned.get("coupon_total_quantity", 0)
 
@@ -155,9 +139,7 @@ class PddAdapter(BasePlatformAdapter):
         uid: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        获取多多进宝推荐榜单商品
-        """
+        """获取多多进宝推荐榜单商品"""
         try:
             custom_params = make_custom_parameters(uid=uid) if uid else None
             params = {
@@ -200,9 +182,7 @@ class PddAdapter(BasePlatformAdapter):
         uid: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        关键词搜索多多进宝商品
-        """
+        """关键词搜索多多进宝商品"""
         try:
             safe_page_size = max(10, min(100, int(page_size or 20)))
             custom_params = make_custom_parameters(uid=uid) if uid else None
@@ -244,9 +224,7 @@ class PddAdapter(BasePlatformAdapter):
         uid: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        获取拼多多官方完整商品详情 (包含全量高清实拍轮播图、满减优惠、店铺与服务保障)
-        """
+        """获取拼多多官方完整商品详情"""
         try:
             is_sign = len(str(goods_id_or_sign)) > 16 or not str(goods_id_or_sign).isdigit()
             goods_sign = str(goods_id_or_sign) if is_sign else None
@@ -269,7 +247,8 @@ class PddAdapter(BasePlatformAdapter):
             logger.error(f"[PddAdapter.get_goods_detail] 异常: {e}")
             return {"status": "error", "error_msg": str(e)}
 
-    def _build_command_text(self, title: str, final_link: str, price: Optional[float] = None, coupon: Optional[float] = None) -> str:
+    @staticmethod
+    def _build_command_text(title: str, final_link: str, price: Optional[float] = None, coupon: Optional[float] = None) -> str:
         cmd_lines = [f"【好物精选】{title or '精选高性价比好物'}"]
         if price is not None and float(price) > 0:
             p_info = f"【券后特惠】¥{price}"
@@ -281,7 +260,7 @@ class PddAdapter(BasePlatformAdapter):
         return "\n".join(cmd_lines)
 
     def _resolve_goods_id(self, goods_id_or_sign: str, kwargs: dict) -> tuple[Optional[str], Optional[str]]:
-        """提取并解析真实的 goods_id (数字) 与 goods_sign"""
+        """纯内存参数提取真实的 goods_id 与 goods_sign，绝不反查外部仓储"""
         goods_id = kwargs.get("goods_id")
         goods_sign = kwargs.get("goods_sign")
 
@@ -293,17 +272,6 @@ class PddAdapter(BasePlatformAdapter):
                 if not goods_sign:
                     goods_sign = str(goods_id_or_sign)
 
-        # 若仍无数字 goods_id 但有 goods_sign，从商品库反查
-        if not goods_id and goods_sign:
-            try:
-                from app.mobile_web.repositories.product_repo import ProductRepository
-                repo = ProductRepository()
-                doc = repo.get_product_detail(goods_sign)
-                if doc and doc.get("product_id") and str(doc.get("product_id")).isdigit():
-                    goods_id = str(doc.get("product_id"))
-            except Exception:
-                pass
-
         return goods_id, goods_sign
 
     def convert_promotion_url(
@@ -314,20 +282,16 @@ class PddAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """
         使用推手专属 UID 生成拼多多推广链接
-        确保输出统一权威的 final_link 字段，保证“前往领券”和“复制链接”绝对一致！
         """
         goods_id, goods_sign = self._resolve_goods_id(goods_id_or_sign, kwargs)
         title = kwargs.get("title") or kwargs.get("name") or kwargs.get("goods_name") or "精选高性价比好物"
         price = kwargs.get("price")
         coupon = kwargs.get("coupon_amount") or kwargs.get("coupon")
-
         target_sign = goods_sign or goods_id_or_sign
 
-        # 尝试标准智能生链
+        # 1. 尝试标准智能生链
         try:
-            smart_kwargs = dict(kwargs)
-            smart_kwargs.pop("goods_sign", None)
-            smart_kwargs.pop("goods_id", None)
+            smart_kwargs = {k: v for k, v in kwargs.items() if k not in ("goods_sign", "goods_id", "title", "price", "coupon", "coupon_amount")}
             res = generate_smart_promotion_url(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
@@ -364,13 +328,7 @@ class PddAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning(f"[PddAdapter.convert_promotion_url] 智能生链未成，平滑进入官方招商券兜底: {e}")
 
-        extra_kwargs = dict(kwargs)
-        extra_kwargs.pop("goods_id", None)
-        extra_kwargs.pop("goods_sign", None)
-        extra_kwargs.pop("title", None)
-        extra_kwargs.pop("price", None)
-        extra_kwargs.pop("coupon", None)
-        extra_kwargs.pop("coupon_amount", None)
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("goods_id", "goods_sign", "title", "price", "coupon", "coupon_amount")}
         return self._handle_fallback_conversion(goods_id, target_sign, uid, title=title, price=price, coupon=coupon, **extra_kwargs)
 
     def _handle_unauthorized_conversion(self, goods_sign: str, uid: Optional[str], **kwargs) -> Dict[str, Any]:
@@ -379,13 +337,7 @@ class PddAdapter(BasePlatformAdapter):
         title = kwargs.get("title") or kwargs.get("name") or "精选高性价比好物"
         price = kwargs.get("price")
         coupon = kwargs.get("coupon_amount") or kwargs.get("coupon")
-        extra_kwargs = dict(kwargs)
-        extra_kwargs.pop("goods_id", None)
-        extra_kwargs.pop("goods_sign", None)
-        extra_kwargs.pop("title", None)
-        extra_kwargs.pop("price", None)
-        extra_kwargs.pop("coupon", None)
-        extra_kwargs.pop("coupon_amount", None)
+        extra_kwargs = {k: v for k, v in kwargs.items() if k not in ("goods_id", "goods_sign", "title", "price", "coupon", "coupon_amount")}
         return self._handle_fallback_conversion(goods_id, real_sign or goods_sign, uid, title=title, price=price, coupon=coupon, **extra_kwargs)
 
     def _handle_fallback_conversion(
@@ -398,73 +350,76 @@ class PddAdapter(BasePlatformAdapter):
         coupon: Optional[float] = None,
         **kwargs
     ) -> Dict[str, Any]:
-        """
-        官方优惠券转链兜底处理：
-        使用 convert_pdd_url 转化商品链接为带优惠券和推手 UID 的真实官方推广短链 (如 https://p.pinduoduo.com/...)
-        """
+        """官方优惠券转链兜底处理"""
         # 1. 优先使用数字 goods_id 构造 source_url 并通过 convert_pdd_url 生成官方券短链
         if goods_id and str(goods_id).isdigit():
             source_url = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
-            zs_res = convert_pdd_url(
+            try:
+                zs_res = convert_pdd_url(
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                    pid=self.pid,
+                    source_url=source_url,
+                    uid=uid
+                )
+                if zs_res.get("status") == "success" and zs_res.get("jump_url"):
+                    jump_url = zs_res["jump_url"]
+                    raw_data = zs_res.get("raw_data", {})
+                    command_text = self._build_command_text(title, jump_url, price, coupon)
+                    return {
+                        "status": "success",
+                        "need_auth": False,
+                        "link_type": "官方招商券推广",
+                        "final_link": jump_url,
+                        "url": jump_url,
+                        "short_url": jump_url,
+                        "mobile_url": jump_url,
+                        "mobile_short_url": jump_url,
+                        "schema_url": raw_data.get("mobile_url") or "",
+                        "command_text": command_text,
+                        "we_app_info": {},
+                        "raw": raw_data,
+                    }
+            except Exception as e:
+                logger.warning(f"[PddAdapter] 招商券转链异常: {e}")
+
+        # 2. 通用无 UID 生链兜底
+        try:
+            fallback_res = generate_goods_promotion_url(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
                 pid=self.pid,
-                source_url=source_url,
-                uid=uid
+                goods_sign=goods_sign,
+                uid=None,
+                **kwargs
             )
-            if zs_res.get("status") == "success" and zs_res.get("jump_url"):
-                jump_url = zs_res["jump_url"]
-                raw_data = zs_res.get("raw_data", {})
-                command_text = self._build_command_text(title, jump_url, price, coupon)
+            fb_data = fallback_res.get("data", {}) if fallback_res.get("status") == "success" else {}
+            fb_link = (
+                fb_data.get("mobile_short_url")
+                or fb_data.get("short_url")
+                or fb_data.get("mobile_url")
+                or fb_data.get("url")
+            )
+            if fb_link:
+                command_text = self._build_command_text(title, fb_link, price, coupon)
                 return {
                     "status": "success",
                     "need_auth": False,
-                    "link_type": "官方招商券推广",
-                    "final_link": jump_url,
-                    "url": jump_url,
-                    "short_url": jump_url,
-                    "mobile_url": jump_url,
-                    "mobile_short_url": jump_url,
-                    "schema_url": raw_data.get("mobile_url") or "",
+                    "link_type": "通用官方推广",
+                    "final_link": fb_link,
+                    "url": fb_link,
+                    "short_url": fb_link,
+                    "mobile_url": fb_link,
+                    "mobile_short_url": fb_link,
+                    "schema_url": fb_data.get("schema_url") or "",
                     "command_text": command_text,
-                    "we_app_info": {},
-                    "raw": raw_data,
+                    "we_app_info": fb_data.get("we_app_info", {}),
+                    "raw": fb_data,
                 }
+        except Exception as e:
+            logger.warning(f"[PddAdapter] 通用推广生链异常: {e}")
 
-        # 2. 如果没有数字 goods_id 或转链未果，尝试通用无 UID 生链
-        fallback_res = generate_goods_promotion_url(
-            client_id=self.client_id,
-            client_secret=self.client_secret,
-            pid=self.pid,
-            goods_sign=goods_sign,
-            uid=None,
-            **kwargs
-        )
-        fb_data = fallback_res.get("data", {}) if fallback_res.get("status") == "success" else {}
-        fb_link = (
-            fb_data.get("mobile_short_url")
-            or fb_data.get("short_url")
-            or fb_data.get("mobile_url")
-            or fb_data.get("url")
-        )
-        if fb_link:
-            command_text = self._build_command_text(title, fb_link, price, coupon)
-            return {
-                "status": "success",
-                "need_auth": False,
-                "link_type": "通用官方推广",
-                "final_link": fb_link,
-                "url": fb_link,
-                "short_url": fb_link,
-                "mobile_url": fb_link,
-                "mobile_short_url": fb_link,
-                "schema_url": fb_data.get("schema_url") or "",
-                "command_text": command_text,
-                "we_app_info": fb_data.get("we_app_info", {}),
-                "raw": fb_data,
-            }
-
-        # 3. 最终保底：绝对不能生成带 goods_sign 的 goods_id 假链接！
+        # 3. 最终直连保底（带 is_fallback: True 标记）
         if goods_id and str(goods_id).isdigit():
             final_raw_link = f"https://mobile.pinduoduo.com/goods.html?goods_id={goods_id}"
         else:
@@ -488,7 +443,7 @@ class PddAdapter(BasePlatformAdapter):
         }
 
     def check_authority(self, uid: str) -> Dict[str, Any]:
-        """检查指定推手在拼多多的渠道备案状态"""
+        """检查推手在拼多多的渠道备案状态"""
         try:
             return check_member_authority(
                 client_id=self.client_id,
@@ -512,7 +467,12 @@ class PddAdapter(BasePlatformAdapter):
             )
             if res.get("status") == "success":
                 url_info = res.get("url_info", {})
-                auth_link = url_info.get("mobile_short_url") or url_info.get("mobile_url") or url_info.get("short_url") or url_info.get("url", "")
+                auth_link = (
+                    url_info.get("mobile_short_url")
+                    or url_info.get("mobile_url")
+                    or url_info.get("short_url")
+                    or url_info.get("url", "")
+                )
                 return {
                     "status": "success",
                     "auth_url": auth_link,
@@ -534,7 +494,6 @@ class PddAdapter(BasePlatformAdapter):
     ) -> Dict[str, Any]:
         """拉取拼多多指定时间段的增量订单"""
         try:
-            from app.pdd_utils import query_increment_orders
             res = query_increment_orders(
                 client_id=self.client_id,
                 client_secret=self.client_secret,

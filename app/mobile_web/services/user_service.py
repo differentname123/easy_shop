@@ -62,7 +62,6 @@ class UserService:
                 nickname=nickname,
                 invite_code=invite_code
             )
-            # 签发轻量时效 HMAC 令牌
             auth_token = create_access_token(user["uid"])
             user_data = dict(user)
             user_data["auth_token"] = auth_token

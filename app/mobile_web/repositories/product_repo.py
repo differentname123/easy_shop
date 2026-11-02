@@ -1,34 +1,29 @@
 # -*- coding: utf-8 -*-
 """
 商品数据仓储模块 (MongoDB: products 集合)
-用于爆单推广库商品的多维度筛选、聚合排序与分页查询。
+负责商品数据的高效读写、索引保障与爆品库检索。
 """
 import re
 import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from pymongo import UpdateOne
-from common.mongo_db.mongo_base import gen_db_object
+from app.mobile_web.repositories.base_repo import BaseRepository
 from app.mobile_web.config import logger
 
 
-class ProductRepository:
+class ProductRepository(BaseRepository):
     COLLECTION_NAME = "products"
 
-    def __init__(self, db_instance=None):
-        self._db = db_instance or gen_db_object()
+    def _init_indexes(self):
         try:
             self.col.create_index([("platform", 1), ("product_id", 1)], background=True)
             self.col.create_index("goods_sign", background=True)
-        except Exception:
-            pass
-
-    @property
-    def col(self):
-        return self._db.get_collection(self.COLLECTION_NAME)
+        except Exception as e:
+            logger.warning(f"商品集合索引创建提示: {e}")
 
     @staticmethod
     def _calc_commission(activity_price: float, raw_commission: Any) -> Tuple[float, float]:
-        """统一佣金比例与金额计算逻辑，杜绝冗余重复"""
+        """统一佣金比例与金额计算逻辑"""
         act_price = float(activity_price or 0.0)
         commission_amount = round(float(raw_commission or 0.0), 2)
         if commission_amount > 0 and act_price > 0:
@@ -49,13 +44,7 @@ class ProductRepository:
         page_size: int = 20,
     ) -> Dict[str, Any]:
         """
-        分页查询爆单库商品
-        :param platform: 平台代码 (all, pdd, taobao, jd)
-        :param category: 商品类目/Tab
-        :param keyword: 标题或品牌模糊搜索
-        :param sort_by: latest(最新) | save_desc(省最多) | price_asc(价格低) | price_desc(价格高)
-        :param page: 页码
-        :param page_size: 每页数量
+        分页查询爆单库商品（游标探测无慢查询 count_documents）
         """
         page = max(1, min(50, int(page or 1)))
         page_size = max(1, min(50, int(page_size or 20)))
@@ -63,20 +52,16 @@ class ProductRepository:
 
         filter_query: Dict[str, Any] = {}
 
-        # 平台筛选
         if platform and platform.lower() != "all":
             filter_query["platform"] = platform.lower()
 
-        # 分类筛选
         if category and category.strip() and category != "全部":
             filter_query["category"] = category.strip()
 
-        # 关键词模糊搜索 (使用 re.escape 彻底转义特殊元字符，截断长度防 ReDoS)
         if keyword and keyword.strip():
             safe_kw = re.escape(keyword.strip()[:30])
             filter_query["name"] = {"$regex": safe_kw, "$options": "i"}
 
-        # 排序规则
         sort_mapping = {
             "latest": [("updated_at", -1)],
             "save_desc": [("saved_price", -1), ("updated_at", -1)],
@@ -86,8 +71,6 @@ class ProductRepository:
         sort_spec = sort_mapping.get(sort_by, [("updated_at", -1)])
 
         try:
-            # 使用游标 + 预查 1 条探测下一页，并附加 2000ms 硬超时；
-            # 避免在带有正则模糊查询时触发全表扫描的 count_documents
             cursor = (
                 self.col.find(filter_query)
                 .sort(sort_spec)
@@ -120,12 +103,11 @@ class ProductRepository:
             }
 
     def _normalize_doc_summary(self, doc: Dict[str, Any]) -> Dict[str, Any]:
-        """极简爆品卡片摘要对象：仅提取列表所需字段，大幅提升查询与网络传输速度"""
+        """极简爆品卡片摘要对象：专供列表与搜索秒开"""
         activity_price = doc.get("activity_price") or doc.get("price") or 0.0
         original_price = doc.get("original_price") or activity_price
         saved_price = doc.get("saved_price") or max(0.0, round(original_price - activity_price, 2))
 
-        # 真实返利佣金与比例（统一使用 _calc_commission）
         commission_rate, commission_amount = self._calc_commission(activity_price, doc.get("commission_amount"))
 
         updated_at_dt = doc.get("updated_at")
@@ -154,12 +136,13 @@ class ProductRepository:
 
     def _normalize_doc(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         """将 Mongo 原生商品文档转化为统一、规范且富含详情的对象"""
+        doc = dict(doc)
         doc.pop("_id", None)
         activity_price = doc.get("activity_price") or doc.get("price") or 0.0
         original_price = doc.get("original_price") or activity_price
         saved_price = doc.get("saved_price") or max(0.0, round(original_price - activity_price, 2))
 
-        # 提取轮播图片：直接读取已沉淀入库的高清多图列表
+        # 提取高清轮播图列表
         gallery = []
         stored_carousel = doc.get("carousel_images")
         if stored_carousel and isinstance(stored_carousel, list):
@@ -171,12 +154,8 @@ class ProductRepository:
 
         clean_gallery = list(dict.fromkeys(gallery))
 
-        purl = doc.get("product_url", "")
-
-        # 真实返利佣金与比例（统一使用 _calc_commission）
         commission_rate, commission_amount = self._calc_commission(activity_price, doc.get("commission_amount"))
 
-        # 处理更新时间
         updated_at_dt = doc.get("updated_at")
         updated_at_str = updated_at_dt.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at_dt, "strftime") else str(updated_at_dt or "")
 
@@ -206,7 +185,7 @@ class ProductRepository:
             "sales_tip": doc.get("sales_tip") or "热销中",
             "image_url": main_img or "",
             "carousel_images": clean_gallery,
-            "product_url": purl,
+            "product_url": doc.get("product_url", ""),
             "updated_at": updated_at_str,
             "detail_tags": ["官方正品", "退货包运费", "极速发货", "假一赔十"],
             "service_guarantees": [
@@ -235,7 +214,7 @@ class ProductRepository:
         }
 
     def get_product_detail(self, goods_id_or_sign: str) -> Optional[Dict[str, Any]]:
-        """按 product_id 或 goods_sign 从数据库直接检索并返回规范化商品详情"""
+        """按 product_id 或 goods_sign 从数据库检索并返回详情"""
         if not goods_id_or_sign:
             return None
         key = str(goods_id_or_sign).strip()
@@ -249,7 +228,7 @@ class ProductRepository:
         return None
 
     def get_categories(self, platform: str = "all") -> List[str]:
-        """获取已有商品的类目列表，用于分类快速导航"""
+        """获取类目列表"""
         filter_query = {}
         if platform and platform.lower() != "all":
             filter_query["platform"] = platform.lower()
@@ -267,7 +246,7 @@ class ProductRepository:
     ) -> int:
         """
         批量更新/插入首页官方推荐流商品到 MongoDB products 集合
-        每次用户拉取推荐商品时自动执行，确保商品最新价格、优惠与销量持久化
+        隔绝大模型开销标记 (need_reformat: False, format_status: 'success')
         """
         if not goods_list or not isinstance(goods_list, list):
             return 0
@@ -282,7 +261,6 @@ class ProductRepository:
                 continue
 
             platform = item.get("platform") or "pdd"
-            # 严格对齐 MongoDB 集合已有的 (platform, product_id) 唯一索引
             if goods_id:
                 filter_spec = {"platform": platform, "product_id": goods_id}
             else:
@@ -318,7 +296,6 @@ class ProductRepository:
             if channel_type is not None:
                 update_data["channel_type"] = channel_type
 
-            # 构建原子操作
             operations.append(
                 UpdateOne(filter_spec, {"$set": update_data, "$setOnInsert": {"created_at": now}}, upsert=True)
             )
@@ -336,7 +313,7 @@ class ProductRepository:
             return 0
 
     def upsert_product_detail(self, detail: Dict[str, Any]) -> bool:
-        """将完整深度商品详情写入或更新到数据库，用于后续详情反查秒开"""
+        """将深度商品详情写入或更新到数据库"""
         if not detail or not isinstance(detail, dict):
             return False
         goods_sign = str(detail.get("goods_sign") or "").strip()
@@ -394,12 +371,7 @@ class ProductRepository:
         goods_sign: Optional[str] = None,
         goods_key: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        从 products 集合中直接读取站长官方推广链接与抢购口令。
-        无需额外建立新表，直接复用已有的商品主表数据，0ms 瞬间响应。
-        """
-        filter_spec = None
-        # 优先使用唯一的 goods_id (product_id) 检索
+        """从 products 集合中读取站长官方推广链接缓存"""
         gid = goods_id or (goods_key if goods_key and str(goods_key).isdigit() else None)
         gsign = goods_sign or (goods_key if goods_key and not str(goods_key).isdigit() else None)
 
@@ -407,8 +379,7 @@ class ProductRepository:
             filter_spec = {"platform": platform, "product_id": str(gid)}
         elif gsign:
             filter_spec = {"platform": platform, "goods_sign": str(gsign)}
-
-        if not filter_spec:
+        else:
             return None
 
         try:
@@ -416,7 +387,6 @@ class ProductRepository:
             if doc:
                 promo_data = doc.get("default_promotion")
                 if isinstance(promo_data, dict) and promo_data.get("final_link"):
-                    # 检查缓存有效期（默认 3 天）
                     promo_ts = doc.get("default_promotion_updated_at")
                     if promo_ts:
                         try:
@@ -441,10 +411,7 @@ class ProductRepository:
         goods_sign: Optional[str] = None,
         goods_key: Optional[str] = None
     ) -> bool:
-        """
-        持久化保存未登录用户（站长官方位）的转链结果到 products 商品主表中。
-        拼多多平台严格以唯一的 goods_id (product_id) 为核心主键。
-        """
+        """持久化保存未登录用户（站长官方位）的转链结果"""
         if not data or not isinstance(data, dict):
             return False
 
@@ -455,13 +422,11 @@ class ProductRepository:
         gid = goods_id or (goods_key if goods_key and str(goods_key).isdigit() else None)
         gsign = goods_sign or (goods_key if goods_key and not str(goods_key).isdigit() else None)
 
-        filter_spec = None
         if gid and str(gid).isdigit():
             filter_spec = {"platform": platform, "product_id": str(gid)}
         elif gsign:
             filter_spec = {"platform": platform, "goods_sign": str(gsign)}
-
-        if not filter_spec:
+        else:
             return False
 
         update_set = {
@@ -484,4 +449,3 @@ class ProductRepository:
         except Exception as e:
             logger.warning(f"保存 products 表官方推广缓存异常: {e}")
             return False
-

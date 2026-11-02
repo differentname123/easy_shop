@@ -57,7 +57,7 @@ class OrderService:
         platform: str = "pdd",
         uid: str = "",
         days: int = 7,
-        force_sync: bool = False  # 忽略外部传参，由后端安全策略严格控频
+        force_sync: bool = False
     ) -> Dict[str, Any]:
         """
         查询推手订单与返利收益明细：
@@ -69,7 +69,7 @@ class OrderService:
         last_sync = _LAST_SYNC_TIMESTAMP.get(plat, 0.0)
 
         # ---------------- 步骤1：非阻塞尝试触发后台异步同步 ----------------
-        if now - last_sync >= ORDER_SYNC_INTERVAL:
+        if (now - last_sync >= ORDER_SYNC_INTERVAL) or force_sync:
             if _SYNC_LOCK.acquire(blocking=False):
                 _LAST_SYNC_TIMESTAMP[plat] = now
                 threading.Thread(

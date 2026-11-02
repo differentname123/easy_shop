@@ -1,36 +1,25 @@
 # -*- coding: utf-8 -*-
 """
 订单数据仓储模块 (MongoDB: orders 集合)
-管理电商多平台订单记录，支持增量幂等入库、推手UID归因筛选与返利佣金统计。
+管理电商多平台订单记录，支持增量幂等入库与推手 UID 归因筛选。
 """
-import time
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from pymongo import UpdateOne
-from common.mongo_db.mongo_base import gen_db_object
-from common.common_utils import setup_logger
-
-logger = setup_logger(app_name="mobile_web")
+from app.mobile_web.repositories.base_repo import BaseRepository
+from app.mobile_web.config import logger
 
 
-class OrderRepository:
+class OrderRepository(BaseRepository):
     COLLECTION_NAME = "orders"
 
-    def __init__(self, db_instance=None):
-        self._db = db_instance or gen_db_object()
+    def _init_indexes(self):
         try:
-            raw_col = self.col
-            # 唯一索引：同一平台同一订单号唯一
-            raw_col.create_index([("platform", 1), ("order_sn", 1)], unique=True)
-            # 复合索引：按推手归属与付款时间快速查询
-            raw_col.create_index([("platform", 1), ("promoter_uid", 1), ("order_pay_time", -1)])
-            raw_col.create_index([("order_modify_at", -1)])
+            self.col.create_index([("platform", 1), ("order_sn", 1)], unique=True)
+            self.col.create_index([("platform", 1), ("promoter_uid", 1), ("order_pay_time", -1)])
+            self.col.create_index([("order_modify_at", -1)])
         except Exception as e:
             logger.warning(f"订单集合索引创建提示: {e}")
-
-    @property
-    def col(self):
-        return self._db.get_collection(self.COLLECTION_NAME)
 
     def upsert_orders(self, orders: List[Dict[str, Any]], platform: str = "pdd") -> int:
         """
@@ -49,7 +38,6 @@ class OrderRepository:
             doc = dict(o)
             doc["platform"] = platform
             doc["synced_at"] = now
-            # 确保 promoter_uid 统一为字符串或 None
             if doc.get("promoter_uid"):
                 doc["promoter_uid"] = str(doc["promoter_uid"]).strip()
 
@@ -81,7 +69,7 @@ class OrderRepository:
         limit: int = 100
     ) -> Dict[str, Any]:
         """
-        查询属于指定推手 UID 的订单，并统计其预估佣金、已结算佣金及维权退款明细
+        查询属于指定推手 UID 的原始订单列表，并计算返利明细汇总
         """
         if not promoter_uid:
             return {
@@ -98,7 +86,6 @@ class OrderRepository:
             "promoter_uid": str(promoter_uid).strip(),
         }
 
-        # 时间跨度过滤 (order_pay_time)
         if start_timestamp and start_timestamp > 0:
             query["order_pay_time"] = {"$gte": int(start_timestamp)}
 
@@ -126,9 +113,12 @@ class OrderRepository:
                     if is_settled:
                         settled_commission += comm
 
-                # 格式化支付时间
                 pay_time_sec = doc.get("order_pay_time")
-                pay_time_str = datetime.fromtimestamp(pay_time_sec, timezone.utc).strftime("%Y-%m-%d %H:%M") if pay_time_sec else ""
+                pay_time_str = (
+                    datetime.fromtimestamp(pay_time_sec, timezone.utc).strftime("%Y-%m-%d %H:%M")
+                    if pay_time_sec
+                    else ""
+                )
 
                 order_list.append({
                     "order_sn": doc.get("order_sn"),
