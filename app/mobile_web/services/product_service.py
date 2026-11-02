@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """商品应用服务：平台调度、缓存与本地商品库编排，不解释平台原始字段。"""
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from app.mobile_web.adapters import get_adapter, normalize_platform
@@ -35,10 +36,12 @@ class ProductService:
             result.setdefault("has_more", len(items) >= limit)
             RECOMMEND_CACHE.set(cache_key, result)
             if items:
-                try:
-                    self.repo.upsert_home_products(items, channel_type=channel_type)
-                except Exception as exc:
-                    logger.warning(f"推荐商品入库失败，不影响在线结果: {exc}")
+                def _bg_upsert():
+                    try:
+                        self.repo.upsert_home_products(items, channel_type=channel_type)
+                    except Exception as exc:
+                        logger.warning(f"推荐商品入库失败，不影响在线结果: {exc}")
+                threading.Thread(target=_bg_upsert, name="bg-upsert-home-products", daemon=True).start()
         return result
 
     def search_home_goods(self, keyword, page=1, page_size=20, uid=None, platform="pdd") -> Dict[str, Any]:

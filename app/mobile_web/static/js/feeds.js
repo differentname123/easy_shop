@@ -176,7 +176,7 @@
     const initializeHome = params => {
       let savedKeyword = '';
       try { savedKeyword = global.sessionStorage.getItem('easy_shop_home_search_keyword') || ''; } catch (_) {}
-      const keyword = (params.get('keyword') || savedKeyword).trim();
+      const keyword = (params.get('keyword') || params.get('q') || savedKeyword).trim();
       if (keyword && (!params.get('tab') || params.get('tab') === 'home')) {
         homeSearchKeyword.value = keyword;
         activeHomeKeyword.value = keyword;

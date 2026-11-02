@@ -38,6 +38,12 @@ async def lifespan(app: FastAPI):
                     get_adapter(platform["code"]).warmup()
                 except Exception as exc:
                     logger.debug(f"[{platform['code']}] 连接预热失败: {exc}")
+        try:
+            from app.mobile_web.services.product_service import ProductService
+            ProductService().get_home_recommendations(channel_type=5, offset=0, limit=20)
+            logger.info("[lifespan] 首页默认推荐商品与缓存预热就绪")
+        except Exception as exc:
+            logger.warning(f"[lifespan] 首页推荐预热异常: {exc}")
     threading.Thread(target=warm_connections, name="platform-warmup", daemon=True).start()
     yield
 

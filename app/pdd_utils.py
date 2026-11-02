@@ -23,7 +23,50 @@ from common.common_utils import get_config, setup_logger
 
 logger = setup_logger(app_name="nana_pdd_utils")
 
-# 创建持久化 HTTP 连接池 Session，杜绝 Windows 下单次新建 TCP/TLS 握手的 11 秒延迟
+import socket
+import threading
+
+# 解决 Windows 下多网卡（如 Clash/VPN/校园网）多宿主 DNS 查询与 IPv6 假死导致的 5~11 秒阻塞延迟
+_ORIG_GETADDRINFO = socket.getaddrinfo
+_PDD_FALLBACK_IPS = ("101.226.73.254", "58.217.134.20", "101.226.73.255", "58.217.134.19")
+_PDD_DNS_CACHE = {
+    "gw-api.pinduoduo.com": (
+        time.time() + 600,
+        [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 443)) for ip in _PDD_FALLBACK_IPS],
+    )
+}
+_PDD_DNS_LOCK = threading.Lock()
+
+
+def _pdd_cached_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if host == "gw-api.pinduoduo.com":
+        now = time.time()
+        entry = _PDD_DNS_CACHE.get(host)
+        if entry and now < entry[0]:
+            return [(f, t, p, c, (addr[0], port or addr[1])) for f, t, p, c, addr in entry[1]]
+        with _PDD_DNS_LOCK:
+            entry = _PDD_DNS_CACHE.get(host)
+            if entry and now < entry[0]:
+                return [(f, t, p, c, (addr[0], port or addr[1])) for f, t, p, c, addr in entry[1]]
+            try:
+                res = _ORIG_GETADDRINFO(host, port, socket.AF_INET, type, proto, flags)
+                _PDD_DNS_CACHE[host] = (now + 600, res)
+                return res
+            except Exception:
+                if entry:
+                    return [(f, t, p, c, (addr[0], port or addr[1])) for f, t, p, c, addr in entry[1]]
+                fallback_res = [
+                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 443))
+                    for ip in _PDD_FALLBACK_IPS
+                ]
+                _PDD_DNS_CACHE[host] = (now + 300, fallback_res)
+                return fallback_res
+    return _ORIG_GETADDRINFO(host, port, family, type, proto, flags)
+
+
+socket.getaddrinfo = _pdd_cached_getaddrinfo
+
+# 创建持久化 HTTP 连接池 Session，杜绝 Windows 下单次新建 TCP/TLS 握手的延迟
 _PDD_SESSION = requests.Session()
 _PDD_SESSION.trust_env = False  # 禁用环境变量与 Windows 注册表代理检测，杜绝 WPAD 阻塞
 _PDD_ADAPTER = HTTPAdapter(pool_connections=30, pool_maxsize=100, max_retries=1)
