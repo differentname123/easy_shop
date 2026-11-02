@@ -37,6 +37,17 @@ class ProductService:
         """
         获取首页官方推荐榜单（全站共享缓存），并沉淀官方标品入库
         """
+        # 深分页防穿透：当 offset 达到平台上限（如400）时，返回标准结构而非报错
+        if offset >= 400:
+            return {
+                "status": "success",
+                "total_count": 400,
+                "offset": offset,
+                "limit": limit,
+                "has_more": False,
+                "data": [],
+            }
+
         cache_key = f"{platform}_{channel_type}_{offset}_{limit}"
 
         if not force_refresh:
@@ -53,12 +64,16 @@ class ProductService:
             uid=uid
         )
 
-        if res.get("status") == "success" and res.get("data"):
-            RECOMMEND_CACHE.set(cache_key, res)
-            try:
-                self.repo.upsert_home_products(res["data"], channel_type=channel_type)
-            except Exception as e:
-                logger.warning(f"首页商品自动入库忽略异常: {e}")
+        if res.get("status") == "success":
+            data_list = res.get("data", [])
+            if "has_more" not in res:
+                res["has_more"] = len(data_list) >= limit and (offset + limit < 400)
+            if data_list:
+                RECOMMEND_CACHE.set(cache_key, res)
+                try:
+                    self.repo.upsert_home_products(data_list, channel_type=channel_type)
+                except Exception as e:
+                    logger.warning(f"首页商品自动入库忽略异常: {e}")
 
         return res
 
@@ -97,50 +112,96 @@ class ProductService:
         self,
         platform: str = "pdd",
         goods_id_or_sign: str = "",
-        uid: Optional[str] = None
+        goods_id: Optional[str] = None,
+        goods_sign: Optional[str] = None,
+        uid: Optional[str] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         """
         获取官方商品完整详情：
-        1. 优先查内存有界缓存
+        1. 双键内存有界缓存 (goods_id 与 goods_sign)，任意命中均秒级响应
         2. 查本地数据库 (若已存在全量多图直接秒开)
-        3. 调官方平台 API 拉取最新详情并入库
+        3. 调官方平台 API 拉取最新详情并多键写入缓存与持久化库
         4. 兜底返回数据库已有基础数据
         """
-        goods_key = str(goods_id_or_sign).strip()[:64]
+        gid = str(goods_id).strip() if goods_id else ""
+        gsign = str(goods_sign).strip() if goods_sign else ""
+        raw_key = str(goods_id_or_sign).strip() if goods_id_or_sign else ""
 
-        # 1. 内存高速缓存
-        cached_res = DETAIL_CACHE.get(goods_key)
-        if cached_res is not None:
-            c_imgs = cached_res.get("data", {}).get("carousel_images", [])
-            if len(c_imgs) > 1:
-                logger.debug(f"[内存缓存命中] 商品详情: {goods_key}")
-                return cached_res
+        if not gid and raw_key and raw_key.isdigit():
+            gid = raw_key
+        if not gsign and raw_key and not raw_key.isdigit():
+            gsign = raw_key
 
-        # 2. 本地数据库检索
-        db_item = self.repo.get_product_detail(goods_key)
+        probe_keys = [k for k in (gsign, gid, raw_key) if k]
+
+        # 1. 内存高速缓存查询（支持双键）
+        for k in probe_keys:
+            for cache_key in (k, f"{platform}_{k}"):
+                cached_res = DETAIL_CACHE.get(cache_key)
+                if cached_res is not None:
+                    c_imgs = cached_res.get("data", {}).get("carousel_images", [])
+                    if len(c_imgs) > 1 or cached_res.get("data", {}).get("goods_id"):
+                        logger.debug(f"[内存缓存命中] 商品详情: {cache_key}")
+                        return cached_res
+
+        # 2. 本地数据库检索（支持 goods_id 与 goods_sign 双键）
+        db_item = None
+        for k in probe_keys:
+            db_item = self.repo.get_product_detail(k)
+            if db_item:
+                break
+
         if db_item and db_item.get("carousel_images") and len(db_item.get("carousel_images", [])) > 1:
             ret = {"status": "success", "data": db_item, "source": "database"}
-            DETAIL_CACHE.set(goods_key, ret)
+            self._cache_detail_dual_keys(platform, ret, gsign, gid, raw_key)
             return ret
 
-        # 3. 调官方 API 拉取
+        # 3. 调官方平台适配器拉取
         adapter = get_adapter(platform)
-        res = adapter.get_goods_detail(goods_id_or_sign=goods_id_or_sign, uid=uid)
+        primary_key = gsign or gid or raw_key
+        res = adapter.get_goods_detail(
+            goods_id_or_sign=primary_key,
+            goods_id=gid or None,
+            goods_sign=gsign or None,
+            uid=uid,
+            **kwargs
+        )
         if res.get("status") == "success" and res.get("data"):
             try:
                 self.repo.upsert_product_detail(res["data"])
             except Exception as e:
                 logger.warning(f"商品详情入库忽略异常: {e}")
-            DETAIL_CACHE.set(goods_key, res)
+            ret_data = res["data"]
+            self._cache_detail_dual_keys(
+                platform,
+                res,
+                gsign,
+                gid,
+                raw_key,
+                ret_data.get("goods_sign"),
+                ret_data.get("goods_id"),
+            )
             return res
 
-        # 4. 兜底
+        # 4. 降级兜底
         if db_item:
             ret = {"status": "success", "data": db_item, "source": "database_fallback"}
-            DETAIL_CACHE.set(goods_key, ret)
+            self._cache_detail_dual_keys(platform, ret, gsign, gid, raw_key)
             return ret
 
         return res
+
+    def _cache_detail_dual_keys(self, platform: str, res: dict, *keys):
+        """统一对所有关联标识写入双键缓存"""
+        seen = set()
+        for k in keys:
+            if k and str(k).strip():
+                clean_k = str(k).strip()
+                for ckey in (clean_k, f"{platform}_{clean_k}"):
+                    if ckey not in seen:
+                        DETAIL_CACHE.set(ckey, res)
+                        seen.add(ckey)
 
     def get_boom_products(
         self,

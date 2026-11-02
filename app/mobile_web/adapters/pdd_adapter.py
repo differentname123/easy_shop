@@ -220,22 +220,28 @@ class PddAdapter(BasePlatformAdapter):
 
     def get_goods_detail(
         self,
-        goods_id_or_sign: str,
+        goods_id_or_sign: str = "",
         uid: Optional[str] = None,
+        goods_id: Optional[str] = None,
+        goods_sign: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """获取拼多多官方完整商品详情"""
         try:
-            is_sign = len(str(goods_id_or_sign)) > 16 or not str(goods_id_or_sign).isdigit()
-            goods_sign = str(goods_id_or_sign) if is_sign else None
-            goods_id = str(goods_id_or_sign) if not is_sign else None
+            real_sign = str(goods_sign).strip() if goods_sign else None
+            real_id = str(goods_id).strip() if goods_id else None
+
+            if not real_sign and not real_id and goods_id_or_sign:
+                is_sign = len(str(goods_id_or_sign)) > 16 or not str(goods_id_or_sign).isdigit()
+                real_sign = str(goods_id_or_sign) if is_sign else None
+                real_id = str(goods_id_or_sign) if not is_sign else None
 
             res = pdd_get_detail(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
                 pid=self.pid,
-                goods_sign=goods_sign,
-                goods_id=goods_id,
+                goods_sign=real_sign,
+                goods_id=real_id,
                 uid=uid,
                 **kwargs
             )

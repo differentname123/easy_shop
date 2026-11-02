@@ -31,7 +31,7 @@ def get_channels():
 @router.get("/recommend")
 def get_recommend_goods(
     channel_type: int = Query(5, ge=1, le=20, description="频道代码：5-实时热销, 1-今日爆款, 6-百亿补贴"),
-    offset: int = Query(0, ge=0, le=200, description="偏移量 (最大200)"),
+    offset: int = Query(0, ge=0, le=1000, description="偏移量"),
     limit: int = Query(20, ge=1, le=50, description="条数 (1-50)"),
     uid: Optional[str] = Query(None, max_length=64, description="推手用户UID"),
     platform: str = Query("pdd", pattern="^(pdd|taobao|jd)$", description="平台标识"),
@@ -82,5 +82,7 @@ def get_goods_detail(
     return product_service.get_goods_detail(
         platform=platform,
         goods_id_or_sign=key,
+        goods_id=goods_id,
+        goods_sign=goods_sign,
         uid=uid
     )

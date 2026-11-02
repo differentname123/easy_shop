@@ -61,16 +61,17 @@
           <h4 class="goods-title">{{ item.name }}</h4>
           <div class="goods-tags">
             <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">券减 ¥{{ item.coupon_amount }}</span>
-            <span v-if="item.commission_amount > 0" class="rebate-tag">返利 ¥{{ item.commission_amount }}</span>
+            <span v-if="item.commission_amount > 0" class="rebate-tag">补贴 ¥{{ item.commission_amount }}</span>
           </div>
           <div class="price-row">
+            <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
             <span class="price-unit">¥</span>
             <span class="price-value">{{ item.price }}</span>
             <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
           </div>
           <div class="sales-row">
-            <span>{{ item.sales_tip }}</span>
-            <span>{{ item.mall_name }}</span>
+            <span class="sales-tip">{{ item.sales_tip ? '已拼 ' + item.sales_tip : '热销爆款' }}</span>
+            <span class="mall-tip" v-if="item.mall_name">{{ item.mall_name }}</span>
           </div>
         </div>
       </div>
@@ -92,6 +93,16 @@
     <div v-if="homeLoading && homeGoodsList.length > 0" class="loading-wrap">
       <span class="loading-spinner"></span>
       <span>正在为您加载更多好物...</span>
+    </div>
+
+    <!-- 触底无更多数据提示 -->
+    <div v-if="!homeLoading && !homeHasMore && homeGoodsList.length > 0" class="loading-wrap end-wrap">
+      <span>已到底部，无更多商品</span>
+    </div>
+
+    <!-- 加载失败，点击重试 -->
+    <div v-if="!homeLoading && homeError && homeGoodsList.length > 0" class="loading-wrap retry-wrap" @click="retryLoadHomeGoods">
+      <span class="retry-btn">加载失败，点击重试 ↻</span>
     </div>
 
     <!-- 首屏或搜索加载中提示 -->
@@ -159,16 +170,17 @@
           <h4 class="goods-title">{{ item.name }}</h4>
           <div class="goods-tags">
             <span v-if="item.has_coupon && item.coupon_amount > 0" class="coupon-tag">券减 ¥{{ item.coupon_amount }}</span>
-            <span v-if="item.commission_amount > 0" class="rebate-tag">返利 ¥{{ item.commission_amount }}</span>
+            <span v-if="item.commission_amount > 0" class="rebate-tag">补贴 ¥{{ item.commission_amount }}</span>
           </div>
           <div class="price-row">
+            <span class="price-label">{{ item.has_coupon ? '券后' : '到手' }}</span>
             <span class="price-unit">¥</span>
             <span class="price-value">{{ item.price }}</span>
             <span v-if="item.original_price && item.original_price > item.price" class="price-original">¥{{ item.original_price }}</span>
           </div>
           <div class="sales-row">
-            <span>{{ item.sales_tip || '热卖中' }}</span>
-            <span>{{ item.brand || item.mall_name || '精选推荐' }}</span>
+            <span class="sales-tip">{{ item.sales_tip ? '已拼 ' + item.sales_tip : '热卖中' }}</span>
+            <span class="mall-tip" v-if="item.brand || item.mall_name">{{ item.brand || item.mall_name }}</span>
           </div>
         </div>
       </div>

@@ -55,8 +55,10 @@ class TaobaoAdapter(BasePlatformAdapter):
 
     def get_goods_detail(
         self,
-        goods_id_or_sign: str,
+        goods_id_or_sign: str = "",
         uid: Optional[str] = None,
+        goods_id: Optional[str] = None,
+        goods_sign: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """淘宝商品详情（预留）"""

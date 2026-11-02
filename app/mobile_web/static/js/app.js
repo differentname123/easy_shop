@@ -100,8 +100,11 @@ const app = createApp({
     const homeSearchKeyword = ref('');
     const homeGoodsList = ref([]);
     const homeLoading = ref(false);
+    const homeHasMore = ref(true);
+    const homeError = ref(false);
     const homeOffset = ref(0);
     const homeSearchPage = ref(1);
+    let homeFetchLock = false;
 
     // 爆单推广状态 (数据库存量爆品库)
     const boomPlatforms = ref([
@@ -391,13 +394,18 @@ const app = createApp({
     };
 
     const loadHomeGoods = async (isReset = false) => {
-      if (homeLoading.value) return;
+      if (homeLoading.value || homeFetchLock) return;
+      if (!isReset && (!homeHasMore.value || homeError.value)) return;
+
       if (isReset) {
         homeOffset.value = 0;
         homeSearchPage.value = 1;
         homeGoodsList.value = [];
+        homeHasMore.value = true;
+        homeError.value = false;
       }
       homeLoading.value = true;
+      homeFetchLock = true;
 
       try {
         let apiUrl = '';
@@ -409,14 +417,39 @@ const app = createApp({
         }
 
         const res = await fetch(apiUrl);
+        if (!res.ok) {
+          homeError.value = true;
+          if (res.status === 422 || res.status === 404) {
+            homeHasMore.value = false;
+            showToast('已到底部，无更多商品');
+          } else {
+            showToast('商品加载中断，点击重试');
+          }
+          return;
+        }
+
         const data = await res.json();
         if (data.status === 'success' && Array.isArray(data.data)) {
+          homeError.value = false;
           if (isReset) {
             homeGoodsList.value = data.data;
           } else {
             homeGoodsList.value.push(...data.data);
           }
           homeOffset.value += data.data.length;
+
+          if (data.has_more !== undefined) {
+            homeHasMore.value = Boolean(data.has_more);
+          } else {
+            homeHasMore.value = data.data.length >= 20;
+          }
+          if (data.data.length === 0) {
+            homeHasMore.value = false;
+          }
+          if (!kw && homeOffset.value >= 400) {
+            homeHasMore.value = false;
+          }
+
           if (kw) {
             homeSearchPage.value += 1;
             // 实时保存当前搜索快照至 sessionStorage
@@ -434,16 +467,28 @@ const app = createApp({
             channelCache[currentChannel.value] = {
               list: [...homeGoodsList.value],
               offset: homeOffset.value,
+              hasMore: homeHasMore.value,
             };
           }
         } else {
+          homeError.value = true;
+          homeHasMore.value = false;
           if (isReset) homeGoodsList.value = [];
         }
       } catch (err) {
-        showToast('商品加载中断，请重试');
+        homeError.value = true;
+        showToast('网络连接异常，请重试');
       } finally {
         homeLoading.value = false;
+        setTimeout(() => {
+          homeFetchLock = false;
+        }, 180);
       }
+    };
+
+    const retryLoadHomeGoods = () => {
+      homeError.value = false;
+      loadHomeGoods(false);
     };
 
     const onSearchHome = () => {
@@ -464,17 +509,20 @@ const app = createApp({
         channelCache[currentChannel.value] = {
           list: [...homeGoodsList.value],
           offset: homeOffset.value,
+          hasMore: homeHasMore.value,
         };
       }
 
       currentChannel.value = type;
       homeSearchKeyword.value = '';
       syncHomeSearchToUrl('');
+      homeError.value = false;
 
       // 若目标频道已有数据缓存，直接 0ms 瞬间还原，无需白屏重拉
       if (channelCache[type] && channelCache[type].list && channelCache[type].list.length > 0) {
         homeGoodsList.value = [...channelCache[type].list];
         homeOffset.value = channelCache[type].offset;
+        homeHasMore.value = channelCache[type].hasMore !== false;
         return;
       }
 
@@ -756,9 +804,9 @@ const app = createApp({
       }
       lastScrollTop = Math.max(0, scrollTop);
 
-      // 2. 距底部 800px 提前自动无缝触底加载下一页商品（大幅提前，保证极速丝滑无限流）
+      // 2. 距底部 800px 提前自动无缝触底加载下一页商品（带熔断锁保护）
       if (scrollHeight - scrollTop - clientHeight < 800) {
-        if (currentTab.value === 'home' && !homeLoading.value) {
+        if (currentTab.value === 'home' && !homeLoading.value && !homeFetchLock && homeHasMore.value && !homeError.value) {
           loadHomeGoods(false);
         } else if (currentTab.value === 'boom' && !boomLoading.value && boomHasMore.value) {
           loadBoomGoods(false);
@@ -773,7 +821,7 @@ const app = createApp({
       bottomObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
-            if (currentTab.value === 'home' && !homeLoading.value) {
+            if (currentTab.value === 'home' && !homeLoading.value && !homeFetchLock && homeHasMore.value && !homeError.value) {
               loadHomeGoods(false);
             } else if (currentTab.value === 'boom' && !boomLoading.value && boomHasMore.value) {
               loadBoomGoods(false);
@@ -897,10 +945,13 @@ const app = createApp({
       homeSearchKeyword,
       homeGoodsList,
       homeLoading,
+      homeHasMore,
+      homeError,
       switchChannel,
       onSearchHome,
       clearHomeSearch,
       loadHomeGoods,
+      retryLoadHomeGoods,
       // 爆单
       boomPlatforms,
       boomPlatform,

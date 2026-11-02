@@ -54,8 +54,10 @@ class JdAdapter(BasePlatformAdapter):
 
     def get_goods_detail(
         self,
-        goods_id_or_sign: str,
+        goods_id_or_sign: str = "",
         uid: Optional[str] = None,
+        goods_id: Optional[str] = None,
+        goods_sign: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """京东商品详情（预留）"""

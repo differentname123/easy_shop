@@ -16,7 +16,7 @@ class ProductRepository(BaseRepository):
 
     def _init_indexes(self):
         try:
-            self.col.create_index([("platform", 1), ("product_id", 1)], background=True)
+            self.col.create_index([("platform", 1), ("product_id", 1)], unique=True, background=True)
             self.col.create_index("goods_sign", background=True)
         except Exception as e:
             logger.warning(f"商品集合索引创建提示: {e}")
