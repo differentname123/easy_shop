@@ -1,36 +1,39 @@
 # -*- coding: utf-8 -*-
 """移动端服务装配入口：HTTP 基础设施、路由与静态页面。"""
+if __name__ == "__main__":
+    from run import main
+    raise SystemExit(main())
+
 import os
-import sys
 import threading
 import time
 import urllib.parse
 from contextlib import asynccontextmanager
-
-_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-if _ROOT_DIR not in sys.path:
-    sys.path.insert(0, _ROOT_DIR)
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
-import uvicorn
+from infrastructure.logging_utils import configure_logging
+from infrastructure.pdd_client import configure_transport
 
-from app.mobile_web.config import WEB_HOST, WEB_PORT, logger
-from app.mobile_web.adapters import get_adapter, get_all_platforms, PlatformUnavailableError
-from app.mobile_web.api.home import router as home_router
-from app.mobile_web.api.goods import router as goods_router
-from app.mobile_web.api.user import router as user_router
-from app.mobile_web.api.promote import router as promote_router
-from app.mobile_web.api.order import router as order_router
+from config import logger, settings
+from adapters import get_adapter, get_all_platforms, PlatformUnavailableError
+from api.home import router as home_router
+from api.goods import router as goods_router
+from api.user import router as user_router
+from api.promote import router as promote_router
+from api.order import router as order_router
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings)
+    configure_transport(dns_mode=settings.pdd_dns_mode, trust_env=settings.pdd_trust_env)
+
     def warm_connections():
         for platform in get_all_platforms():
             if platform["active"]:
@@ -39,12 +42,13 @@ async def lifespan(app: FastAPI):
                 except Exception as exc:
                     logger.debug(f"[{platform['code']}] 连接预热失败: {exc}")
         try:
-            from app.mobile_web.api.home import product_service
+            from api.home import product_service
             product_service.get_home_recommendations(channel_type=5, offset=0, limit=20)
             logger.info("[lifespan] 首页默认推荐商品与缓存预热就绪")
         except Exception as exc:
             logger.warning(f"[lifespan] 首页推荐预热异常: {exc}")
-    threading.Thread(target=warm_connections, name="platform-warmup", daemon=True).start()
+    if settings.warmup_enabled:
+        threading.Thread(target=warm_connections, name="platform-warmup", daemon=True).start()
     yield
 
 
@@ -115,7 +119,3 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
-
-if __name__ == "__main__":
-    logger.info(f"启动移动端导购与返利服务: http://{WEB_HOST}:{WEB_PORT}")
-    uvicorn.run("app.mobile_web.main:app", host=WEB_HOST, port=WEB_PORT, reload=True, access_log=False)

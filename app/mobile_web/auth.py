@@ -12,7 +12,7 @@ import time
 from typing import Optional
 
 from fastapi import Header, Query, HTTPException, status
-from app.mobile_web.config import AUTH_SECRET
+from config import AUTH_SECRET
 
 TOKEN_TTL_SECONDS = 30 * 86400  # 访问令牌默认有效期 30 天
 PBKDF2_ITERATIONS = 100_000

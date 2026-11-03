@@ -5,13 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.mobile_web.config import PRODUCT_DETAIL_TTL, PROMOTION_LINK_TTL
-from app.mobile_web.services import product_service as product_module
-from app.mobile_web.services import promote_service as promote_module
-from app.mobile_web.repositories.product_repo import ProductRepository
-from app.mobile_web.tests.test_catalog_boundaries import catalog, detail
-from app.mobile_web.tests.test_account_order_refactor import promotion
-from app.mobile_web.tests.test_product_repository import MemoryCollection
+from config import PRODUCT_DETAIL_TTL, PROMOTION_LINK_TTL
+from services import product_service as product_module
+from services import promote_service as promote_module
+from repositories.product_repo import ProductRepository
+from tests.test_catalog_boundaries import catalog, detail
+from tests.test_account_order_refactor import promotion
+from tests.test_product_repository import MemoryCollection
 
 
 @pytest.fixture
@@ -48,8 +48,8 @@ def test_database_detail_refill_preserves_deadline_across_aliases(catalog, clock
 @pytest.mark.parametrize("age", [0, PRODUCT_DETAIL_TTL + 1])
 def test_database_detail_http_and_cache_do_not_expose_source_metadata(catalog, clock, monkeypatch, age):
     from fastapi.testclient import TestClient
-    from app.mobile_web.api import home
-    from app.mobile_web.main import create_app
+    from api import home
+    from main import create_app
 
     service, repo, adapter = catalog
     item = detail()["data"]

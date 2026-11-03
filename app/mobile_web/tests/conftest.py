@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """在测试收集/业务导入之前安装离线边界，而不是等普通 fixture 执行。"""
-from app.mobile_web.tests.offline_support import BLOCKED_CALLS, assert_no_blocked_calls, install_offline_environment
+from tests.offline_support import BLOCKED_CALLS, assert_no_blocked_calls, install_offline_environment
 
 install_offline_environment()
 
@@ -16,8 +16,8 @@ def offline_import_and_shutdown():
 
 @pytest.fixture(autouse=True)
 def offline_resources_and_registry():
-    from app.mobile_web import adapters
-    from app.mobile_web.cache import clear_all_caches
+    import adapters
+    from cache import clear_all_caches
 
     registry = dict(adapters._ADAPTER_REGISTRY)
     start = len(BLOCKED_CALLS)

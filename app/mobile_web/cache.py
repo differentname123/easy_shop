@@ -2,8 +2,8 @@
 """
 全局线程安全有界 LRU-TTL 缓存容器与分域管理
 """
-from app.mobile_web.cache_utils import ThreadSafeTTLCache
-from app.mobile_web.config import (
+from cache_utils import ThreadSafeTTLCache
+from config import (
     CACHE_MAX_RECOMMEND,
     CACHE_MAX_DETAIL,
     CACHE_MAX_SEARCH,

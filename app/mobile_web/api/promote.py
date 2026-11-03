@@ -5,7 +5,7 @@
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
-from app.mobile_web.services.promote_service import PromoteService
+from services.promote_service import PromoteService
 
 router = APIRouter(prefix="/api/promote", tags=["推广生链与归因"])
 promote_service = PromoteService()

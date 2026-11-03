@@ -2,10 +2,10 @@
 """拼多多边界：SDK 调用、原始字段转换、商品标识与推广降级策略。"""
 from typing import Dict, Any
 from urllib.parse import urlencode, urlsplit
-from app.mobile_web.adapters.base import BasePlatformAdapter, build_command_text
-from app.mobile_web.models.product import ProductRef, ProductSummary, ProductDetail, clean_product_id
-from app.mobile_web.config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID, logger
-from app.pdd_utils import (
+from adapters.base import BasePlatformAdapter, build_command_text
+from models.product import ProductRef, ProductSummary, ProductDetail, clean_product_id
+from config import PDD_CLIENT_ID, PDD_CLIENT_SECRET, PDD_PID, logger
+from infrastructure.pdd_client import (
     call_pdd_api,
     clean_goods_item,
     check_member_authority,
@@ -48,11 +48,8 @@ class PddAdapter(BasePlatformAdapter):
         return ProductRef(self.platform_code, goods_id or "", goods_sign or "")
 
     def warmup(self) -> None:
-        from app.pdd_utils import _PDD_SESSION
-        try:
-            _PDD_SESSION.head("https://gw-api.pinduoduo.com", timeout=3.0)
-        except Exception:
-            logger.debug("拼多多连接池预热未完成，首次请求时重试")
+        from infrastructure.pdd_client import warmup
+        warmup()
 
     def normalize_order(self, order: dict) -> dict:
         result = dict(order)

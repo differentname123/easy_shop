@@ -5,12 +5,12 @@ import re
 import time
 from copy import deepcopy
 from typing import Dict, Any, Optional
-from app.mobile_web.adapters import get_adapter, PlatformUnavailableError
-from app.mobile_web.adapters.base import build_command_text
-from app.mobile_web.models.product import ProductRef, clean_product_id, normalize_platform
-from app.mobile_web.repositories.product_repo import ProductRepository
-from app.mobile_web.cache import PROMOTION_CACHE
-from app.mobile_web.config import PROMOTION_LINK_TTL, logger
+from adapters import get_adapter, PlatformUnavailableError
+from adapters.base import build_command_text
+from models.product import ProductRef, clean_product_id, normalize_platform
+from repositories.product_repo import ProductRepository
+from cache import PROMOTION_CACHE
+from config import PROMOTION_LINK_TTL, logger
 
 _UID_PATTERN = re.compile(r"^u_[0-9a-f]{8}$")
 _PROMOTION_CACHE = PROMOTION_CACHE

@@ -7,14 +7,12 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
-from app.mobile_web.config import AUTH_STATUS_TTL
-from app.mobile_web.models.product import normalize_platform
-from app.mobile_web.repositories.user_repo import UserRepository
-from app.mobile_web.adapters import get_adapter, PlatformUnavailableError
-from app.mobile_web.auth import create_access_token, mask_phone
-from common.common_utils import setup_logger
-
-logger = setup_logger(app_name="mobile_web")
+from config import AUTH_STATUS_TTL
+from models.product import normalize_platform
+from repositories.user_repo import UserRepository
+from adapters import get_adapter, PlatformUnavailableError
+from auth import create_access_token, mask_phone
+from config import logger
 
 PHONE_REGEX = re.compile(r"^1[3-9]\d{9}$")
 

@@ -4,7 +4,7 @@
 """
 from typing import Optional
 from fastapi import APIRouter, Query
-from app.mobile_web.services.product_service import ProductService
+from services.product_service import ProductService
 
 router = APIRouter(prefix="/api/goods", tags=["爆单推广库"])
 product_service = ProductService()

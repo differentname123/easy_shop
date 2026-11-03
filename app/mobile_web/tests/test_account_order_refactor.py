@@ -9,14 +9,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.mobile_web.adapters import PlatformUnavailableError
-from app.mobile_web.adapters.base import build_command_text
-from app.mobile_web.models.product import ProductRef
-from app.mobile_web.repositories.order_repo import OrderRepository
-from app.mobile_web.repositories.user_repo import UserRepository
-from app.mobile_web.services import order_service as order_module
-from app.mobile_web.services import promote_service as promote_module
-from app.mobile_web.services import user_service as user_module
+from adapters import PlatformUnavailableError
+from adapters.base import build_command_text
+from models.product import ProductRef
+from repositories.order_repo import OrderRepository
+from repositories.user_repo import UserRepository
+from services import order_service as order_module
+from services import promote_service as promote_module
+from services import user_service as user_module
 
 
 class Adapter:
@@ -480,9 +480,9 @@ def test_disabled_platforms_are_rejected_before_cached_results(promotion, user, 
 
 def test_api_days_zero_future_platform_syntax_and_force_protection(monkeypatch):
     # 包括路由首次导入的仓储构造也注入 mock，避免测试访问真实 Mongo。
-    with patch("app.mobile_web.repositories.base_repo.gen_db_object", return_value=MagicMock()):
-        from app.mobile_web.api import order, user, promote
-    from app.mobile_web.auth import get_current_uid
+    with patch("repositories.base_repo.gen_db_object", return_value=MagicMock()):
+        from api import order, user, promote
+    from auth import get_current_uid
     app = FastAPI()
     for router in (order.router, user.router, promote.router):
         app.include_router(router)

@@ -6,11 +6,11 @@ import threading
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
-from app.mobile_web.adapters import get_adapter, normalize_platform
-from app.mobile_web.models.product import ProductRef
-from app.mobile_web.repositories.product_repo import ProductRepository
-from app.mobile_web.cache import RECOMMEND_CACHE, DETAIL_CACHE, SEARCH_CACHE, CATEGORY_CACHE
-from app.mobile_web.config import PRODUCT_DETAIL_TTL, logger
+from adapters import get_adapter, normalize_platform
+from models.product import ProductRef
+from repositories.product_repo import ProductRepository
+from cache import RECOMMEND_CACHE, DETAIL_CACHE, SEARCH_CACHE, CATEGORY_CACHE
+from config import PRODUCT_DETAIL_TTL, logger
 
 # 兼容统一缓存分域别名，供测试及向后兼容使用
 _RECOMMEND_CACHE = RECOMMEND_CACHE

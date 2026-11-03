@@ -11,9 +11,9 @@ from copy import deepcopy
 from typing import Dict, Any, List, Optional, Tuple
 from pymongo import UpdateOne
 from bson.decimal128 import Decimal128
-from app.mobile_web.repositories.base_repo import BaseRepository
-from app.mobile_web.models.product import clean_product_id, normalize_platform
-from app.mobile_web.config import PROMOTION_LINK_TTL, logger
+from repositories.base_repo import BaseRepository
+from models.product import clean_product_id, normalize_platform
+from config import PROMOTION_LINK_TTL, logger
 
 
 class ProductRepository(BaseRepository):
@@ -129,7 +129,7 @@ class ProductRepository(BaseRepository):
         platform, goods_id, goods_sign = self._identity(item)
         if not goods_id and not goods_sign:
             return None
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
         update_set, insert_set = self._identity_update(platform, goods_id, goods_sign)
         insert_set["created_at"] = now
 
@@ -274,7 +274,7 @@ class ProductRepository(BaseRepository):
 
     def _normalize_doc_summary(self, doc: Dict[str, Any]) -> Dict[str, Any]:
         """列表与详情共用的公共字段视图，保留金额 0 和字符串身份别名。"""
-        from app.mobile_web.adapters import platform_name
+        from adapters import platform_name
 
         platform, goods_id, goods_sign = self._identity(doc)
         activity_price = self._amount_float(self._first_present(doc, "activity_price", "price", default=0.0))

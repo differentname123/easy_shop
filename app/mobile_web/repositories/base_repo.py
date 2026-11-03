@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """MongoDB 仓储基础设施：延迟连接、可注入数据库及可重试的索引初始化。"""
 import threading
-from common.mongo_db.mongo_base import gen_db_object
-from app.mobile_web.config import logger
+from infrastructure.mongo import gen_db_object
+from config import logger
 
 
 class BaseRepository:

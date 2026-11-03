@@ -6,9 +6,19 @@
       "runtimeExecutable": "python",
       "runtimeArgs": [
         "-B", "-c",
-        "import os, sys; sys.path.insert(0, '../..'); import uvicorn; uvicorn.run('app.mobile_web.tests.preview_app:app', host='127.0.0.1', port=int(os.environ.get('PORT', '8000')), access_log=False)"
+        "import os; import uvicorn; uvicorn.run('tests.preview_app:app', host='127.0.0.1', port=int(os.environ.get('PORT', '8000')), access_log=False)"
       ],
       "port": 8000,
+      "autoPort": true
+    },
+    {
+      "name": "mobile-web-production-smoke",
+      "runtimeExecutable": "python",
+      "runtimeArgs": [
+        "-B", "-c",
+        "import os; from tests.offline_support import install_offline_environment; install_offline_environment(); import run; run.main(['--port', os.environ.get('PORT', '8001'), '--no-warmup'])"
+      ],
+      "port": 8001,
       "autoPort": true
     }
   ]

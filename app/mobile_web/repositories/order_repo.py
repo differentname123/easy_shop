@@ -3,9 +3,9 @@
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from pymongo import UpdateOne
-from app.mobile_web.repositories.base_repo import BaseRepository
-from app.mobile_web.models.product import normalize_platform
-from app.mobile_web.config import logger
+from repositories.base_repo import BaseRepository
+from models.product import normalize_platform
+from config import logger
 
 
 class OrderRepository(BaseRepository):

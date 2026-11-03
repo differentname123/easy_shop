@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 from bson.decimal128 import Decimal128
 
-from app.mobile_web.config import PROMOTION_LINK_TTL
-from app.mobile_web.repositories.product_repo import ProductRepository
+from config import PROMOTION_LINK_TTL
+from repositories.product_repo import ProductRepository
 
 
 class MemoryCursor:
@@ -630,7 +630,7 @@ class TestProductRepository(unittest.TestCase):
 
     def test_promotion_cache_uses_utc_expiry_and_minimal_projection(self):
         now = 1_800_000_000.0
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+        with patch("repositories.product_repo.time.time", return_value=now):
             for timezone in (None, datetime.timezone.utc, datetime.timezone(datetime.timedelta(hours=8))):
                 with self.subTest(timezone=timezone):
                     expiry = datetime.datetime.fromtimestamp(now + 60, datetime.timezone.utc)
@@ -655,7 +655,7 @@ class TestProductRepository(unittest.TestCase):
         now = 1_800_000_000.0
         utc_dt = lambda seconds: datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc)
         expiries = (None, "2099-01-01", now + 60, {}, utc_dt(now - 1), utc_dt(now), utc_dt(now + PROMOTION_LINK_TTL + 1))
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+        with patch("repositories.product_repo.time.time", return_value=now):
             for expiry in expiries:
                 with self.subTest(expiry=expiry):
                     self.col.docs = [{
@@ -679,7 +679,7 @@ class TestProductRepository(unittest.TestCase):
             "final_link": "https://example.com/1", "command_text": "请求级口令",
             "from_cache": True, "_expires_at": now + 5, "_debug": "internal",
         }
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+        with patch("repositories.product_repo.time.time", return_value=now):
             self.assertTrue(self.repo.save_promotion_link_cache("pdd", data, goods_id="1", expires_at=now + 10))
             stored = self.col.docs[0]
             self.assertEqual(stored["default_promotion"], {"final_link": "https://example.com/1"})
@@ -687,15 +687,15 @@ class TestProductRepository(unittest.TestCase):
             self.assertEqual(stored["default_promotion_expires_at"].timestamp(), now + 10)
             self.assertEqual(stored["default_promotion_expires_at"].utcoffset(), datetime.timedelta(0))
             self.assertIn("command_text", data)
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now + 9):
+        with patch("repositories.product_repo.time.time", return_value=now + 9):
             self.assertEqual(self.repo.get_promotion_link_cache("pdd", goods_id="1")["_expires_at"], now + 10)
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now + 10):
+        with patch("repositories.product_repo.time.time", return_value=now + 10):
             self.assertIsNone(self.repo.get_promotion_link_cache("pdd", goods_id="1"))
 
     def test_promotion_save_defaults_to_shared_ttl_and_preserves_legacy_goods_key_api(self):
         now = 1_800_000_000.123456
         expected_expiry = 1_800_000_000.123 + PROMOTION_LINK_TTL
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+        with patch("repositories.product_repo.time.time", return_value=now):
             self.assertTrue(self.repo.save_promotion_link_cache("pdd", {"final_link": "https://example.com/1"}, goods_key="001"))
             self.assertEqual(self.col.docs[0]["product_id"], "001")
             self.assertEqual(self.col.docs[0]["default_promotion_expires_at"].timestamp(), expected_expiry)
@@ -707,7 +707,7 @@ class TestProductRepository(unittest.TestCase):
 
     def test_promotion_save_rejects_invalid_expiry_without_writing(self):
         now = 1_800_000_000.0
-        with patch("app.mobile_web.repositories.product_repo.time.time", return_value=now):
+        with patch("repositories.product_repo.time.time", return_value=now):
             for expiry in (True, "1800000001", float("nan"), float("inf"), now - 1, now, now + PROMOTION_LINK_TTL + 1):
                 with self.subTest(expiry=expiry):
                     self.assertFalse(self.repo.save_promotion_link_cache(

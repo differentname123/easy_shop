@@ -8,10 +8,10 @@ import random
 import string
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any
-from app.mobile_web.repositories.base_repo import BaseRepository
-from app.mobile_web.auth import hash_password, verify_password
-from app.mobile_web.config import logger
-from app.mobile_web.models.product import normalize_platform
+from repositories.base_repo import BaseRepository
+from auth import hash_password, verify_password
+from config import logger
+from models.product import normalize_platform
 
 DEFAULT_AVATAR = "https://img.pddpic.com/mms-avatar/default_avatar.png"
 

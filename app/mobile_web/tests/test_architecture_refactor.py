@@ -5,10 +5,10 @@
 """
 import unittest
 from unittest.mock import MagicMock
-from app.mobile_web.models.product import ProductSummary, ProductDetail
-from app.mobile_web.models.order import OrderItem, UserOrderStats
-from app.mobile_web.models.user import UserProfile, RegisterOrLoginDTO
-from app.mobile_web.cache import (
+from models.product import ProductSummary, ProductDetail
+from models.order import OrderItem, UserOrderStats
+from models.user import UserProfile, RegisterOrLoginDTO
+from cache import (
     RECOMMEND_CACHE,
     DETAIL_CACHE,
     SEARCH_CACHE,
@@ -16,10 +16,10 @@ from app.mobile_web.cache import (
     PROMOTION_CACHE,
     clear_all_caches
 )
-from app.mobile_web.adapters import get_adapter, register_adapter, get_all_platforms
-from app.mobile_web.adapters.base import BasePlatformAdapter
-from app.mobile_web.repositories.base_repo import BaseRepository
-from app.mobile_web.services.promote_service import PromoteService
+from adapters import get_adapter, register_adapter, get_all_platforms
+from adapters.base import BasePlatformAdapter
+from repositories.base_repo import BaseRepository
+from services.promote_service import PromoteService
 
 
 class TestDomainModels(unittest.TestCase):

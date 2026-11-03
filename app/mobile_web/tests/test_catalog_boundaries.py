@@ -5,13 +5,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.mobile_web import adapters
-from app.mobile_web.adapters.base import BasePlatformAdapter
-from app.mobile_web.adapters.pdd_adapter import PddAdapter
-from app.mobile_web.cache import DETAIL_CACHE, clear_all_caches
-from app.mobile_web.models.product import ProductRef
-from app.mobile_web.repositories.base_repo import BaseRepository
-from app.mobile_web.services.product_service import ProductService
+import adapters
+from adapters.base import BasePlatformAdapter
+from adapters.pdd_adapter import PddAdapter
+from cache import DETAIL_CACHE, clear_all_caches
+from models.product import ProductRef
+from repositories.base_repo import BaseRepository
+from services.product_service import ProductService
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +29,7 @@ def catalog():
     adapter.active = True
     adapter.resolve_product_ref.side_effect = PddAdapter().resolve_product_ref
     service = ProductService(product_repo=repo)
-    with patch("app.mobile_web.services.product_service.get_adapter", return_value=adapter):
+    with patch("services.product_service.get_adapter", return_value=adapter):
         yield service, repo, adapter
 
 
@@ -168,7 +168,7 @@ def test_pdd_keeps_long_numeric_ids_and_explicit_numeric_signs():
 
 
 def test_pdd_search_page_size_contract():
-    with patch("app.mobile_web.adapters.pdd_adapter.call_pdd_api", return_value={
+    with patch("adapters.pdd_adapter.call_pdd_api", return_value={
         "goods_search_response": {"goods_list": [{"goods_id": 1, "goods_name": "商品"}], "total_count": 3}
     }) as call:
         result = PddAdapter().search_goods("商品", page=1, page_size=1)
@@ -179,14 +179,14 @@ def test_pdd_search_page_size_contract():
 
 
 def test_pdd_recommendation_cap_lives_in_adapter():
-    with patch("app.mobile_web.adapters.pdd_adapter.call_pdd_api") as call:
+    with patch("adapters.pdd_adapter.call_pdd_api") as call:
         result = PddAdapter().get_recommend_goods(offset=400)
     call.assert_not_called()
     assert result["has_more"] is False
 
 
 def test_pdd_order_failure_stays_failure():
-    with patch("app.mobile_web.adapters.pdd_adapter.query_increment_orders", return_value={"status": "error", "error_msg": "API失败"}):
+    with patch("adapters.pdd_adapter.query_increment_orders", return_value={"status": "error", "error_msg": "API失败"}):
         result = PddAdapter().fetch_increment_orders(1, 2)
     assert result["status"] == "error"
     assert result["error_msg"] == "API失败"
@@ -199,7 +199,7 @@ def test_pdd_order_explicit_flags_override_legacy_status():
 
 
 def test_pdd_url_only_conversion_preserves_uid():
-    with patch("app.mobile_web.adapters.pdd_adapter.convert_pdd_url", return_value={
+    with patch("adapters.pdd_adapter.convert_pdd_url", return_value={
         "status": "success", "jump_url": "https://p.pinduoduo.com/result", "raw_data": {},
     }) as convert:
         result = PddAdapter().convert_promotion_url("", uid="u_12345678", product_url="https://p.pinduoduo.com/input")
@@ -209,8 +209,8 @@ def test_pdd_url_only_conversion_preserves_uid():
 
 
 def test_pdd_explicit_product_url_cannot_override_a_known_identity():
-    with patch("app.mobile_web.adapters.pdd_adapter.generate_smart_promotion_url", return_value={"status": "error"}), \
-         patch("app.mobile_web.adapters.pdd_adapter.convert_pdd_url", return_value={
+    with patch("adapters.pdd_adapter.generate_smart_promotion_url", return_value={"status": "error"}), \
+         patch("adapters.pdd_adapter.convert_pdd_url", return_value={
              "status": "success", "jump_url": "https://p.pinduoduo.com/verified", "raw_data": {}}) as convert:
         result = PddAdapter().convert_promotion_url("SIGN_A", goods_id="111", goods_sign="SIGN_A",
                                                    product_url="https://mobile.pinduoduo.com/goods.html?goods_id=222")
@@ -219,8 +219,8 @@ def test_pdd_explicit_product_url_cannot_override_a_known_identity():
 
 
 def test_unattributed_user_link_is_explicit_fallback():
-    with patch("app.mobile_web.adapters.pdd_adapter.generate_smart_promotion_url", return_value={"status": "error"}), \
-         patch("app.mobile_web.adapters.pdd_adapter.generate_goods_promotion_url", return_value={
+    with patch("adapters.pdd_adapter.generate_smart_promotion_url", return_value={"status": "error"}), \
+         patch("adapters.pdd_adapter.generate_goods_promotion_url", return_value={
              "status": "success", "data": {"short_url": "https://p.pinduoduo.com/site"}}):
         result = PddAdapter().convert_promotion_url("SIGN_A", uid="u_12345678")
     assert result["is_fallback"] is True
@@ -252,9 +252,9 @@ def test_registered_test_platform_uses_existing_core_flow_and_routes(monkeypatch
         def generate_authority_url(self, **kwargs): return {"status": "error"}
         def fetch_increment_orders(self, **kwargs): return {"status": "error"}
     monkeypatch.setitem(adapters._ADAPTER_REGISTRY, "fixture", FixtureAdapter())
-    from app.mobile_web.api import home
+    from api import home
     monkeypatch.setattr(home.product_service, "repo", MagicMock())
-    from app.mobile_web.main import create_app
+    from main import create_app
     client = TestClient(create_app())
     assert client.get("/api/home/channels?platform=fixture").json()["data"][0]["channel_type"] == 42
     result = client.get("/api/home/recommend?platform=fixture&channel_type=42&offset=450").json()
@@ -272,7 +272,7 @@ def test_repository_connection_is_lazy_and_failed_indexes_retry():
             self.col.create_index("key")
             return self.attempts > 1
     db = MagicMock()
-    with patch("app.mobile_web.repositories.base_repo.gen_db_object", return_value=db) as connect:
+    with patch("repositories.base_repo.gen_db_object", return_value=db) as connect:
         repo = ProbeRepository()
         connect.assert_not_called()
         _ = repo.col
@@ -286,7 +286,7 @@ def test_repository_connection_is_lazy_and_failed_indexes_retry():
 
 def test_query_token_is_redacted_from_request_log():
     from starlette.requests import Request
-    from app.mobile_web.main import _request_path
+    from main import _request_path
     request = Request({"type": "http", "method": "GET", "scheme": "http", "path": "/api/user/info",
                        "query_string": b"token=private-token&keyword=test", "headers": []})
     path = _request_path(request)

@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.mobile_web.auth import (
+from auth import (
     create_access_token,
     verify_access_token,
     hash_password,
@@ -30,15 +30,15 @@ from app.mobile_web.auth import (
     get_current_uid,
     LEGACY_SALT,
 )
-from app.mobile_web.cache_utils import ThreadSafeTTLCache
-from app.mobile_web.adapters import get_adapter
-from app.mobile_web.adapters.pdd_adapter import PddAdapter
-from app.mobile_web.adapters.tb_adapter import TaobaoAdapter
-from app.mobile_web.adapters.jd_adapter import JdAdapter
-from app.mobile_web.repositories.product_repo import ProductRepository
-from app.mobile_web.repositories.user_repo import UserRepository
-from app.mobile_web.services.user_service import UserService
-from app.mobile_web.services.order_service import OrderService, _SYNC_LOCK
+from cache_utils import ThreadSafeTTLCache
+from adapters import get_adapter
+from adapters.pdd_adapter import PddAdapter
+from adapters.tb_adapter import TaobaoAdapter
+from adapters.jd_adapter import JdAdapter
+from repositories.product_repo import ProductRepository
+from repositories.user_repo import UserRepository
+from services.user_service import UserService
+from services.order_service import OrderService, _SYNC_LOCK
 
 
 # ==================== 1. 认证鉴权与密码安全测试 ====================
@@ -193,9 +193,9 @@ class TestMultiPlatformAdapters(unittest.TestCase):
     def test_pdd_adapter_fallback_marking(self):
         """测试当拼多多上游生链失败时，兜底链接显式打上 is_fallback 标记且不重试"""
         adapter = PddAdapter()
-        with patch("app.mobile_web.adapters.pdd_adapter.generate_smart_promotion_url", side_effect=Exception("API Limit")), \
-             patch("app.mobile_web.adapters.pdd_adapter.convert_pdd_url", return_value={"status": "error", "error_msg": "API Limit"}), \
-             patch("app.mobile_web.adapters.pdd_adapter.generate_goods_promotion_url", return_value={"status": "error"}):
+        with patch("adapters.pdd_adapter.generate_smart_promotion_url", side_effect=Exception("API Limit")), \
+             patch("adapters.pdd_adapter.convert_pdd_url", return_value={"status": "error", "error_msg": "API Limit"}), \
+             patch("adapters.pdd_adapter.generate_goods_promotion_url", return_value={"status": "error"}):
             res = adapter.convert_promotion_url(
                 goods_id_or_sign="111",
                 uid="uid_test"
@@ -318,7 +318,7 @@ class TestUserServiceSecurity(unittest.TestCase):
             }
         }
 
-        with patch("app.mobile_web.services.user_service.get_adapter") as mock_get_adapter:
+        with patch("services.user_service.get_adapter") as mock_get_adapter:
             mock_adapter = MagicMock()
             mock_adapter.platform_name = "拼多多"
             mock_get_adapter.return_value = mock_adapter
@@ -350,7 +350,7 @@ class TestOrderServiceConcurrency(unittest.TestCase):
         self.assertTrue(acquired)
 
         try:
-            with patch("app.mobile_web.services.order_service.get_adapter") as mock_get_adapter:
+            with patch("services.order_service.get_adapter") as mock_get_adapter:
                 # 另一个用户发起强制同步
                 start_t = time.time()
                 res = service.sync_and_query_orders(uid="user_a", days=7, force_sync=True)
@@ -370,7 +370,7 @@ class TestOrderServiceConcurrency(unittest.TestCase):
 class TestApiSecurityRoutes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        from app.mobile_web.main import app
+        from main import app
         cls.client = TestClient(app)
 
     def test_goods_list_validation_bounds(self):

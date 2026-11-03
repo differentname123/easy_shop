@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
-"""测试/预览专用进程隔离；必须在导入应用之前安装，生产入口不得使用。"""
-import logging
+"""测试/预览专用资源边界；必须在导入应用之前安装，生产入口不得使用。"""
+import atexit
+import json
 import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 BLOCKED_CALLS = []
@@ -19,13 +22,6 @@ _CONFIG = {
 }
 
 
-def _logger(*args, app_name="offline", **kwargs):
-    logger = logging.getLogger(f"mobile_web.offline.{app_name}")
-    if not logger.handlers:
-        logger.addHandler(logging.NullHandler())
-    return logger
-
-
 def _deny(resource):
     def blocked(*args, **kwargs):
         BLOCKED_CALLS.append(resource)
@@ -38,13 +34,26 @@ def assert_no_blocked_calls():
 
 
 def install_offline_environment():
-    """覆盖导入副作用及外部资源出口；只在此测试进程生效。"""
+    """注入完整假环境，但使用真实配置解析器；阻断 Mongo/HTTP 的实际出口。"""
     if _PATCHES:
         return
+    directory = tempfile.TemporaryDirectory(prefix="mobile-web-offline-")
+    atexit.register(directory.cleanup)
+    config_path = Path(directory.name) / "config.json"
+    config_path.write_text(json.dumps(_CONFIG), encoding="utf-8")
     replacements = (
-        patch("common.common_utils.get_config", side_effect=lambda key: _CONFIG.get(key, "")),
-        patch("common.common_utils.setup_logger", side_effect=_logger),
-        patch.dict(os.environ, {"WEB_AUTH_SECRET": _CONFIG["web_auth_secret"]}),
+        patch.dict(os.environ, {
+            "WEB_CONFIG_FILE": str(config_path),
+            "WEB_AUTH_SECRET": _CONFIG["web_auth_secret"],
+            "PDD_CLIENT_ID": _CONFIG["myself_pdd_client_id"],
+            "PDD_CLIENT_SECRET": _CONFIG["myself_pdd_client_secret"],
+            "PDD_PID": _CONFIG["myself_pdd_pid"],
+            "MONGO_HOST": "localhost", "MONGO_PORT": "27017",
+            "MONGO_USER": "", "MONGO_PASSWORD": "", "MONGO_DB_NAME": "mobile_web_offline",
+            "MONGO_AUTH_SOURCE": "admin", "WEB_HOST": "127.0.0.1", "WEB_PORT": "8000",
+            "WEB_LOG_DIR": "-", "WEB_LOG_LEVEL": "INFO", "WEB_WARMUP_ENABLED": "1",
+            "PDD_DNS_MODE": "off", "PDD_TRUST_ENV": "0",
+        }),
         patch("pymongo.MongoClient", new=_deny("MongoClient")),
         patch("requests.sessions.Session.request", new=_deny("platform HTTP")),
     )

@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
 """仅供浏览器回归的离线装配：运行真实路由/服务/页面，不连接联盟和 Mongo。
 
-生产入口仍是 app.mobile_web.main:app，不能将此测试入口用于部署。
+生产入口仍是 main:app，不能将此测试入口用于部署。
 """
 import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from fastapi.responses import Response
 
-from app.mobile_web.tests.offline_support import BLOCKED_CALLS, install_offline_environment
+from tests.offline_support import BLOCKED_CALLS, install_offline_environment
 
 install_offline_environment()
 
-from app.mobile_web.main import create_app
-from app.mobile_web.adapters import get_adapter
-from app.mobile_web.api import home, goods, promote, user, order
+from main import create_app
+from adapters import get_adapter
+from api import home, goods, promote, user, order
 
 adapter = get_adapter("pdd")
 PRODUCTS = []

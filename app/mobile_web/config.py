@@ -2,34 +2,24 @@
 """
 移动端服务全局配置模块
 """
-import os
-from common.common_utils import get_config, setup_logger
+from infrastructure.logging_utils import logger
+from infrastructure.settings import get_settings
 
-logger = setup_logger(app_name="mobile_web_service")
+settings = get_settings()
 
-def safe_get_config(key: str, default: str = "") -> str:
-    try:
-        val = get_config(key)
-        return val if val is not None else default
-    except KeyError:
-        return default
-
-# 拼多多进宝配置 (默认使用 myself 账号组)
-PDD_CLIENT_ID = safe_get_config("myself_pdd_client_id")
-PDD_CLIENT_SECRET = safe_get_config("myself_pdd_client_secret")
-PDD_PID = safe_get_config("myself_pdd_pid")
-
-# MongoDB 配置
-MONGO_HOST = get_config("local_mongo_host") or "localhost"
-MONGO_PORT = int(get_config("local_mongo_port") or 27017)
-MONGO_USER = get_config("local_mongo_user") or ""
-MONGO_PASSWORD = get_config("local_mongo_password") or ""
-MONGO_DB_NAME = get_config("local_mongo_db_name") or "crawler_data"
-
-# Web 服务与安全配置
-WEB_HOST = "127.0.0.1"
-WEB_PORT = 8000
-AUTH_SECRET = os.environ.get("WEB_AUTH_SECRET") or safe_get_config("web_auth_secret", "easy_shop_secure_auth_secret_key_2026_v2")
+# 拼多多、仓储与启动入口消费同一份配置，不回溯仓库父级。
+PDD_CLIENT_ID = settings.pdd_client_id
+PDD_CLIENT_SECRET = settings.pdd_client_secret
+PDD_PID = settings.pdd_pid
+MONGO_HOST = settings.mongo_host
+MONGO_PORT = settings.mongo_port
+MONGO_USER = settings.mongo_user
+MONGO_PASSWORD = settings.mongo_password
+MONGO_DB_NAME = settings.mongo_db_name
+MONGO_AUTH_SOURCE = settings.mongo_auth_source
+WEB_HOST = settings.web_host
+WEB_PORT = settings.web_port
+AUTH_SECRET = settings.auth_secret
 
 # 业务安全与防刷约束常量
 ORDER_SYNC_INTERVAL = 180       # 增量订单拉取全局最小冷却间隔 (秒)

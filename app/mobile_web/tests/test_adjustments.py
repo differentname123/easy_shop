@@ -5,8 +5,8 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
-from app.mobile_web.repositories.product_repo import ProductRepository
-from app.mobile_web.repositories.user_repo import UserRepository, hash_password
+from repositories.product_repo import ProductRepository
+from repositories.user_repo import UserRepository, hash_password
 
 
 class TestProductRepoAdjustments(unittest.TestCase):
@@ -113,7 +113,7 @@ class TestUserRepoAdjustments(unittest.TestCase):
 class TestProductServiceCache(unittest.TestCase):
     def test_search_cache_and_category_cache(self):
         from unittest.mock import patch
-        from app.mobile_web.services.product_service import ProductService, _SEARCH_CACHE, _CATEGORY_CACHE
+        from services.product_service import ProductService, _SEARCH_CACHE, _CATEGORY_CACHE
 
         mock_repo = MagicMock()
         mock_repo.get_categories.return_value = ["食品", "数码"]
@@ -132,7 +132,7 @@ class TestProductServiceCache(unittest.TestCase):
 
         # 2. 验证搜索缓存命中
         _SEARCH_CACHE.clear()
-        with patch("app.mobile_web.services.product_service.get_adapter") as mock_get_adapter:
+        with patch("services.product_service.get_adapter") as mock_get_adapter:
             mock_adapter = MagicMock()
             mock_adapter.search_goods.return_value = {
                 "status": "success",
@@ -154,13 +154,13 @@ class TestOffsetAndDetailEnhancements(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from fastapi.testclient import TestClient
-        from app.mobile_web.main import app
+        from main import app
         cls.client = TestClient(app)
 
     def test_home_recommend_large_offset_not_422(self):
         """测试 offset=240 等深分页不再触发 422 校验失败"""
         from unittest.mock import patch
-        with patch("app.mobile_web.services.product_service.ProductService.get_home_recommendations") as mock_get:
+        with patch("services.product_service.ProductService.get_home_recommendations") as mock_get:
             mock_get.return_value = {
                 "status": "success",
                 "data": [{"goods_id": "111", "name": "深页商品"}],
@@ -174,16 +174,16 @@ class TestOffsetAndDetailEnhancements(unittest.TestCase):
     def test_detail_dual_key_caching(self):
         """测试 get_goods_detail 双键缓存 (goods_id 与 goods_sign)"""
         from unittest.mock import patch
-        from app.mobile_web.services.product_service import ProductService, DETAIL_CACHE
+        from services.product_service import ProductService, DETAIL_CACHE
 
         mock_repo = MagicMock()
         mock_repo.get_product_detail.return_value = None
         service = ProductService(product_repo=mock_repo)
 
         DETAIL_CACHE.clear()
-        with patch("app.mobile_web.services.product_service.get_adapter") as mock_get_adapter:
+        with patch("services.product_service.get_adapter") as mock_get_adapter:
             mock_adapter = MagicMock()
-            from app.mobile_web.adapters.pdd_adapter import PddAdapter
+            from adapters.pdd_adapter import PddAdapter
             mock_adapter.resolve_product_ref.side_effect = PddAdapter().resolve_product_ref
             mock_adapter.get_goods_detail.return_value = {
                 "status": "success",

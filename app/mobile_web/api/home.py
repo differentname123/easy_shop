@@ -4,8 +4,8 @@
 """
 from typing import Optional
 from fastapi import APIRouter, Query
-from app.mobile_web.services.product_service import ProductService
-from app.mobile_web.adapters import get_all_platforms, require_adapter
+from services.product_service import ProductService
+from adapters import get_all_platforms, require_adapter
 
 router = APIRouter(prefix="/api/home", tags=["首页推荐与搜索"])
 product_service = ProductService()

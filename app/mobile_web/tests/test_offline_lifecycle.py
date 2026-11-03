@@ -7,12 +7,13 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from app.mobile_web import adapters, config
-from app.mobile_web.adapters.pdd_adapter import PddAdapter
-from app.mobile_web.api import home
-from app.mobile_web.cache import clear_all_caches
-from app.mobile_web.main import create_app
-from app.mobile_web.tests.offline_support import BLOCKED_CALLS, assert_no_blocked_calls
+import adapters
+import config
+from adapters.pdd_adapter import PddAdapter
+from api import home
+from cache import clear_all_caches
+from main import create_app
+from tests.offline_support import BLOCKED_CALLS, assert_no_blocked_calls
 
 
 def test_application_import_uses_only_offline_configuration_and_logger():

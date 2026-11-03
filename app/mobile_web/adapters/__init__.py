@@ -2,11 +2,11 @@
 """显式平台装配表：新增适配器后在此登记，不使用插件发现或动态加载。"""
 from functools import lru_cache
 from typing import Dict, List, Any
-from app.mobile_web.adapters.base import BasePlatformAdapter
-from app.mobile_web.adapters.pdd_adapter import PddAdapter
-from app.mobile_web.adapters.tb_adapter import TaobaoAdapter
-from app.mobile_web.adapters.jd_adapter import JdAdapter
-from app.mobile_web.models.product import normalize_platform
+from adapters.base import BasePlatformAdapter
+from adapters.pdd_adapter import PddAdapter
+from adapters.tb_adapter import TaobaoAdapter
+from adapters.jd_adapter import JdAdapter
+from models.product import normalize_platform
 
 
 _ADAPTER_TYPES = {

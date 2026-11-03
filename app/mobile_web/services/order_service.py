@@ -3,10 +3,10 @@
 import time
 import threading
 from typing import Dict, Any, Optional
-from app.mobile_web.adapters import get_adapter, require_adapter
-from app.mobile_web.models.product import normalize_platform
-from app.mobile_web.repositories.order_repo import OrderRepository
-from app.mobile_web.config import ORDER_SYNC_INTERVAL, ORDER_SYNC_MAX_PAGES, logger
+from adapters import get_adapter, require_adapter
+from models.product import normalize_platform
+from repositories.order_repo import OrderRepository
+from config import ORDER_SYNC_INTERVAL, ORDER_SYNC_MAX_PAGES, logger
 
 # 兼容名称现在只记录确认完整处理的窗口终点，不再把启动尝试当成功。
 _LAST_SYNC_TIMESTAMP: Dict[str, float] = {}

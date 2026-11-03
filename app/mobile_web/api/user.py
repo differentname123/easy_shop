@@ -4,9 +4,9 @@
 """
 from typing import Optional
 from fastapi import APIRouter, Query, Depends, HTTPException, status
-from app.mobile_web.models.user import RegisterOrLoginDTO
-from app.mobile_web.services.user_service import UserService
-from app.mobile_web.auth import get_current_uid
+from models.user import RegisterOrLoginDTO
+from services.user_service import UserService
+from auth import get_current_uid
 
 router = APIRouter(prefix="/api/user", tags=["用户与授权"])
 user_service = UserService()

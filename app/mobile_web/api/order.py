@@ -4,8 +4,8 @@
 """
 from typing import Optional
 from fastapi import APIRouter, Query, Depends, HTTPException, status
-from app.mobile_web.services.order_service import OrderService
-from app.mobile_web.auth import get_current_uid
+from services.order_service import OrderService
+from auth import get_current_uid
 
 router = APIRouter(prefix="/api/order", tags=["订单与收益"])
 order_service = OrderService()

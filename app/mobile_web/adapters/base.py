@@ -5,7 +5,7 @@
 """
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
-from app.mobile_web.models.product import ProductRef
+from models.product import ProductRef
 
 
 def build_command_text(title: str, final_link: str, price=None, coupon=None, app_name: str = "") -> str:

@@ -12,3 +12,17 @@ htmlcov/
 .venv/
 venv/
 .env
+.env.*
+config.local.json
+config.*.local.json
+runtime/
+*.log
+*.log.*
+
+# Private deployment material
+secrets/
+keys/
+*.key
+*.pem
+*.p12
+*.pfx
